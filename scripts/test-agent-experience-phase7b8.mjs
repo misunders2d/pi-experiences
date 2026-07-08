@@ -148,10 +148,12 @@ try {
   const { commands } = makePi();
   const notes = [];
   await commands.get('experience').handler('status', { cwd: process.cwd(), ui: { notify(message) { notes.push(message); } } });
-  assert.match(notes.at(-1), /mode=instant|mode=smart/);
-  assert.match(notes.at(-1), /local lexical\/no-network|configured model/);
+  assert.match(notes.at(-1), /Experience: OFF/);
+  assert.match(notes.at(-1), /Timer\/background job: OFF/);
+  assert.match(notes.at(-1), /Model\/network learning: OFF/);
   await commands.get('experience').handler('help', { cwd: process.cwd(), ui: { notify(message) { notes.push(message); } } });
-  assert.match(notes.at(-1), /instant \(local lexical\/no-network\)/);
+  assert.match(notes.at(-1), /experience setup/);
+  assert.match(notes.at(-1), /Normal UX does not install timers/);
   await commands.get('experience').handler('selector calibrate', { cwd: process.cwd(), ui: { notify(message) { notes.push(message); } } });
   assert.match(notes.at(-1), /Manual weekly calibration/);
   assert.match(notes.at(-1), /No recurring reminder is enabled/);

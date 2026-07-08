@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
-import { appendFile, mkdtemp, readdir, readFile, rm, utimes, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -140,6 +140,19 @@ await handlers.get('agent_end')({ type: 'agent_end', messages: [{ role: 'assista
 assert.equal((await readObservationLines(observationPath)).length, 2, 'capture off must drop pending pair');
 await commands.get('experience').handler('disable', ctx(notes));
 assert.equal((await readObservationLines(observationPath)).length, 2, 'disabled/capture-off mode must not flush completed pair');
+
+const diagnosticRoot = await ensurePrivateRoot(join(temp, 'diagnostic-root'));
+process.env.AX_STATE_ROOT = diagnosticRoot;
+const diagnosticNotes = [];
+const diagnostic = makePi();
+const diagnosticPaths = getAgentExperiencePaths();
+await diagnostic.commands.get('experience').handler('on', ctx(diagnosticNotes));
+await mkdir(resolvePrivatePath(diagnosticPaths.root, 'observations.jsonl'));
+await diagnostic.handlers.get('input')({ type: 'input', text: 'diagnostic user private@example.invalid', source: 'interactive' }, ctx(diagnosticNotes));
+await diagnostic.handlers.get('agent_end')({ type: 'agent_end', messages: [{ role: 'assistant', content: 'diagnostic assistant' }] }, ctx(diagnosticNotes));
+assert.match(diagnosticNotes.at(-1).message, /capture skipped after persistence failure/);
+assert.doesNotMatch(diagnosticNotes.at(-1).message, /private@example\.invalid|diagnostic user|diagnostic assistant/);
+process.env.AX_STATE_ROOT = join(temp, 'state');
 
 const seqRoot = await ensurePrivateRoot(join(temp, 'seq-root'));
 const concurrent = await Promise.all(Array.from({ length: 5 }, (_, index) => appendObservation(seqRoot, {

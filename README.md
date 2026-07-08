@@ -80,7 +80,7 @@ pi update --extensions
 Pinned GitHub tag install is also available when you want an exact source ref:
 
 ```bash
-pi install git:github.com/misunders2d/pi-experiences@v0.1.4
+pi install git:github.com/misunders2d/pi-experiences@v0.1.5
 ```
 
 For local development:
@@ -113,19 +113,20 @@ Duplicate copies can register the same hooks twice and cause duplicate capture o
 
 ### Plain-language pieces
 
-- **Experience** is the whole behavior-learning layer. Turning it on means Pi may use this package, but it does not by itself capture, consolidate, or inject anything.
+- **Experience** is the whole behavior-learning layer.
+- **Setup** is the one-time safe entrypoint. It turns on local redacted capture and leaves timers, model learning, and pre-injection off.
 - **Capture** means saving redacted text fields and metadata from completed user/assistant turns to `observations.jsonl`. It is the raw material. Capture does **not** create habits by itself.
-- **Consolidation** means reading many captured observations and proposing possible habits/corrections. Today this is a manual CLI step; no timer/model adapter runs automatically.
+- **Learning / consolidation** means reading captures and proposing possible habits/corrections. In 0.1.5 this is **not automatic**: no timer or live consolidation model adapter is installed.
 - **Pending review** means proposed habits are waiting for you to approve or reject them. Pending items are not used for injection.
-- **Active habits** are the only reviewed habits eligible for use.
-- **Pre-injection / selector** means Pi checks active habits before a reply and injects only the few relevant ones as bounded guidance. It is off until `/experience selector on`.
+- **Active habits** are reviewed habits. Normal setup does not inject them until advanced guidance/pre-injection is explicitly enabled.
+- **Timer** is only a future/advanced way to run learning in the background. It is not installed, started, or managed by this package.
 
 Inside Pi:
 
 ```text
+/experience setup
 /experience status
-/experience enable
-/experience capture on
+/experience review
 ```
 
 Then use Pi normally for a few turns. Captures are written locally to:
@@ -136,32 +137,21 @@ Then use Pi normally for a few turns. Captures are written locally to:
 
 The file stores redacted conversation-pair records with bounded text fields and metadata, not raw full session logs.
 
-### What must be enabled for the full loop?
+### Normal commands
 
-Agent Experience has separate gates. This is intentional, but easy to miss:
-
-1. **Experience master switch** — `/experience enable` sets `enabled=true`.
-2. **Capture** — `/experience capture on` sets `capture_enabled=true` and writes completed turns to `observations.jsonl`.
-3. **Consolidation** — currently manual. Run `/experience consolidation on` so the config explicitly allows/manual-tracks consolidation work, then run:
-   ```bash
-   experience-consolidate status
-   experience-consolidate now --fixture-output /path/to/model-output.json
-   ```
-   No automatic timer, recurring job, or live model adapter is installed by default.
-4. **Human review** — use `/experience pending list|show|accept|reject` to approve candidates. Unreviewed candidates are not active habits.
-5. **Pre-injection / selector** — `/experience selector on` sets `selector_enabled=true`. Default mode is `instant`, local, lexical, and no-network. It only considers active same-user habits.
-
-If observations are growing but `/experience pending list` is empty, capture is working but consolidation has not successfully produced review candidates yet.
-
-Helpful commands:
+The normal UX is intentionally small:
 
 ```text
-/experience help setup
-/experience help review
-/experience help selector
-/experience help troubleshoot
-/experience status
+/experience setup   # one-time safe setup: local capture on, timers/model learning/injection off
+/experience on      # resume local redacted capture
+/experience off     # stop capture and all runtime gates
+/experience status  # plain dashboard: capture count, review count, next step
+/experience review  # inspect/accept/reject candidates if any exist
 ```
+
+If observations are growing but `/experience review` shows no candidates, capture is working. In 0.1.5, candidate generation is not automatic because the package does not ship a live consolidation model adapter or install/manage a timer.
+
+Advanced/backcompat commands such as `/experience capture`, `/experience consolidation`, `/experience selector`, `/experience pending`, and `experience-consolidate --fixture-output` are maintainer/testing controls, not the normal first-run path.
 
 ## State and privacy
 
@@ -199,30 +189,24 @@ Privacy and safety invariants:
 The extension is designed around human review.
 
 ```text
-capture redacted pairs -> consolidate observations -> propose candidate habits -> human review -> active habits -> optional selector injection
+capture redacted pairs -> future/advanced consolidation -> proposed candidates -> human review -> active habits -> optional advanced selector injection
 ```
 
-**Consolidation is currently a manual CLI step.** The package installs a bundled `experience-consolidate` command, but it does not install or enable a systemd timer, recurring job, or live model adapter by default. For now, run consolidation explicitly with reviewed fixture/model output:
-
-```bash
-experience-consolidate status
-experience-consolidate now --fixture-output /path/to/model-output.json
-```
-
-If observations are growing but `/experience pending list` shows no candidates, consolidation has probably not run successfully yet.
+In 0.1.5, the package captures locally but does **not** automatically create candidates. The bundled `experience-consolidate` command is an advanced maintainer/test CLI that requires explicit fixture/model output; normal users should not need it.
 
 Review commands:
 
 ```text
-/experience pending list
-/experience pending show <id>
-/experience pending diff
-/experience pending accept <id> --checksum <checksum>
-/experience pending reject <id> --checksum <checksum>
-/experience habit explain <id>
-/experience habit accept|reject|disable|enable <id> --checksum <checksum>
-/experience habits report
+/experience review
+/experience review list
+/experience review show <id>
+/experience review diff
+/experience review accept <id> --checksum <checksum>
+/experience review reject <id> --checksum <checksum>
+/experience review report
 ```
+
+Checksums are used so stale review actions fail closed. The old `/experience pending ...` and `/experience habit ...` commands remain advanced/backcompat aliases.
 
 Checksums are used so stale review actions fail closed.
 
@@ -339,7 +323,7 @@ For a bug fix:
 3. run reviewer/debate for non-trivial safety or runtime changes;
 4. run `npm run check`;
 5. bump `package.json` version;
-6. commit and tag, for example `v0.1.4`;
+6. commit and tag, for example `v0.1.5`;
 7. publish the same commit to npm;
 8. tell npm users to run `pi update --extensions`.
 
@@ -371,7 +355,7 @@ pi update --extensions
 For users who want a pinned exact source ref:
 
 ```bash
-pi install git:github.com/misunders2d/pi-experiences@v0.1.4
+pi install git:github.com/misunders2d/pi-experiences@v0.1.5
 ```
 
 Git package refs are pinned. `pi update --extensions` reconciles the pinned ref but does not float Git installs to a new tag.
@@ -382,7 +366,7 @@ For a bug fix:
 2. add or update regression tests;
 3. run review and `npm run check`;
 4. bump `package.json` version;
-5. commit and tag, for example `v0.1.4`;
+5. commit and tag, for example `v0.1.5`;
 6. publish the same commit to npm;
 7. npm users update with `pi update --extensions`; Git-pinned users install the new tag explicitly.
 

@@ -1481,7 +1481,8 @@ function argValue(args, name) {
 function usage() {
   return [
     "Usage: experience-consolidate status|now [--dry-run] [--fixture-output FILE] [--root DIR] [--user USER] [--generation active]",
-    "Package-scoped manual CLI. It never installs or enables timers.",
+    "Advanced maintainer/test CLI. Normal users should use /experience status and /experience review.",
+    "0.1.5 has no live consolidation model adapter and never installs/enables timers.",
     "--dry-run produces reviewable output and must not advance watermarks or mutate ledger state.",
     "Without a fixture/model adapter, now fails closed rather than guessing model output."
   ].join("\n");
@@ -1503,7 +1504,7 @@ async function main() {
     return;
   }
   if (command !== "now") throw new Error(usage());
-  if (!config.enabled) throw new Error("consolidation_disabled: run /experience enable before experience-consolidate now");
+  if (!config.enabled) throw new Error("consolidation_disabled: run /experience setup or /experience on before experience-consolidate now");
   if (!config.consolidation_enabled) throw new Error("consolidation_disabled: run /experience consolidation on before experience-consolidate now");
   const fixturePath = argValue(args, "--fixture-output");
   if (!fixturePath) throw new Error("consolidation_model_adapter_unavailable: provide --fixture-output for package-local dry-run/test, or run through an approved Pi adapter path");

@@ -1,39 +1,34 @@
 # Agent Experience
 
-Opt-in Pi package extension for local Agent Experience capture, review, selector guidance, and manual consolidation.
+Opt-in Pi package extension for local Agent Experience capture, human review, and advanced selector/consolidation experiments.
+
+## Normal UX
+
+Use the simple commands first:
+
+```text
+/experience setup   # one-time safe setup
+/experience on      # resume local redacted capture
+/experience off     # stop capture and all runtime gates
+/experience status  # dashboard: capture count, review count, next step
+/experience review  # inspect/accept/reject candidates if any exist
+```
+
+`/experience setup` and `/experience on` enable local redacted capture only. They do **not** install timers, run background learning, call live consolidation models, enable embeddings, enable break-in mode, or enable pre-injection.
 
 ## Safety defaults
 
 - Package install alone does not enable capture, selector, consolidation, timer, or live runtime behavior.
-- `/experience enable` only flips the master flag. Capture/selector remain explicit.
-- Selector remains disabled by default.
+- Normal setup/on enables only `enabled=true` and `capture_enabled=true`.
+- Selector/pre-injection remains off until advanced explicit enable.
 - Default selector mode, once selector is enabled, is `instant`: local lexical selection only, no model/network call.
-- `smart` selector mode is opt-in and may call the configured model/provider.
+- `smart` selector mode is advanced opt-in and may call the configured model/provider.
 - Live runtime install/smoke is separate from package installation and should be explicitly reviewed by the user.
+- No habits are approved automatically.
 
-## Enable / disable
+## Selector modes — advanced
 
-Inside Pi after package install:
-
-```text
-/experience status
-/experience enable
-/experience capture on
-/experience selector on
-/experience selector off
-/experience capture off
-/experience disable
-```
-
-Disable is safe: it drops in-memory capture buffers and disables feature flags without flushing hidden data.
-
-## Selector modes
-
-Config supports flat keys plus `[selector]` / dotted selector keys. Precedence:
-
-```text
-built-in defaults < flat config keys < [selector]/selector.* keys < environment overrides
-```
+Config supports flat keys plus `[selector]` / dotted selector keys. Config file values are applied in file order, then environment overrides are applied last. Avoid defining the same setting twice in one file.
 
 Relevant environment overrides:
 
@@ -52,7 +47,7 @@ law_path = "law.md" # relative to ~/.agents/experience by default; absolute path
 
 The selector and habit activation commands fail closed when the configured law file is missing. They do not resolve law from the current working directory.
 
-Example config:
+Example advanced config:
 
 ```toml
 enabled = true
@@ -67,16 +62,14 @@ timeout_ms = 5000
 
 ### `instant`
 
-- Default mode once selector is enabled.
+- Local lexical/no-network selection.
 - Uses active same-user habits only.
 - Uses law freshness, deterministic law-safety denylist, confidence, staleness, and daily budget gates.
-- Selects with pure lexical overlap threshold.
-- Makes zero model/network calls.
 - Hit logs record model `lexical`.
 
 ### `smart`
 
-- Opt-in mode.
+- Advanced opt-in mode.
 - Uses same active/law/staleness/confidence/budget gates as instant.
 - Calls configured model through Pi model registry/auth at call time.
 - No hidden fallback. Unavailable model/auth/timeout/malformed output fails closed to no injection.
@@ -91,9 +84,23 @@ Smart mode latency should be measured against the user's configured threshold be
 - Reports, evidence rows, pending-review rows, quarantine rows, disabled/suppressed/dormant/candidate/archived rows are never selector input.
 - `habits-report.md` is report-only and never injection input.
 - Law-file writes never happen; law graduation remains suggestion-only.
-- The current law check is deterministic v1: it requires a configured law file for freshness hashing and blocks a small denylist of dangerous habit text patterns. It does not semantically compare habit text against the full law text. Future semantic contradiction detection should route proposed conflicts to pending review, not direct injection.
+- The current law check is deterministic v1: it requires a configured law file for freshness hashing and blocks a small denylist of dangerous habit text patterns. It does not semantically compare habit text against the full law text. Future semantic contradiction detection should route proposed conflicts to pending review, not direct activations.
 
-## Manual consolidation
+## Review
+
+```text
+/experience review
+/experience review list
+/experience review show <id>
+/experience review diff
+/experience review accept <id> --checksum <checksum>
+/experience review reject <id> --checksum <checksum>
+/experience review report
+```
+
+Checksums protect stale review actions. Review never auto-approves habits.
+
+## Manual consolidation — advanced maintainer/test only
 
 Package bin:
 
@@ -110,47 +117,13 @@ Model-output safety:
 - model output must echo exact `observations_read.seq_start`, `seq_end`, and checksum;
 - shrunk, expanded, or shifted ranges fail closed and quarantine on non-dry-run.
 
-## Systemd timer templates
+## Systemd timer templates — disabled advanced templates
 
-Templates live in `extensions/agent-experience/units/`.
+Templates live in `extensions/agent-experience/units/`, but 0.1.5 does **not** provide a package-owned timer or live consolidation adapter. `/experience setup` and `/experience on` never install, enable, or start these units.
 
-Manual install example only:
+The bundled service intentionally fails with an explicit message until a maintainer replaces `ExecStart` with an approved reviewed consolidation command. Do not copy/enable the timer as normal UX.
 
-```bash
-mkdir -p ~/.config/systemd/user
-cp extensions/agent-experience/units/experience-consolidate.service ~/.config/systemd/user/
-cp extensions/agent-experience/units/experience-consolidate.timer ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now experience-consolidate.timer
-```
-
-Manual uninstall:
-
-```bash
-systemctl --user disable --now experience-consolidate.timer
-rm -f ~/.config/systemd/user/experience-consolidate.service ~/.config/systemd/user/experience-consolidate.timer
-systemctl --user daemon-reload
-```
-
-Package tests do not run these commands and do not install or enable units silently.
-
-Timer template uses:
-
-```text
-OnCalendar=daily
-Persistent=true
-```
-
-Optional laptop AC-power gate is documented in the timer file as a commented `ConditionACPower=true` line.
-
-## Break-in mode
-
-Break-in mode makes timer-triggered consolidation review-first. It cannot silently go live unless:
-
-- explicit accept path is used; or
-- a configured confidence threshold is explicitly enabled and met.
-
-Auto-apply threshold defaults off.
+Manual timer ownership, if ever used, belongs to the user/maintainer and must be reversible with `systemctl --user disable --now experience-consolidate.timer`.
 
 ## Metrics and calibration
 
@@ -159,20 +132,14 @@ Auto-apply threshold defaults off.
 /experience selector calibrate
 ```
 
-Surfaces include redacted aggregate metrics: selector hits by mode, stale-hit rate, quarantine/pending-review counts, and consolidation outcomes. Timeout/no-injection counts are unavailable unless a sanitized aggregate-only metrics table is explicitly implemented.
-
-Weekly calibration is manual. Optional reminders may be documented separately; no recurring schedule is enabled silently.
-
-## Rollback
-
-Use backups/restore helpers only with the database closed/quiesced or a tested safe copy path. Restore requires explicit overwrite and database-closed confirmation.
+Calibration is manual. It reports aggregate metrics only and does not create recurring reminders.
 
 ## Validation
 
-From package repo:
+Run from package root:
 
 ```bash
 npm run check
 ```
 
-This standalone package declares `type: module` and requires a Node version with TypeScript type stripping for the development checks and consolidation CLI.
+Package tests must not install timers, start services, call external models without an explicit adapter, or write outside the configured private state root.

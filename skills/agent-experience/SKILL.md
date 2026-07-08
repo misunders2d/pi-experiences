@@ -1,92 +1,91 @@
 ---
 name: agent-experience
-description: Use when explaining, configuring, troubleshooting, or safely operating the Pi Experiences / Agent Experience extension: capture, review, consolidation, selector modes, law_path, privacy boundaries, and the distinction between skills, memory, and experience. Do not use for unrelated Pi extension development.
+description: Use when explaining, configuring, troubleshooting, or safely operating the Pi Experiences / Agent Experience extension: setup/on/off/status/review, capture, review candidates, advanced consolidation, selector modes, law_path, privacy boundaries, and the distinction between skills, memory, and experience. Do not use for unrelated Pi extension development.
 ---
 
 # Agent Experience
 
-Agent Experience is the behavioral layer in the Pi Experiences package.
+Use this skill for the public `pi-experiences` package.
 
-Use three separate concepts:
+## Mental model
 
-- **Skills** are explicit procedures and playbooks.
-- **Memory** is remembered factual context.
-- **Experience** is reviewed behavioral/habitual guidance inferred from repeated interaction.
-
-Do not blur them. A habit is not a skill unless it describes a repeatable workflow. A habit is not memory unless it is a durable fact. Experience should stay small, reviewed, and injectable only when relevant.
+```text
+skills = instructions the agent loads before work
+memory = durable facts/knowledge the agent may retrieve
+experience = reviewed behavioral habits inferred from repeated interaction
+```
 
 ## Plain-language pieces
 
 - **Experience** is the whole behavior-learning layer.
+- **Setup** is the one-time safe entrypoint. It turns on local redacted capture and leaves timers, live model learning, and pre-injection off.
 - **Capture** saves redacted text fields and metadata from completed turns to `observations.jsonl`. It creates raw material only, not habits.
-- **Consolidation** reads captures and proposes habit candidates. In the public package today this is manual through `experience-consolidate`; no timer/model adapter runs automatically.
+- **Learning / consolidation** reads captures and proposes habit candidates. In 0.1.5 this is not automatic: no timer or live consolidation model adapter is installed.
 - **Pending review** means proposed habits await approval/rejection and are not injectable yet.
-- **Active habits** are reviewed habits eligible for later use.
-- **Pre-injection / selector** checks active same-user habits before an answer and injects only bounded relevant guidance. It is off until explicitly enabled.
+- **Active habits** are reviewed habits. Normal setup does not inject them unless advanced guidance/pre-injection is explicitly enabled.
+- **Timer** is only a future/advanced way to run learning in the background. It is not installed, started, or managed by the package.
 
-Full loop gates: `/experience enable`, `/experience capture on`, `/experience consolidation on` plus manual `experience-consolidate`, human review, then `/experience selector on` for pre-injection.
+## Normal commands
+
+```text
+/experience setup   # one-time safe local setup
+/experience on      # resume local redacted capture
+/experience off     # stop capture and all runtime gates
+/experience status  # dashboard: capture count, review count, next step
+/experience review  # inspect/accept/reject candidates if any exist
+```
+
+If observations grow but `/experience review` shows no candidates, capture is working. In 0.1.5, candidate generation is not automatic.
 
 ## Safety defaults
 
-- Capture starts disabled.
-- Selector starts disabled.
-- Default selector mode is `instant`, local lexical/no-network.
-- Smart mode is opt-in and may call the configured model/provider.
+- Package install alone enables nothing.
+- `/experience setup` and `/experience on` enable local redacted capture only.
+- Selector/pre-injection starts off.
+- Default selector mode is `instant`, local lexical/no-network, but still advanced opt-in.
+- Smart mode is advanced opt-in and may call the configured model/provider.
 - Selector candidates are active same-user habits only.
 - Reports, pending review, quarantine, evidence, disabled, dormant, candidate, suppressed, and archived rows are not selector input.
 - Selector logs do not store raw prompts; `prompt_hash` remains `omitted`.
 - No law-file writes happen automatically.
+- No timers, recurring jobs, live consolidation model calls, or auto-approval run in normal UX.
 
-## Commands
-
-Setup:
-
-```text
-/experience status
-/experience enable
-/experience capture on
-```
-
-Manual consolidation:
+## Review
 
 ```text
-/experience consolidation on
+/experience review
+/experience review list
+/experience review show <id>
+/experience review diff
+/experience review accept <id> --checksum <checksum>
+/experience review reject <id> --checksum <checksum>
+/experience review report
 ```
 
-```bash
-experience-consolidate status
-experience-consolidate now --fixture-output /path/to/model-output.json
-```
+Checksums protect stale review actions. No review command auto-approves habits.
 
-Help:
+## Advanced/backcompat commands
+
+Use only for maintainer/testing or explicit advanced operation:
 
 ```text
-/experience help setup
-/experience help review
-/experience help selector
-/experience help troubleshoot
-```
-
-Review:
-
-```text
-/experience pending list
-/experience pending show <id>
-/experience pending diff
-/experience pending accept <id> --checksum <checksum>
-/experience pending reject <id> --checksum <checksum>
-/experience habit explain <id>
-/experience habit accept|reject|disable|enable <id> --checksum <checksum>
+/experience help advanced
+/experience capture on|off
+/experience consolidation on|off
+/experience selector on|off|calibrate
+/experience pending list|show|diff|accept|reject
+/experience habit explain|accept|reject|disable|enable <id> --checksum <checksum>
 /experience habits report
 ```
 
-Selector:
+Advanced consolidation CLI:
 
-```text
-/experience selector on
-/experience selector off
-/experience selector calibrate
+```bash
+experience-consolidate status
+experience-consolidate now --dry-run --fixture-output /path/to/model-output.json
 ```
+
+The CLI fixture path is maintainer/test plumbing, not normal user UX.
 
 ## Law file
 
@@ -106,22 +105,19 @@ If the law file is missing, activation and selector injection fail closed. Curre
 
 ## Troubleshooting
 
-Capture check:
-
-```bash
+```text
+/experience status
+/experience review
 ls -la ~/.agents/experience
 wc -l ~/.agents/experience/observations.jsonl
 ```
 
 If capture is enabled but no observation appears after a completed turn, reload/restart Pi and check `/experience status`.
 
-Selector check:
+If `/experience review` has no candidates while observations grow, the system is only capturing. Candidate generation is not automatic in 0.1.5.
 
-- confirm `enabled=true` and `selector_enabled=true`;
+If selector/pre-injection seems inactive:
+- confirm advanced selector controls were explicitly enabled;
+- confirm active reviewed habits exist;
 - confirm `~/.agents/experience/law.md` exists or configure `law_path`;
-- confirm active habits exist with fresh `law_hash`;
-- remember that missing ledger/law/model/auth/timeouts fail closed.
-
-## Maintenance rule
-
-For bugs, patch the package source first, add a regression test, run review, then release a new Git tag. Avoid live-only patches.
+- remember reports/pending/candidates are never selector input.

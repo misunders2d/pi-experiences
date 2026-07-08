@@ -1,6 +1,5 @@
-import { stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { summarizeAgentExperienceConfig } from "./src/config.ts";
 import {
 	getAgentExperiencePaths,
 	readAgentExperienceConfig,
@@ -8,9 +7,10 @@ import {
 	setAgentExperienceConsolidationEnabled,
 	setAgentExperienceEnabled,
 	setAgentExperienceSelectorEnabled,
+	setAgentExperienceSimpleOn,
 } from "./src/paths.ts";
 import { appendObservation } from "./src/storage/observations.ts";
-import { initExperienceStorage, openExistingExperienceStorage } from "./src/storage/sqlite.ts";
+import { initExperienceStorage, loadSqlite, openExistingExperienceStorage } from "./src/storage/sqlite.ts";
 import {
 	acceptCandidateHabit,
 	acceptPendingReview,
@@ -33,10 +33,12 @@ import { extractSingleFinalAssistantText } from "./src/capture/extract.ts";
 import { runSelectorRuntime, type SelectorModelAdapter } from "./src/selector.ts";
 import { createPiSelectorModelAdapter } from "./src/selector-model.ts";
 import { collectAgentExperienceMetrics, formatAgentExperienceMetrics } from "./src/metrics.ts";
+import { STORAGE_SCHEMA_VERSION } from "./src/storage/schema.ts";
 
 const captureBuffer = new CapturePairBuffer();
 let selectorModelAdapter: SelectorModelAdapter | undefined;
 const selectorDiagnosticsShown = new Set<string>();
+const captureDiagnosticsShown = new Set<string>();
 
 export function __setAgentExperienceSelectorAdapterForTest(adapter: SelectorModelAdapter | undefined) {
 	selectorModelAdapter = adapter;
@@ -71,46 +73,118 @@ async function appendCapturedPair(root: string, pair: CompletedPair, reason: Clo
 	});
 }
 
+async function countObservationLines(root: string): Promise<number | undefined> {
+	try {
+		const text = await readFile(resolvePrivatePath(root, "observations.jsonl"), "utf8");
+		if (!text.trim()) return 0;
+		return text.split(/\r?\n/).filter((line) => line.trim()).length;
+	} catch (error: any) {
+		if (error?.code === "ENOENT") return undefined;
+		throw error;
+	}
+}
+
+function plural(count: number, word: string): string {
+	return `${count} ${word}${count === 1 ? "" : "s"}`;
+}
+
+async function reviewSummary(root: string, userId: string): Promise<{ ledger: boolean; pending: number; active: number; candidate: number; error?: string }> {
+	const dbPath = resolvePrivatePath(root, "ledger.sqlite");
+	if (!(await fileExists(dbPath))) return { ledger: false, pending: 0, active: 0, candidate: 0 };
+	let db: any | undefined;
+	try {
+		const sqlite = await loadSqlite();
+		db = new sqlite.DatabaseSync(dbPath, { open: true, readOnly: true });
+		const normalizedUserId = normalizeUserId(userId);
+		const version = Number(db.prepare("PRAGMA user_version").get()?.user_version ?? 0);
+		if (version !== STORAGE_SCHEMA_VERSION) throw new Error(`Agent Experience storage schema mismatch: expected ${STORAGE_SCHEMA_VERSION}, got ${version}`);
+		const pending = Number(db.prepare("SELECT COUNT(*) AS count FROM pending_review WHERE user_id = ? AND status = 'open'").get(normalizedUserId).count);
+		const candidate = Number(db.prepare("SELECT COUNT(*) AS count FROM habits WHERE user_id = ? AND status = 'candidate'").get(normalizedUserId).count);
+		const active = Number(db.prepare("SELECT COUNT(*) AS count FROM habits WHERE user_id = ? AND status = 'active'").get(normalizedUserId).count);
+		return { ledger: true, pending, active, candidate };
+	} catch (error) {
+		const raw = error instanceof Error ? error.message : String(error);
+		return { ledger: true, pending: 0, active: 0, candidate: 0, error: redactText(raw).slice(0, 300) };
+	} finally {
+		db?.close();
+	}
+}
+
 async function handleStatus(ctx: ExtensionCommandContext) {
 	const paths = getAgentExperiencePaths();
 	const { config, exists, path } = await readAgentExperienceConfig(paths);
-	let metrics = "metrics: ledger absent";
-	if (await fileExists(resolvePrivatePath(paths.root, "ledger.sqlite"))) {
-		const storage = await initExperienceStorage(paths.root, { allowInit: true, userId: getConfiguredUserId() });
-		try {
-			metrics = formatAgentExperienceMetrics(collectAgentExperienceMetrics(storage.db, { userId: storage.userId, staleThreshold: config.selector_staleness_max }));
-		} finally {
-			storage.db.close();
-		}
-	}
-	notify(ctx, `${summarizeAgentExperienceConfig(config, path, exists)}\n${metrics}`, config.enabled ? "warn" : "info");
+	const observations = await countObservationLines(paths.root);
+	const summary = await reviewSummary(paths.root, getConfiguredUserId());
+	const captureActive = config.enabled && config.capture_enabled;
+	const selectorActive = config.enabled && config.selector_enabled;
+	const reviewCount = summary.pending + summary.candidate;
+	const nextStep = !config.enabled
+		? "Run /experience setup to turn on local redacted capture."
+		: reviewCount > 0
+			? "Run /experience review to inspect candidates."
+			: "No review candidates yet. 0.1.5 captures locally but does not run background model consolidation or timers.";
+	notify(ctx, [
+		`Experience: ${config.enabled ? "ON" : "OFF"}`,
+		`Config: ${path}${exists ? "" : " (not created; using defaults)"}`,
+		`Capture: ${captureActive ? "ON" : "OFF"}${observations === undefined ? "" : ` (${plural(observations, "observation")})`}`,
+		`Learning/candidates: ${config.consolidation_enabled ? "advanced manual gate ON" : "not automatic"}`,
+		`Review: ${summary.error ? `ledger unreadable (${summary.error})` : summary.ledger ? `${plural(reviewCount, "item")} pending/candidate, ${plural(summary.active, "active habit")}` : "no ledger yet"}`,
+		`Guidance/pre-injection: ${selectorActive ? `ON (${config.selector_mode})` : "OFF"}`,
+		"Timer/background job: OFF (package does not install or manage one)",
+		"Model/network learning: OFF in normal UX",
+		`Next: ${nextStep}`,
+	].join("\n"), config.enabled ? "info" : "warn");
 }
 
-async function handleEnable(ctx: ExtensionCommandContext) {
-	const { config, path } = await setAgentExperienceEnabled(true);
+async function handleSetup(ctx: ExtensionCommandContext) {
+	captureBuffer.clearAll();
+	const { config, path } = await setAgentExperienceSimpleOn();
 	notify(
 		ctx,
 		[
-			"Agent Experience enabled flag written.",
+			"Agent Experience setup complete.",
 			`config: ${path}`,
-			"Phase 3 safety: capture still requires explicit /experience capture on; selector, embedding, consolidation, timer, model, and network work remain disabled.",
+			"Experience is ON for local redacted capture.",
+			"Learning/candidates are not automatic in 0.1.5: no timer or live consolidation model is installed.",
+			"Guidance/pre-injection is OFF until advanced controls enable it and reviewed active habits exist.",
+			"No habits are approved automatically. Records under ~/.agents/experience are preserved.",
 			`enabled=${config.enabled}`,
 			`capture=${config.capture_enabled}`,
+			`selector=${config.selector_enabled}`,
+			`consolidation=${config.consolidation_enabled}`,
+			`timer=${config.timer_enabled}`,
 		].join("\n"),
-		"warn",
+		"info",
 	);
 }
 
-async function handleDisable(ctx: ExtensionCommandContext) {
+async function handleOn(ctx: ExtensionCommandContext) {
+	const { config, path } = await setAgentExperienceSimpleOn();
+	notify(
+		ctx,
+		[
+			"Agent Experience is ON.",
+			`config: ${path}`,
+			"Local redacted capture is active for completed turns.",
+			"Learning/candidates, timer, model calls, and pre-injection remain OFF in normal on/off mode.",
+			"Run /experience status anytime for counts and next step.",
+			`enabled=${config.enabled}`,
+			`capture=${config.capture_enabled}`,
+		].join("\n"),
+		"info",
+	);
+}
+
+async function handleOff(ctx: ExtensionCommandContext) {
 	captureBuffer.clearAll();
 	const { config, path } = await setAgentExperienceEnabled(false);
 	notify(
 		ctx,
 		[
-			"Agent Experience disabled.",
+			"Agent Experience is OFF.",
 			`config: ${path}`,
-			"No automatic writes, capture, selector, embedding, consolidation, timer, model, or network work is active.",
-			"Disable drops in-memory capture buffers without writing observations.",
+			"Capture, learning/candidates, selector/pre-injection, timer, model, embedding, and break-in gates are off.",
+			"Off drops in-memory capture buffers without writing observations. Existing records are preserved.",
 			`enabled=${config.enabled}`,
 			`capture=${config.capture_enabled}`,
 		].join("\n"),
@@ -128,15 +202,20 @@ function formatResult(value: unknown): string {
 	return JSON.stringify(value, null, 2).slice(0, 6000);
 }
 
-function selectorDiagnostic(error: unknown): { key: string; message: string } {
+function diagnosticFor(kind: "selector-runtime" | "capture-persist", error: unknown): { key: string; message: string } {
 	const raw = error instanceof Error ? error.message : String(error);
 	const redacted = redactText(raw).slice(0, 500);
-	return { key: `selector-runtime:${redacted}`, message: `Agent Experience selector skipped: ${redacted}` };
+	return {
+		key: `${kind}:${redacted}`,
+		message: kind === "selector-runtime"
+			? `Agent Experience selector skipped: ${redacted}`
+			: `Agent Experience capture skipped after persistence failure: ${redacted}`,
+	};
 }
 
-function notifySelectorDiagnostic(ctx: unknown, diagnostic: { key: string; message: string }): void {
-	if (selectorDiagnosticsShown.has(diagnostic.key)) return;
-	selectorDiagnosticsShown.add(diagnostic.key);
+function notifyDedupedDiagnostic(ctx: unknown, seen: Set<string>, diagnostic: { key: string; message: string }): void {
+	if (seen.has(diagnostic.key)) return;
+	seen.add(diagnostic.key);
 	const ui = (ctx as { ui?: { notify?: (message: string, level?: string) => void } })?.ui;
 	try {
 		if (typeof ui?.notify === "function") ui.notify(diagnostic.message, "warn");
@@ -170,6 +249,69 @@ async function withReviewStorage<T>(fn: (storage: Awaited<ReturnType<typeof init
 	} finally {
 		storage.db.close();
 	}
+}
+
+async function withExistingReviewStorage<T>(fn: (storage: { db: any; root: string; userId: string }) => Promise<T> | T): Promise<T> {
+	const paths = getAgentExperiencePaths();
+	const dbPath = resolvePrivatePath(paths.root, "ledger.sqlite");
+	const sqlite = await loadSqlite();
+	const db = new sqlite.DatabaseSync(dbPath, { open: true, readOnly: true });
+	try {
+		const version = Number(db.prepare("PRAGMA user_version").get()?.user_version ?? 0);
+		if (version !== STORAGE_SCHEMA_VERSION) throw new Error(`Agent Experience storage schema mismatch: expected ${STORAGE_SCHEMA_VERSION}, got ${version}`);
+		return await fn({ db, root: paths.root, userId: getConfiguredUserId() });
+	} finally {
+		db.close();
+	}
+}
+
+async function handleReview(args: string[], ctx: ExtensionCommandContext) {
+	const [action = "list", id] = args;
+	const paths = getAgentExperiencePaths();
+	if (!(await fileExists(resolvePrivatePath(paths.root, "ledger.sqlite")))) {
+		return notify(ctx, [
+			"No review ledger yet.",
+			"Capture may be accumulating redacted observations, but no candidates exist yet.",
+			"0.1.5 does not run background consolidation, install a timer, or call a live consolidation model automatically.",
+			"Normal commands: /experience status, /experience on, /experience off.",
+		].join("\n"), "info");
+	}
+	if (action === "list") {
+		const result = await withExistingReviewStorage(async (storage) => listPendingReviewItems(storage.db, { userId: storage.userId }));
+		return notify(ctx, result.items.length
+			? formatResult(result)
+			: "No review items yet. Captures can exist without candidates because 0.1.5 has no automatic consolidation/model/timer.", "info");
+	}
+	if (action === "show") {
+		if (!id) return notify(ctx, "Usage: /experience review show <id>", "warn");
+		const result = await withExistingReviewStorage(async (storage) => showPendingReviewItem(storage.db, { userId: storage.userId, id }));
+		return notify(ctx, formatResult(result), "info");
+	}
+	if (action === "diff") {
+		const result = await withExistingReviewStorage(async (storage) => diffPendingReviewItems(storage.db, { userId: storage.userId }));
+		return notify(ctx, formatResult(result), "info");
+	}
+	if (action === "accept" || action === "reject") {
+		const checksum = parseFlag(args, "--checksum");
+		if (!id || !checksum) return notify(ctx, `Usage: /experience review ${action} <id> --checksum <checksum>`, "warn");
+		const now = new Date().toISOString();
+		const result = await withReviewStorage(async (storage) => {
+			const shown = showPendingReviewItem(storage.db, { userId: storage.userId, id });
+			if (shown.item.type === "candidate") {
+				return action === "accept"
+					? acceptCandidateHabit(storage.db, { userId: storage.userId, habitId: id, checksum, law: await readConfiguredLawForRoot(storage.root), now })
+					: rejectCandidateHabit(storage.db, { userId: storage.userId, habitId: id, checksum, now });
+			}
+			return action === "accept"
+				? acceptPendingReview(storage.db, { userId: storage.userId, id, checksum, now })
+				: rejectPendingReview(storage.db, { userId: storage.userId, id, checksum, now });
+		});
+		return notify(ctx, formatResult(result), "info");
+	}
+	if (action === "report") {
+		return handleHabits(["report"], ctx);
+	}
+	return notify(ctx, "Usage: /experience review [list|show|diff|accept|reject|report] ...", "warn");
 }
 
 async function handlePending(args: string[], ctx: ExtensionCommandContext) {
@@ -288,28 +430,25 @@ function usage(topic = "") {
 	if (normalized === "setup") {
 		return [
 			"Agent Experience setup:",
-			"1. /experience status        # inspect flags and storage path",
-			"2. /experience enable        # master switch only",
-			"3. /experience capture on    # collect redacted conversation pairs",
-			"4. Work normally for a few turns/sessions.",
-			"5. /experience consolidation on # allow/manual-track consolidation work",
-			"6. Run experience-consolidate now --fixture-output <file> to consolidate observations into review candidates.",
-			"7. /experience pending list  # review candidates after consolidation exists",
-			"8. /experience selector on   # pre-injection from approved active habits only",
-			"No automatic timer/model adapter is installed by default."
+			"/experience setup   # one-time safe local setup",
+			"/experience on      # resume local redacted capture",
+			"/experience status  # see what is happening and the next step",
+			"/experience review  # inspect review candidates if any exist",
+			"/experience off     # stop capture and all runtime gates",
+			"0.1.5 does not install timers or run live consolidation/model learning automatically.",
 		].join("\n");
 	}
 	if (normalized === "review") {
 		return [
-			"Agent Experience review commands:",
-			"/experience pending list",
-			"/experience pending show <id>",
-			"/experience pending diff",
-			"/experience pending accept <id> --checksum <checksum>",
-			"/experience pending reject <id> --checksum <checksum>",
-			"/experience habit explain <id>",
-			"/experience habit accept|reject|disable|enable <id> --checksum <checksum>",
-			"/experience habits report",
+			"Agent Experience review:",
+			"/experience review",
+			"/experience review list",
+			"/experience review show <id>",
+			"/experience review diff",
+			"/experience review accept <id> --checksum <checksum>",
+			"/experience review reject <id> --checksum <checksum>",
+			"/experience review report",
+			"Review keeps checksum/stale-state protection. It never auto-approves habits.",
 		].join("\n");
 	}
 	if (normalized === "selector") {
@@ -333,42 +472,55 @@ function usage(topic = "") {
 			"Capture writes completed turns at agent_end; selector/ledger are separate.",
 		].join("\n");
 	}
+	if (normalized === "advanced") {
+		return [
+			"Agent Experience advanced/backcompat commands:",
+			"/experience capture on|off",
+			"/experience consolidation on|off",
+			"/experience selector on|off|calibrate",
+			"/experience pending list|show|diff|accept|reject",
+			"/experience habit explain <id>",
+			"/experience habit accept|reject|disable|enable <id> --checksum <checksum>",
+			"/experience habits report",
+			"experience-consolidate is a maintainer/test CLI and still requires explicit fixture/model output.",
+			"Advanced selector smart mode may call a configured model/provider; normal setup/on keeps it off.",
+		].join("\n");
+	}
 	return [
-		"Agent Experience help:",
-		"/experience status",
-		"/experience help setup     # first-run flow",
-		"/experience help review    # approve/reject habits",
-		"/experience help selector  # injection controls",
-		"/experience help troubleshoot",
-		"/experience enable|disable",
-		"/experience capture on|off",
-		"/experience consolidation on|off",
-		"/experience selector on|off|calibrate",
-		"/experience pending list|show|diff|accept|reject",
-		"/experience habit explain <id>",
-		"/experience habit accept|reject|disable|enable <id> --checksum <checksum>",
-		"/experience habits report",
-		"Selector defaults disabled. When enabled, default mode is instant (local lexical/no-network). Smart mode is opt-in and may call the configured model/provider.",
-		"embeddings, timers, live runtime install, report injection, and selector-driven habit activation remain out of scope unless explicitly enabled/approved.",
-		"habits-report.md is report-only generated data, never policy or selector/injection input.",
-		"Usage: /experience help setup|review|selector|troubleshoot",
+		"Agent Experience:",
+		"/experience setup   # one-time safe local setup",
+		"/experience on      # resume local redacted capture",
+		"/experience off     # stop capture and all runtime gates",
+		"/experience status  # plain dashboard",
+		"/experience review  # inspect/accept/reject candidates if any exist",
+		"/experience help setup|review|advanced|troubleshoot",
+		"Normal UX does not install timers, call live consolidation models, or auto-approve habits.",
 	].join("\n");
 }
 
 export default function agentExperienceExtension(pi: ExtensionAPI) {
 	pi.registerCommand("experience", {
-		description: "Agent Experience controls: status, enable/disable, capture, consolidation, selector/pre-injection, pending review, habits report",
+		description: "Agent Experience controls: setup, on/off, status, review, and advanced capture/selector/review commands",
 		handler: async (args, ctx) => {
-			const [command = "status", subcommand] = String(args || "").trim().split(/\s+/).filter(Boolean);
+			const tokens = String(args || "").trim().split(/\s+/).filter(Boolean);
+			const [command = "status", subcommand] = tokens;
 			switch (command.toLowerCase()) {
 				case "status":
 					await handleStatus(ctx);
 					return;
-				case "enable":
-					await handleEnable(ctx);
+				case "setup":
+					await handleSetup(ctx);
 					return;
+				case "on":
+				case "enable":
+					await handleOn(ctx);
+					return;
+				case "off":
 				case "disable":
-					await handleDisable(ctx);
+					await handleOff(ctx);
+					return;
+				case "review":
+					await handleReview(tokens.slice(1), ctx);
 					return;
 				case "capture":
 					await handleCapture(subcommand, ctx);
@@ -384,13 +536,13 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 					await handleSelector(subcommand, ctx);
 					return;
 				case "pending":
-					await handlePending([subcommand, ...String(args || "").trim().split(/\s+/).filter(Boolean).slice(2)].filter(Boolean), ctx);
+					await handlePending([subcommand, ...tokens.slice(2)].filter(Boolean), ctx);
 					return;
 				case "habit":
-					await handleHabit([subcommand, ...String(args || "").trim().split(/\s+/).filter(Boolean).slice(2)].filter(Boolean), ctx);
+					await handleHabit([subcommand, ...tokens.slice(2)].filter(Boolean), ctx);
 					return;
 				case "habits":
-					await handleHabits([subcommand, ...String(args || "").trim().split(/\s+/).filter(Boolean).slice(2)].filter(Boolean), ctx);
+					await handleHabits([subcommand, ...tokens.slice(2)].filter(Boolean), ctx);
 					return;
 				case "help":
 				case "--help":
@@ -419,7 +571,7 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 			const basePrompt = String((event as { systemPrompt?: unknown }).systemPrompt ?? "");
 			return { systemPrompt: `${basePrompt}\n\n${result.message}` };
 		} catch (error: any) {
-			notifySelectorDiagnostic(ctx, selectorDiagnostic(error));
+			notifyDedupedDiagnostic(ctx, selectorDiagnosticsShown, diagnosticFor("selector-runtime", error));
 			return;
 		} finally {
 			storage?.db.close();
@@ -451,8 +603,9 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 				{ key: decision.key, text: decision.text, origin: decision.origin, createdAt: new Date().toISOString() },
 				(pair, reason) => appendCapturedPair(paths.root, pair, reason),
 			);
-		} catch {
+		} catch (error) {
 			captureBuffer.dropKey(decision.key);
+			notifyDedupedDiagnostic(ctx, captureDiagnosticsShown, diagnosticFor("capture-persist", error));
 		}
 	});
 
@@ -472,8 +625,9 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 		try {
 			captureBuffer.completeAgentEnd(key, assistantText);
 			await captureBuffer.flushKey(key, "agent_end", (pair, reason) => appendCapturedPair(paths.root, pair, reason));
-		} catch {
+		} catch (error) {
 			captureBuffer.dropKey(key);
+			notifyDedupedDiagnostic(ctx, captureDiagnosticsShown, diagnosticFor("capture-persist", error));
 		}
 	});
 
@@ -486,8 +640,9 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 		}
 		try {
 			await captureBuffer.flushKey(key, "session_shutdown", (pair, reason) => appendCapturedPair(paths.root, pair, reason));
-		} catch {
+		} catch (error) {
 			captureBuffer.dropKey(key);
+			notifyDedupedDiagnostic(ctx, captureDiagnosticsShown, diagnosticFor("capture-persist", error));
 		}
 	});
 }
