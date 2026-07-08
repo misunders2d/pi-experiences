@@ -1,0 +1,113 @@
+import { chmod, mkdir, open, readFile, stat } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
+import { homedir } from "node:os";
+import { constants } from "node:fs";
+import {
+	DEFAULT_AGENT_EXPERIENCE_CONFIG,
+	applyAgentExperienceEnvOverrides,
+	formatAgentExperienceConfig,
+	parseAgentExperienceConfig,
+	type AgentExperienceConfig,
+} from "./config.ts";
+
+export interface AgentExperiencePaths {
+	root: string;
+	configPath: string;
+}
+
+function expandHome(path: string): string {
+	if (path === "~") return homedir();
+	if (path.startsWith("~/")) return join(homedir(), path.slice(2));
+	return path;
+}
+
+export function getAgentExperiencePaths(env: NodeJS.ProcessEnv = process.env): AgentExperiencePaths {
+	const configuredRoot = env.AX_STATE_ROOT || env.AGENT_EXPERIENCE_ROOT || "~/.agents/experience";
+	const root = resolve(expandHome(configuredRoot));
+	return { root, configPath: join(root, "agent-experience.toml") };
+}
+
+async function exists(path: string): Promise<boolean> {
+	try {
+		await stat(path);
+		return true;
+	} catch (error: any) {
+		if (error?.code === "ENOENT") return false;
+		throw error;
+	}
+}
+
+export async function readAgentExperienceConfig(paths = getAgentExperiencePaths()): Promise<{ config: AgentExperienceConfig; exists: boolean; path: string }> {
+	if (!(await exists(paths.configPath))) {
+		return { config: applyAgentExperienceEnvOverrides({ ...DEFAULT_AGENT_EXPERIENCE_CONFIG }, process.env), exists: false, path: paths.configPath };
+	}
+	const text = await readFile(paths.configPath, "utf8");
+	return { config: parseAgentExperienceConfig(text, process.env), exists: true, path: paths.configPath };
+}
+
+async function ensurePrivateRoot(root: string): Promise<void> {
+	await mkdir(root, { recursive: true, mode: 0o700 });
+	await chmod(root, 0o700);
+}
+
+export async function writeAgentExperienceConfig(config: AgentExperienceConfig, paths = getAgentExperiencePaths()): Promise<void> {
+	await ensurePrivateRoot(paths.root);
+	await mkdir(dirname(paths.configPath), { recursive: true, mode: 0o700 });
+	const handle = await open(paths.configPath, constants.O_CREAT | constants.O_TRUNC | constants.O_WRONLY, 0o600);
+	try {
+		await handle.writeFile(formatAgentExperienceConfig(config), "utf8");
+	} finally {
+		await handle.close();
+	}
+	await chmod(paths.configPath, 0o600);
+}
+
+export async function setAgentExperienceEnabled(enabled: boolean, paths = getAgentExperiencePaths()): Promise<{ config: AgentExperienceConfig; path: string }> {
+	const current = await readAgentExperienceConfig(paths);
+	const config = {
+		...DEFAULT_AGENT_EXPERIENCE_CONFIG,
+		...current.config,
+		enabled,
+		// Disabling the master switch always drops feature flags. Enabling the master switch
+		// does not implicitly enable capture or any future runtime behavior.
+		capture_enabled: enabled ? current.config.capture_enabled : false,
+		selector_enabled: false,
+		embedding_enabled: false,
+		consolidation_enabled: false,
+		timer_enabled: false,
+		break_in_enabled: false,
+	};
+	await writeAgentExperienceConfig(config, paths);
+	return { config, path: paths.configPath };
+}
+
+export async function setAgentExperienceCaptureEnabled(captureEnabled: boolean, paths = getAgentExperiencePaths()): Promise<{ config: AgentExperienceConfig; path: string }> {
+	const current = await readAgentExperienceConfig(paths);
+	const config = {
+		...DEFAULT_AGENT_EXPERIENCE_CONFIG,
+		...current.config,
+		capture_enabled: captureEnabled,
+		selector_enabled: false,
+		embedding_enabled: false,
+		consolidation_enabled: false,
+		timer_enabled: false,
+		break_in_enabled: false,
+	};
+	await writeAgentExperienceConfig(config, paths);
+	return { config, path: paths.configPath };
+}
+
+export async function setAgentExperienceSelectorEnabled(selectorEnabled: boolean, paths = getAgentExperiencePaths()): Promise<{ config: AgentExperienceConfig; path: string }> {
+	const current = await readAgentExperienceConfig(paths);
+	const config = {
+		...DEFAULT_AGENT_EXPERIENCE_CONFIG,
+		...current.config,
+		selector_enabled: selectorEnabled,
+		embedding_enabled: false,
+		consolidation_enabled: false,
+		timer_enabled: false,
+		break_in_enabled: false,
+	};
+	await writeAgentExperienceConfig(config, paths);
+	return { config, path: paths.configPath };
+}

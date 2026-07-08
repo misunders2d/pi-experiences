@@ -1,0 +1,12 @@
+[Unit]
+Description=Agent Experience daily consolidation timer (package template; manual install only)
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=20m
+# Optional laptop safety: uncomment if desired after manual review.
+# ConditionACPower=true
+
+[Install]
+WantedBy=timers.target

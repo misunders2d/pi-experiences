@@ -1,0 +1,18 @@
+[Unit]
+Description=Agent Experience manual consolidation (package template)
+Documentation=https://github.com/misunders2d/pi-experiences#readme
+ConditionPathExists=%h/.agents/experience/agent-experience.toml
+
+[Service]
+Type=oneshot
+# Template only. Replace ExecStart path with installed package bin path during explicit manual install.
+# Requires a Node version with TypeScript type stripping (see package.json engines).
+ExecStart=%h/.local/bin/experience-consolidate now
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.agents/experience
