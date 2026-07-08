@@ -8,6 +8,7 @@ import {
 	setAgentExperienceEnabled,
 	setAgentExperienceSelectorEnabled,
 	setAgentExperienceSimpleOn,
+	setAgentExperienceTimerEnabled,
 } from "./src/paths.ts";
 import { appendObservation } from "./src/storage/observations.ts";
 import { initExperienceStorage, loadSqlite, openExistingExperienceStorage } from "./src/storage/sqlite.ts";
@@ -45,7 +46,15 @@ export function __setAgentExperienceSelectorAdapterForTest(adapter: SelectorMode
 }
 
 function notify(ctx: ExtensionCommandContext, message: string, level: "info" | "warn" | "error" = "info") {
-	ctx.ui.notify(message, level);
+	try {
+		const ui = (ctx as { ui?: { notify?: (message: string, level?: string) => void } })?.ui;
+		if (typeof ui?.notify === "function") return ui.notify(message, level);
+		const sink = level === "error" ? console.error : level === "warn" ? console.warn : console.info;
+		sink(message);
+	} catch {
+		const sink = level === "error" ? console.error : level === "warn" ? console.warn : console.info;
+		sink(message);
+	}
 }
 
 function getConfiguredUserId(): string {
@@ -122,40 +131,160 @@ async function handleStatus(ctx: ExtensionCommandContext) {
 		? "Run /experience setup to turn on local redacted capture."
 		: reviewCount > 0
 			? "Run /experience review to inspect candidates."
-			: "No review candidates yet. 0.1.5 captures locally but does not run background model consolidation or timers.";
+			: "No review candidates yet. This release captures locally but does not run background model consolidation or timers.";
 	notify(ctx, [
 		`Experience: ${config.enabled ? "ON" : "OFF"}`,
 		`Config: ${path}${exists ? "" : " (not created; using defaults)"}`,
 		`Capture: ${captureActive ? "ON" : "OFF"}${observations === undefined ? "" : ` (${plural(observations, "observation")})`}`,
-		`Learning/candidates: ${config.consolidation_enabled ? "advanced manual gate ON" : "not automatic"}`,
+		`Candidate generation: not automatic${config.consolidation_enabled ? " (manual consolidation flag ON; no timer/model job running)" : ""}`,
 		`Review: ${summary.error ? `ledger unreadable (${summary.error})` : summary.ledger ? `${plural(reviewCount, "item")} pending/candidate, ${plural(summary.active, "active habit")}` : "no ledger yet"}`,
-		`Guidance/pre-injection: ${selectorActive ? `ON (${config.selector_mode})` : "OFF"}`,
+		`Guidance/pre-injection: ${selectorActive ? `ON (${config.selector_mode})` : config.selector_enabled ? "configured ON, inactive because Experience is OFF" : "OFF"}`,
 		"Timer/background job: OFF (package does not install or manage one)",
 		"Model/network learning: OFF in normal UX",
 		`Next: ${nextStep}`,
 	].join("\n"), config.enabled ? "info" : "warn");
 }
 
-async function handleSetup(ctx: ExtensionCommandContext) {
-	captureBuffer.clearAll();
-	const { config, path } = await setAgentExperienceSimpleOn();
-	notify(
-		ctx,
-		[
-			"Agent Experience setup complete.",
+const SETUP_OPTIONS = [
+	"Turn on safe local capture (no timers/models/pre-injection)",
+	"Turn Agent Experience off (capture + all runtime gates)",
+	"Show current status (no changes)",
+	"Review candidates (no changes)",
+	"Configure learning/consolidation",
+	"Configure guidance/pre-injection",
+	"Background timer settings",
+	"Show advanced help (no changes)",
+	"Cancel (no changes)",
+] as const;
+
+function setupUnavailableMessage(): string {
+	return [
+		"Agent Experience setup menu is interactive and made no config changes.",
+		"Available setup actions:",
+		...SETUP_OPTIONS.map((option) => `- ${option}`),
+		"In non-interactive mode use direct commands only when you intentionally want a change:",
+		"/experience on, /experience off, /experience status, /experience review",
+	].join("\n");
+}
+
+async function chooseSetup(ctx: ExtensionCommandContext, title: string, options: readonly string[]): Promise<string | undefined> {
+	const ui = (ctx as { hasUI?: boolean; ui?: { select?: (title: string, options: string[]) => Promise<string | undefined> | string | undefined } })?.ui;
+	if ((ctx as { hasUI?: boolean }).hasUI === false || typeof ui?.select !== "function") {
+		notify(ctx, setupUnavailableMessage(), "info");
+		return undefined;
+	}
+	try {
+		const choice = await ui.select(title, [...options]);
+		if (!choice) return undefined;
+		if (!options.includes(choice)) {
+			notify(ctx, `Agent Experience setup ignored unknown menu choice: ${redactText(choice).slice(0, 200)}\nNo config changed.`, "warn");
+			return undefined;
+		}
+		return choice;
+	} catch (error) {
+		const raw = error instanceof Error ? error.message : String(error);
+		notify(ctx, `Agent Experience setup menu failed: ${redactText(raw).slice(0, 300)}\nNo config changed.`, "warn");
+		return undefined;
+	}
+}
+
+async function handleSetupConsolidation(ctx: ExtensionCommandContext) {
+	const choice = await chooseSetup(ctx, "Agent Experience learning/consolidation", [
+		"Explain learning/consolidation (no changes)",
+		"Enable manual consolidation flag (advanced; no timer/model starts)",
+		"Disable manual consolidation flag",
+		"Back/cancel (no changes)",
+	]);
+	if (!choice || choice === "Back/cancel (no changes)") return notify(ctx, "Consolidation setup cancelled. No config changed.", "info");
+	if (choice === "Explain learning/consolidation (no changes)") {
+		return notify(ctx, [
+			"Learning/consolidation means turning captured observations into review candidates.",
+			"This release does not run that automatically: no timer and no live consolidation model adapter are installed.",
+			"The manual consolidation flag only allows advanced maintainer/test CLI work; it does not create candidates by itself.",
+		].join("\n"), "info");
+	}
+	if (choice === "Enable manual consolidation flag (advanced; no timer/model starts)") return handleConsolidation("on", ctx);
+	if (choice === "Disable manual consolidation flag") return handleConsolidation("off", ctx);
+	return notify(ctx, "Consolidation setup cancelled. No config changed.", "info");
+}
+
+async function handleSetupSelector(ctx: ExtensionCommandContext) {
+	const choice = await chooseSetup(ctx, "Agent Experience guidance/pre-injection", [
+		"Explain guidance/pre-injection (no changes)",
+		"Enable guidance/pre-injection (advanced; uses configured selector mode)",
+		"Disable guidance/pre-injection",
+		"Back/cancel (no changes)",
+	]);
+	if (!choice || choice === "Back/cancel (no changes)") return notify(ctx, "Guidance setup cancelled. No config changed.", "info");
+	if (choice === "Explain guidance/pre-injection (no changes)") {
+		return notify(ctx, [
+			"Guidance/pre-injection can add approved active habits before a reply.",
+			"It never uses pending/candidate habits and never approves habits by itself.",
+			"Default instant mode is local/no-network. Smart mode is advanced and may call a configured model/provider.",
+		].join("\n"), "info");
+	}
+	if (choice === "Enable guidance/pre-injection (advanced; uses configured selector mode)") return handleSelector("on", ctx);
+	if (choice === "Disable guidance/pre-injection") return handleSelector("off", ctx);
+	return notify(ctx, "Guidance setup cancelled. No config changed.", "info");
+}
+
+async function handleSetupTimer(ctx: ExtensionCommandContext) {
+	const choice = await chooseSetup(ctx, "Agent Experience background timer", [
+		"Explain timer/background learning (no changes)",
+		"Keep timer/background learning disabled",
+		"Show advanced timer notes (no changes)",
+		"Back/cancel (no changes)",
+	]);
+	if (!choice || choice === "Back/cancel (no changes)") return notify(ctx, "Timer setup cancelled. No config changed.", "info");
+	if (choice === "Keep timer/background learning disabled") {
+		const { config, path } = await setAgentExperienceTimerEnabled(false);
+		return notify(ctx, [
+			"Background timer remains disabled. No systemd unit was installed or started.",
 			`config: ${path}`,
-			"Experience is ON for local redacted capture.",
-			"Learning/candidates are not automatic in 0.1.5: no timer or live consolidation model is installed.",
-			"Guidance/pre-injection is OFF until advanced controls enable it and reviewed active habits exist.",
-			"No habits are approved automatically. Records under ~/.agents/experience are preserved.",
-			`enabled=${config.enabled}`,
-			`capture=${config.capture_enabled}`,
-			`selector=${config.selector_enabled}`,
 			`consolidation=${config.consolidation_enabled}`,
 			`timer=${config.timer_enabled}`,
-		].join("\n"),
-		"info",
-	);
+			`break_in=${config.break_in_enabled}`,
+		].join("\n"), "info");
+	}
+	return notify(ctx, [
+		"Timer/background learning would mean a scheduled job periodically tries to create review candidates from captures.",
+		"This release does not provide a package-owned timer or live consolidation adapter.",
+		"The bundled systemd files are disabled maintainer templates only and are not installed by /experience setup/on.",
+		"So there is no timer to manage for normal users right now.",
+	].join("\n"), "info");
+}
+
+async function handleSetup(ctx: ExtensionCommandContext) {
+	const choice = await chooseSetup(ctx, "Agent Experience setup — choose an action; no config changes until selection", SETUP_OPTIONS);
+	if (!choice || choice === "Cancel (no changes)") return notify(ctx, "Agent Experience setup cancelled. No config changed.", "info");
+	if (choice === "Show current status (no changes)") return handleStatus(ctx);
+	if (choice === "Review candidates (no changes)") return handleReview(["list"], ctx);
+	if (choice === "Show advanced help (no changes)") return notify(ctx, usage("advanced"), "info");
+	if (choice === "Configure learning/consolidation") return handleSetupConsolidation(ctx);
+	if (choice === "Configure guidance/pre-injection") return handleSetupSelector(ctx);
+	if (choice === "Background timer settings") return handleSetupTimer(ctx);
+	if (choice === "Turn Agent Experience off (capture + all runtime gates)") return handleOff(ctx);
+	if (choice === "Turn on safe local capture (no timers/models/pre-injection)") {
+		captureBuffer.clearAll();
+		const { config, path } = await setAgentExperienceSimpleOn();
+		return notify(
+			ctx,
+			[
+				"Agent Experience safe local capture is ON.",
+				`config: ${path}`,
+				"Learning/candidates are not automatic: no timer or live consolidation model is installed.",
+				"Guidance/pre-injection is OFF until advanced controls enable it and reviewed active habits exist.",
+				"No habits are approved automatically. Records under ~/.agents/experience are preserved.",
+				`enabled=${config.enabled}`,
+				`capture=${config.capture_enabled}`,
+				`selector=${config.selector_enabled}`,
+				`consolidation=${config.consolidation_enabled}`,
+				`timer=${config.timer_enabled}`,
+			].join("\n"),
+			"info",
+		);
+	}
+	return notify(ctx, "Agent Experience setup cancelled. No config changed.", "info");
 }
 
 async function handleOn(ctx: ExtensionCommandContext) {
@@ -200,6 +329,11 @@ function parseFlag(args: string[], name: string): string | undefined {
 
 function formatResult(value: unknown): string {
 	return JSON.stringify(value, null, 2).slice(0, 6000);
+}
+
+function formatReviewReadError(error: unknown): string {
+	const raw = error instanceof Error ? error.message : String(error);
+	return `Review ledger unreadable (${redactText(raw).slice(0, 300)}). No review changes were made.`;
 }
 
 function diagnosticFor(kind: "selector-runtime" | "capture-persist", error: unknown): { key: string; message: string } {
@@ -272,24 +406,36 @@ async function handleReview(args: string[], ctx: ExtensionCommandContext) {
 		return notify(ctx, [
 			"No review ledger yet.",
 			"Capture may be accumulating redacted observations, but no candidates exist yet.",
-			"0.1.5 does not run background consolidation, install a timer, or call a live consolidation model automatically.",
+			"This release does not run background consolidation, install a timer, or call a live consolidation model automatically.",
 			"Normal commands: /experience status, /experience on, /experience off.",
 		].join("\n"), "info");
 	}
 	if (action === "list") {
-		const result = await withExistingReviewStorage(async (storage) => listPendingReviewItems(storage.db, { userId: storage.userId }));
-		return notify(ctx, result.items.length
-			? formatResult(result)
-			: "No review items yet. Captures can exist without candidates because 0.1.5 has no automatic consolidation/model/timer.", "info");
+		try {
+			const result = await withExistingReviewStorage(async (storage) => listPendingReviewItems(storage.db, { userId: storage.userId }));
+			return notify(ctx, result.items.length
+				? formatResult(result)
+				: "No review items yet. Captures can exist without candidates because this release has no automatic consolidation/model/timer.", "info");
+		} catch (error) {
+			return notify(ctx, formatReviewReadError(error), "warn");
+		}
 	}
 	if (action === "show") {
 		if (!id) return notify(ctx, "Usage: /experience review show <id>", "warn");
-		const result = await withExistingReviewStorage(async (storage) => showPendingReviewItem(storage.db, { userId: storage.userId, id }));
-		return notify(ctx, formatResult(result), "info");
+		try {
+			const result = await withExistingReviewStorage(async (storage) => showPendingReviewItem(storage.db, { userId: storage.userId, id }));
+			return notify(ctx, formatResult(result), "info");
+		} catch (error) {
+			return notify(ctx, formatReviewReadError(error), "warn");
+		}
 	}
 	if (action === "diff") {
-		const result = await withExistingReviewStorage(async (storage) => diffPendingReviewItems(storage.db, { userId: storage.userId }));
-		return notify(ctx, formatResult(result), "info");
+		try {
+			const result = await withExistingReviewStorage(async (storage) => diffPendingReviewItems(storage.db, { userId: storage.userId }));
+			return notify(ctx, formatResult(result), "info");
+		} catch (error) {
+			return notify(ctx, formatReviewReadError(error), "warn");
+		}
 	}
 	if (action === "accept" || action === "reject") {
 		const checksum = parseFlag(args, "--checksum");
@@ -430,12 +576,12 @@ function usage(topic = "") {
 	if (normalized === "setup") {
 		return [
 			"Agent Experience setup:",
-			"/experience setup   # one-time safe local setup",
-			"/experience on      # resume local redacted capture",
+			"/experience setup   # main settings menu: on/off, review, consolidation, guidance, timer notes; no changes until you choose",
+			"/experience on      # shortcut: resume local redacted capture",
 			"/experience status  # see what is happening and the next step",
 			"/experience review  # inspect review candidates if any exist",
 			"/experience off     # stop capture and all runtime gates",
-			"0.1.5 does not install timers or run live consolidation/model learning automatically.",
+			"This release does not install timers or run live consolidation/model learning automatically.",
 		].join("\n");
 	}
 	if (normalized === "review") {
@@ -488,8 +634,8 @@ function usage(topic = "") {
 	}
 	return [
 		"Agent Experience:",
-		"/experience setup   # one-time safe local setup",
-		"/experience on      # resume local redacted capture",
+		"/experience setup   # main settings menu; no changes until you choose",
+		"/experience on      # shortcut: resume local redacted capture",
 		"/experience off     # stop capture and all runtime gates",
 		"/experience status  # plain dashboard",
 		"/experience review  # inspect/accept/reject candidates if any exist",

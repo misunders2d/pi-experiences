@@ -18,29 +18,36 @@ experience = reviewed behavioral habits inferred from repeated interaction
 ## Plain-language pieces
 
 - **Experience** is the whole behavior-learning layer.
-- **Setup** is the one-time safe entrypoint. It turns on local redacted capture and leaves timers, live model learning, and pre-injection off.
+- **Setup** is the main control panel. It opens a menu for on/off, status, review, consolidation, guidance/pre-injection, timer notes, and advanced help. It must not change config until you choose an action. The safe capture choice turns on local redacted capture and leaves timers, live model learning, and pre-injection off.
 - **Capture** saves redacted text fields and metadata from completed turns to `observations.jsonl`. It creates raw material only, not habits.
-- **Learning / consolidation** reads captures and proposes habit candidates. In 0.1.5 this is not automatic: no timer or live consolidation model adapter is installed.
+- **Learning / consolidation** reads captures and proposes habit candidates. In 0.1.6 this is not automatic: no timer or live consolidation model adapter is installed.
 - **Pending review** means proposed habits await approval/rejection and are not injectable yet.
-- **Active habits** are reviewed habits. Normal setup does not inject them unless advanced guidance/pre-injection is explicitly enabled.
+- **Active habits** are reviewed habits. Normal setup/on does not inject them unless advanced guidance/pre-injection is explicitly enabled.
 - **Timer** is only a future/advanced way to run learning in the background. It is not installed, started, or managed by the package.
 
 ## Normal commands
 
+Canonical UX is one control panel:
+
 ```text
-/experience setup   # one-time safe local setup
+/experience setup   # main setup/settings menu; no change until you choose
+```
+
+Optional shortcuts:
+
+```text
 /experience on      # resume local redacted capture
 /experience off     # stop capture and all runtime gates
 /experience status  # dashboard: capture count, review count, next step
 /experience review  # inspect/accept/reject candidates if any exist
 ```
 
-If observations grow but `/experience review` shows no candidates, capture is working. In 0.1.5, candidate generation is not automatic.
+If observations grow but `/experience review` shows no candidates, capture is working. In 0.1.6, candidate generation is not automatic.
 
 ## Safety defaults
 
 - Package install alone enables nothing.
-- `/experience setup` and `/experience on` enable local redacted capture only.
+- `/experience setup` opens a menu and changes nothing until you choose. `/experience on` enables local redacted capture only.
 - Selector/pre-injection starts off.
 - Default selector mode is `instant`, local lexical/no-network, but still advanced opt-in.
 - Smart mode is advanced opt-in and may call the configured model/provider.
@@ -114,7 +121,7 @@ wc -l ~/.agents/experience/observations.jsonl
 
 If capture is enabled but no observation appears after a completed turn, reload/restart Pi and check `/experience status`.
 
-If `/experience review` has no candidates while observations grow, the system is only capturing. Candidate generation is not automatic in 0.1.5.
+If `/experience review` has no candidates while observations grow, the system is only capturing. Candidate generation is not automatic in 0.1.6.
 
 If selector/pre-injection seems inactive:
 - confirm advanced selector controls were explicitly enabled;

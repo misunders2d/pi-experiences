@@ -126,6 +126,19 @@ export async function setAgentExperienceConsolidationEnabled(consolidationEnable
 	return { config, path: paths.configPath };
 }
 
+export async function setAgentExperienceTimerEnabled(timerEnabled: boolean, paths = getAgentExperiencePaths()): Promise<{ config: AgentExperienceConfig; path: string }> {
+	const current = await readAgentExperienceConfig(paths);
+	const config = {
+		...DEFAULT_AGENT_EXPERIENCE_CONFIG,
+		...current.config,
+		// Enabling package-owned timers is not supported yet; fail closed to disabled.
+		timer_enabled: timerEnabled ? false : false,
+		break_in_enabled: false,
+	};
+	await writeAgentExperienceConfig(config, paths);
+	return { config, path: paths.configPath };
+}
+
 export async function setAgentExperienceSelectorEnabled(selectorEnabled: boolean, paths = getAgentExperiencePaths()): Promise<{ config: AgentExperienceConfig; path: string }> {
 	const current = await readAgentExperienceConfig(paths);
 	const config = {

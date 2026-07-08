@@ -39,9 +39,14 @@ assert.equal(paths.root, process.env.AX_STATE_ROOT);
 assert.equal(existsSync(paths.root), false, 'extension load must not create state root');
 
 const notes = [];
+let setupChoices = [];
 const ctx = {
   cwd: process.cwd(),
   ui: {
+    async select(title, options) {
+      notes.push({ message: `${title}: ${options.join(' | ')}`, level: 'select', options });
+      return setupChoices.shift();
+    },
     notify(message, level) {
       notes.push({ message, level });
     },
@@ -62,9 +67,85 @@ assert.equal(readResult.config.embedding_enabled, false);
 assert.equal(readResult.config.consolidation_enabled, false);
 assert.equal(readResult.config.timer_enabled, false);
 
+const notifyOnlyCtx = {
+  cwd: process.cwd(),
+  ui: {
+    notify(message, level) {
+      notes.push({ message, level });
+    },
+  },
+};
+await commands.get('experience').handler('setup', notifyOnlyCtx);
+assert.equal(existsSync(paths.root), false, 'setup with no select UI must not create state root');
+assert.ok(notes.some((note) => /setup menu is interactive/.test(note.message)), 'no-select setup must show fallback setup menu text');
+assert.ok(notes.some((note) => /No config changed|made no config changes/.test(note.message)), 'no-select setup must say no config changed');
+const headlessCtx = {
+  cwd: process.cwd(),
+  hasUI: false,
+  ui: {
+    async select() {
+      throw new Error('select should not be called when hasUI=false');
+    },
+    notify(message, level) {
+      notes.push({ message, level });
+    },
+  },
+};
+await commands.get('experience').handler('setup', headlessCtx);
+assert.equal(existsSync(paths.root), false, 'setup with hasUI=false must not create state root');
+const throwingCtx = {
+  cwd: process.cwd(),
+  ui: {
+    async select() {
+      throw new Error('Bearer abcdefghijk should be redacted');
+    },
+    notify(message, level) {
+      notes.push({ message, level });
+    },
+  },
+};
+await commands.get('experience').handler('setup', throwingCtx);
+assert.equal(existsSync(paths.root), false, 'setup with throwing select must not create state root');
+const throwNote = notes.find((note) => /setup menu failed/.test(note.message));
+assert.ok(throwNote, 'throwing setup select must report menu failure');
+assert.doesNotMatch(throwNote.message, /abcdefghijk/);
+
+setupChoices = ['Unknown action'];
 await commands.get('experience').handler('setup', ctx);
-assert.equal(existsSync(paths.root), true, 'setup may create state root');
-assert.equal(existsSync(paths.configPath), true, 'setup may write intended config');
+assert.equal(existsSync(paths.root), false, 'unknown setup choice must not create state root');
+assert.match(notes.at(-1).message, /No config changed/);
+
+setupChoices = [undefined];
+await commands.get('experience').handler('setup', ctx);
+assert.equal(existsSync(paths.root), false, 'escaped setup menu must not create state root');
+assert.match(notes.at(-1).message, /cancelled/);
+assert.deepEqual(notes.find((note) => note.level === 'select').options, [
+  'Turn on safe local capture (no timers/models/pre-injection)',
+  'Turn Agent Experience off (capture + all runtime gates)',
+  'Show current status (no changes)',
+  'Review candidates (no changes)',
+  'Configure learning/consolidation',
+  'Configure guidance/pre-injection',
+  'Background timer settings',
+  'Show advanced help (no changes)',
+  'Cancel (no changes)',
+]);
+setupChoices = ['Cancel (no changes)'];
+await commands.get('experience').handler('setup', ctx);
+assert.equal(existsSync(paths.root), false, 'cancelled setup menu must not create state root');
+setupChoices = ['Show current status (no changes)'];
+await commands.get('experience').handler('setup', ctx);
+assert.equal(existsSync(paths.root), false, 'setup status choice must not create state root');
+setupChoices = ['Review candidates (no changes)'];
+await commands.get('experience').handler('setup', ctx);
+assert.equal(existsSync(paths.root), false, 'setup review choice must not create state root');
+setupChoices = ['Show advanced help (no changes)'];
+await commands.get('experience').handler('setup', ctx);
+assert.equal(existsSync(paths.root), false, 'setup advanced-help choice must not create state root');
+setupChoices = ['Turn on safe local capture (no timers/models/pre-injection)'];
+await commands.get('experience').handler('setup', ctx);
+assert.equal(existsSync(paths.root), true, 'setup menu choice may create state root');
+assert.equal(existsSync(paths.configPath), true, 'setup menu choice may write intended config');
 let rootStat = await stat(paths.root);
 let configStat = await stat(paths.configPath);
 assert.equal(rootStat.mode & 0o777, 0o700, 'state root must be 0700');
@@ -90,12 +171,49 @@ const configText = await readFile(paths.configPath, 'utf8');
 assert.match(configText, /law_path = "law\.md"/, 'config must persist law path');
 assert.doesNotMatch(configText, /TOKEN|SECRET|PRIVATE_KEY|BEGIN PRIVATE KEY/i, 'config must not contain secret-like fixture text');
 
+setupChoices = ['Configure learning/consolidation', 'Enable manual consolidation flag (advanced; no timer/model starts)'];
+await commands.get('experience').handler('setup', ctx);
+readResult = await readAgentExperienceConfig(paths);
+assert.equal(readResult.config.consolidation_enabled, true, 'setup menu can enable manual consolidation flag');
+assert.equal(readResult.config.timer_enabled, false, 'consolidation setup must not start timer');
+setupChoices = ['Configure learning/consolidation', 'Disable manual consolidation flag'];
+await commands.get('experience').handler('setup', ctx);
+readResult = await readAgentExperienceConfig(paths);
+assert.equal(readResult.config.consolidation_enabled, false, 'setup menu can disable manual consolidation flag');
+
+setupChoices = ['Configure guidance/pre-injection', 'Enable guidance/pre-injection (advanced; uses configured selector mode)'];
+await commands.get('experience').handler('setup', ctx);
+readResult = await readAgentExperienceConfig(paths);
+assert.equal(readResult.config.selector_enabled, true, 'setup menu can enable advanced instant guidance');
+setupChoices = ['Configure guidance/pre-injection', 'Disable guidance/pre-injection'];
+await commands.get('experience').handler('setup', ctx);
+readResult = await readAgentExperienceConfig(paths);
+assert.equal(readResult.config.selector_enabled, false, 'setup menu can disable guidance');
+
+setupChoices = ['Configure learning/consolidation', 'Enable manual consolidation flag (advanced; no timer/model starts)'];
+await commands.get('experience').handler('setup', ctx);
+setupChoices = ['Background timer settings', 'Keep timer/background learning disabled'];
+await commands.get('experience').handler('setup', ctx);
+readResult = await readAgentExperienceConfig(paths);
+assert.equal(readResult.config.consolidation_enabled, true, 'timer setup must not disable manual consolidation flag');
+assert.equal(readResult.config.timer_enabled, false, 'timer setup keeps timer disabled');
+assert.equal(readResult.config.break_in_enabled, false, 'timer setup keeps break-in disabled');
+
 await commands.get('experience').handler('review', ctx);
 assert.match(notes.at(-1).message, /No review ledger yet/);
 assert.equal(existsSync(join(paths.root, 'ledger.sqlite')), false, 'review empty-state must not initialize ledger');
 await writeFile(join(paths.root, 'ledger.sqlite'), 'not sqlite', 'utf8');
 await commands.get('experience').handler('status', ctx);
 assert.match(notes.at(-1).message, /ledger unreadable/);
+await commands.get('experience').handler('review list', ctx);
+assert.match(notes.at(-1).message, /Review ledger unreadable/);
+await commands.get('experience').handler('review show candidate-1', ctx);
+assert.match(notes.at(-1).message, /Review ledger unreadable/);
+await commands.get('experience').handler('review diff', ctx);
+assert.match(notes.at(-1).message, /Review ledger unreadable/);
+setupChoices = ['Review candidates (no changes)'];
+await commands.get('experience').handler('setup', ctx);
+assert.match(notes.at(-1).message, /Review ledger unreadable/);
 await rm(join(paths.root, 'ledger.sqlite'), { force: true });
 
 await commands.get('experience').handler('capture on', ctx);
@@ -115,6 +233,14 @@ readResult = await readAgentExperienceConfig(paths);
 assert.equal(readResult.config.selector_enabled, false, 'selector off disables selector only');
 assert.equal(readResult.config.consolidation_enabled, true, 'selector off must not silently disable consolidation');
 
+setupChoices = ['Turn Agent Experience off (capture + all runtime gates)'];
+await commands.get('experience').handler('setup', ctx);
+readResult = await readAgentExperienceConfig(paths);
+assert.equal(readResult.config.enabled, false, 'setup menu can turn experience off');
+assert.equal(readResult.config.capture_enabled, false);
+assert.equal(readResult.config.selector_enabled, false);
+assert.equal(readResult.config.consolidation_enabled, false);
+await commands.get('experience').handler('on', ctx);
 await commands.get('experience').handler('off', ctx);
 readResult = await readAgentExperienceConfig(paths);
 assert.equal(readResult.config.enabled, false);

@@ -4,22 +4,27 @@ Opt-in Pi package extension for local Agent Experience capture, human review, an
 
 ## Normal UX
 
-Use the simple commands first:
+Use the setup menu first. It is the main control panel:
 
 ```text
-/experience setup   # one-time safe setup
+/experience setup   # main setup/settings menu; no changes until you choose
+```
+
+Optional shortcuts:
+
+```text
 /experience on      # resume local redacted capture
 /experience off     # stop capture and all runtime gates
 /experience status  # dashboard: capture count, review count, next step
 /experience review  # inspect/accept/reject candidates if any exist
 ```
 
-`/experience setup` and `/experience on` enable local redacted capture only. They do **not** install timers, run background learning, call live consolidation models, enable embeddings, enable break-in mode, or enable pre-injection.
+`/experience setup` manages on/off, status, review, consolidation, guidance/pre-injection, timer notes, and advanced help from one menu. It changes nothing until you choose. `/experience on` enables local redacted capture only. They do **not** install timers, run background learning, call live consolidation models, enable embeddings, enable break-in mode, or enable pre-injection.
 
 ## Safety defaults
 
 - Package install alone does not enable capture, selector, consolidation, timer, or live runtime behavior.
-- Normal setup/on enables only `enabled=true` and `capture_enabled=true`.
+- The setup menu changes config only after an explicit menu choice. `/experience on` enables only `enabled=true` and `capture_enabled=true`.
 - Selector/pre-injection remains off until advanced explicit enable.
 - Default selector mode, once selector is enabled, is `instant`: local lexical selection only, no model/network call.
 - `smart` selector mode is advanced opt-in and may call the configured model/provider.
@@ -119,7 +124,7 @@ Model-output safety:
 
 ## Systemd timer templates — disabled advanced templates
 
-Templates live in `extensions/agent-experience/units/`, but 0.1.5 does **not** provide a package-owned timer or live consolidation adapter. `/experience setup` and `/experience on` never install, enable, or start these units.
+Templates live in `extensions/agent-experience/units/`, but 0.1.6 does **not** provide a package-owned timer or live consolidation adapter. `/experience setup` menu actions and `/experience on` never install, enable, or start these units.
 
 The bundled service intentionally fails with an explicit message until a maintainer replaces `ExecStart` with an approved reviewed consolidation command. Do not copy/enable the timer as normal UX.
 
