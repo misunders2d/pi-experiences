@@ -1,6 +1,11 @@
 ---
 name: agent-experience
-description: Use when explaining, configuring, troubleshooting, or safely operating the Pi Experiences / Agent Experience extension: setup/on/off/status/review, capture, review candidates, advanced consolidation, selector modes, law_path, privacy boundaries, and the distinction between skills, memory, and experience. Do not use for unrelated Pi extension development.
+description: >-
+  Use when explaining, configuring, troubleshooting, or safely operating the Pi
+  Experiences / Agent Experience extension: setup/on/off/status/review, capture,
+  review candidates, advanced consolidation, selector modes, law_path, privacy
+  boundaries, and the distinction between skills, memory, and experience. Do not
+  use for unrelated Pi extension development.
 ---
 
 # Agent Experience
@@ -18,11 +23,11 @@ experience = reviewed behavioral habits inferred from repeated interaction
 ## Plain-language pieces
 
 - **Experience** is the whole behavior-learning layer.
-- **Setup** is the main control panel. It opens a checkbox-style settings panel for capture, learning suggestions, guidance before replies, background timer help, review suggestions, status, and Help. It must not change config until you choose an item. After each toggle it returns to the panel until Done. The safe capture toggle turns on local redacted capture and leaves timers, live model learning, and guidance off unless explicitly toggled.
+- **Setup** is the main control panel. It opens a checkbox-style settings panel for saving chat examples locally, suggesting habits from saved examples when asked, using approved habits before replies, background-learning explanation, reviewing suggested habits, showing current settings, and explaining every setting. It must not change config until you choose an item. After each toggle it returns to the panel until Done. The safe save-examples toggle turns on local redacted capture and leaves timers, live model learning, and approved-habit reminders off unless explicitly toggled.
 - **Capture** saves redacted text fields and metadata from completed turns to `observations.jsonl`. It creates raw material only, not habits.
-- **Learning suggestions** allows manual candidate-generation/review workflows. In 0.1.9 this is not automatic: no timer or live consolidation model adapter is installed.
+- **Suggest habits from saved examples when I ask** means Pi may analyze saved examples only when explicitly asked and then show proposed habits for review. In 0.1.10 this is not automatic: no timer or live consolidation model adapter is installed.
 - **Pending review** means proposed habits await approval/rejection and are not injectable yet.
-- **Active habits** are reviewed habits. Normal setup/on does not inject them unless guidance before replies is explicitly enabled.
+- **Active habits** are reviewed habits. Normal setup/on does not use them before replies unless you explicitly enable approved-habit reminders.
 - **Timer** is only a future/advanced way to run learning in the background. It is not installed, started, or managed by the package.
 
 ## Normal commands
@@ -30,17 +35,18 @@ experience = reviewed behavioral habits inferred from repeated interaction
 Canonical UX is one control panel:
 
 ```text
-/experience setup   # checkbox-style settings panel; no change until you choose
-/experience setup on
-/experience setup off
-/experience setup status
-/experience setup review
-/experience setup consolidation on|off
-/experience setup guidance on|off
-/experience setup timer off
+/experience setup                         # checkbox-style settings panel; no change until you choose
+/experience setup save on|off             # save chat examples locally
+/experience setup suggest on|off          # allow habit suggestions when you ask
+/experience setup use-habits on|off       # use approved habits before replies
+/experience setup background off          # keep background learning off
+/experience setup status                  # show current settings
+/experience setup review                  # review suggested habits
+/experience setup help                    # explain every setting
+/experience setup off                     # turn all experience features off
 ```
 
-The interactive setup panel shows `[x]` for ON and `[ ]` for OFF. Press Enter on a setting to toggle it; Status, Review suggestions, and Help live inside the panel; Done exits. If Pi does not render the interactive menu, use the explicit `/experience setup ...` subcommands above.
+The interactive setup panel shows `[x]` for ON and `[ ]` for OFF. Press Enter on a setting to toggle it; Show current settings, Review suggested habits, and Explain these settings live inside the panel; Done exits. If Pi does not render the interactive menu, use the explicit `/experience setup ...` subcommands above.
 
 Optional shortcuts:
 
@@ -51,13 +57,13 @@ Optional shortcuts:
 /experience review  # inspect/accept/reject candidates if any exist
 ```
 
-If observations grow but `/experience review` shows no candidates, capture is working. In 0.1.9, candidate generation is not automatic.
+If observations grow but `/experience review` shows no candidates, capture is working. In 0.1.10, candidate generation is not automatic.
 
 ## Safety defaults
 
 - Package install alone enables nothing.
 - `/experience setup` opens a menu and changes nothing until you choose. `/experience on` enables local redacted capture only.
-- Guidance before replies / selector starts off.
+- Use approved habits before replies starts off.
 - Default selector mode is `instant`, local lexical/no-network, but still advanced opt-in.
 - Smart mode is advanced opt-in and may call the configured model/provider.
 - Selector candidates are active same-user habits only.
@@ -130,7 +136,7 @@ wc -l ~/.agents/experience/observations.jsonl
 
 If capture is enabled but no observation appears after a completed turn, reload/restart Pi and check `/experience status`.
 
-If `/experience review` has no candidates while observations grow, the system is only capturing. Candidate generation is not automatic in 0.1.9.
+If `/experience review` has no candidates while observations grow, the system is only capturing. Candidate generation is not automatic in 0.1.10.
 
 If selector/pre-injection seems inactive:
 - confirm advanced selector controls were explicitly enabled;

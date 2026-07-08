@@ -174,7 +174,7 @@ try {
   let readConfig = await readAgentExperienceConfig(getAgentExperiencePaths());
   assert.equal(readConfig.config.selector_enabled, false, 'master enable must not enable selector');
   await commands.get('experience').handler('selector on', ctx);
-  assert.match(notes.at(-1).message, /local lexical\/no-network|configured selector model/);
+  assert.match(notes.at(-1).message, /local\/no-network|configured model\/provider/);
   readConfig = await readAgentExperienceConfig(getAgentExperiencePaths());
   assert.equal(readConfig.config.selector_enabled, true);
 
@@ -221,7 +221,11 @@ try {
   __setAgentExperienceSelectorAdapterForTest({ async select() { throw new Error('selector must not run without configured law'); } });
   const missingLawResult = await missingLaw.handlers.get('before_agent_start')({ prompt: 'hook prompt please', systemPrompt: 'base' }, { cwd: liveCwd, ui: missingLawCtx.ui });
   assert.equal(missingLawResult, undefined, 'selector hook must fail closed when configured law file is missing');
-  assert.ok(missingLawNotes.some((note) => /law file missing/.test(note.message) && note.level === 'warn'), 'missing law must emit a bounded visible diagnostic');
+  const missingLawWarning = missingLawNotes.find((note) => /law file missing/.test(note.message) && note.level === 'warn');
+  assert.ok(missingLawWarning, 'missing law must emit a bounded visible diagnostic');
+  assert.match(missingLawWarning.message, /approved-habit reminders are paused/);
+  assert.match(missingLawWarning.message, /\/experience setup use-habits off/);
+  assert.doesNotMatch(missingLawWarning.message, /selector skipped/i);
   const missingLawNoteCount = missingLawNotes.length;
   await missingLaw.handlers.get('before_agent_start')({ prompt: 'hook prompt again', systemPrompt: 'base' }, { cwd: liveCwd, ui: missingLawCtx.ui });
   assert.equal(missingLawNotes.length, missingLawNoteCount, 'same selector runtime diagnostic must be notify-once');

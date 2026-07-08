@@ -149,8 +149,8 @@ try {
   const notes = [];
   await commands.get('experience').handler('status', { cwd: process.cwd(), ui: { notify(message) { notes.push(message); } } });
   assert.match(notes.at(-1), /Experience: OFF/);
-  assert.match(notes.at(-1), /Timer\/background job: OFF/);
-  assert.match(notes.at(-1), /Model\/network learning: OFF/);
+  assert.match(notes.at(-1), /Background learning: OFF \/ not available/);
+  assert.match(notes.at(-1), /Automatic model\/network learning: OFF/);
   await commands.get('experience').handler('help', { cwd: process.cwd(), ui: { notify(message) { notes.push(message); } } });
   assert.match(notes.at(-1), /experience setup/);
   assert.match(notes.at(-1), /Normal UX does not install timers/);

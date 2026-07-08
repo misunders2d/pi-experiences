@@ -129,19 +129,19 @@ async function handleStatus(ctx: ExtensionCommandContext) {
 	const selectorActive = config.enabled && config.selector_enabled;
 	const reviewCount = summary.pending + summary.candidate;
 	const nextStep = !config.enabled
-		? "Run /experience setup to turn on local redacted capture."
+		? "Choose Save chat examples locally in /experience setup."
 		: reviewCount > 0
-			? "Run /experience review to inspect candidates."
-			: "No review candidates yet. This release captures locally but does not run background model consolidation or timers.";
+			? "Choose Review suggested habits in /experience setup, or run /experience review."
+			: "No suggested habits yet. This release saves examples locally but does not analyze them in the background.";
 	notify(ctx, [
 		`Experience: ${config.enabled ? "ON" : "OFF"}`,
-		`Config: ${path}${exists ? "" : " (not created; using defaults)"}`,
-		`Capture: ${captureActive ? "ON" : "OFF"}${observations === undefined ? "" : ` (${plural(observations, "observation")})`}`,
-		`Candidate generation: not automatic${config.consolidation_enabled ? " (manual consolidation flag ON; no timer/model job running)" : ""}`,
-		`Review: ${summary.error ? `ledger unreadable (${summary.error})` : summary.ledger ? `${plural(reviewCount, "item")} pending/candidate, ${plural(summary.active, "active habit")}` : "no ledger yet"}`,
-		`Guidance/pre-injection: ${selectorActive ? `ON (${config.selector_mode})` : config.selector_enabled ? "configured ON, inactive because Experience is OFF" : "OFF"}`,
-		"Timer/background job: OFF (package does not install or manage one)",
-		"Model/network learning: OFF in normal UX",
+		`Config file: ${path}${exists ? "" : " (not created; using defaults)"}`,
+		`Save chat examples locally: ${captureActive ? "ON" : "OFF"}${observations === undefined ? "" : ` (${plural(observations, "saved example")})`}`,
+		`Suggest habits from saved examples when I ask: ${config.consolidation_enabled ? "ON (manual only; no timer/model job running)" : "OFF"}`,
+		`Review suggested habits: ${summary.error ? `ledger unreadable (${summary.error})` : summary.ledger ? `${plural(reviewCount, "suggestion")} waiting, ${plural(summary.active, "approved habit")}` : "no review list yet"}`,
+		`Use approved habits before replies: ${selectorActive ? (config.selector_mode === "instant" ? "ON (local/no-network)" : `ON (${config.selector_mode})`) : config.selector_enabled ? "configured ON, inactive because Experience is OFF" : "OFF"}`,
+		"Background learning: OFF / not available",
+		"Automatic model/network learning: OFF in normal UX",
 		`Next: ${nextStep}`,
 	].join("\n"), config.enabled ? "info" : "warn");
 }
@@ -154,14 +154,14 @@ function buildSetupOptions(config: { enabled: boolean; capture_enabled: boolean;
 	const captureActive = config.enabled && config.capture_enabled;
 	const anythingEnabled = config.enabled || config.capture_enabled || config.consolidation_enabled || config.selector_enabled;
 	return [
-		captureActive ? "[x] Capture conversations" : "[ ] Capture conversations — turn on to start",
-		`${checkbox(config.consolidation_enabled)} Learning suggestions`,
-		`${checkbox(config.selector_enabled)} Guidance before replies`,
-		"Background timer — unavailable (explain)",
-		"Review suggestions",
-		"Status",
-		"Help",
-		...(anythingEnabled ? ["Turn everything off"] : []),
+		captureActive ? "[x] Save chat examples locally" : "[ ] Save chat examples locally — turn on first",
+		`${checkbox(config.consolidation_enabled)} Suggest habits from saved examples when I ask`,
+		`${checkbox(config.selector_enabled)} Use approved habits before replies`,
+		"Background learning: off / not available (explain)",
+		"Review suggested habits",
+		"Show current settings",
+		"Explain these settings",
+		...(anythingEnabled ? ["Turn all experience features off"] : []),
 		"Done",
 	];
 }
@@ -170,15 +170,15 @@ function setupControlsMessage(): string {
 	return [
 		"Agent Experience setup controls — no config changed yet.",
 		"Menu items are toggles and the menu returns after each change.",
-		"If no menu appears or selection is unavailable, manage settings through the setup namespace:",
-		"/experience setup on",
-		"/experience setup off",
-		"/experience setup status",
-		"/experience setup review",
-		"/experience setup consolidation on|off",
-		"/experience setup guidance on|off",
-		"/experience setup timer off",
-		"/experience setup help",
+		"If no menu appears or selection is unavailable, use these plain commands:",
+		"/experience setup save on|off          # save chat examples locally",
+		"/experience setup suggest on|off       # allow habit suggestions when you ask",
+		"/experience setup use-habits on|off    # use approved habits before replies",
+		"/experience setup background off       # keep background learning off",
+		"/experience setup review              # review suggested habits",
+		"/experience setup status              # show current settings",
+		"/experience setup help                # explain these settings",
+		"/experience setup off                 # turn all experience features off",
 	].join("\n");
 }
 
@@ -191,16 +191,16 @@ function setupHelpMessage(config: { enabled: boolean; capture_enabled: boolean; 
 	return [
 		"Agent Experience setup help:",
 		"[x] means ON. [ ] means OFF. Press Enter on a setting to toggle it; choose Done to exit.",
-		"Capture conversations: turn this on first to start. It stores redacted completed user/assistant pairs locally under ~/.agents/experience and does not store raw full prompts or injected text.",
-		"Learning suggestions: allows manual candidate generation/review workflows. It does not start a timer or run background model learning by itself.",
+		"Save chat examples locally: turn this on first to start saving examples. It stores redacted completed user/assistant pairs under ~/.agents/experience. It does not store raw full prompts or injected text.",
+		"Suggest habits from saved examples when I ask: lets you manually ask Pi to analyze saved examples and propose habits. It does not run in the background and does not auto-approve anything.",
 		config.selector_mode === "instant"
-			? "Guidance before replies: can add reviewed active habits before replies. Current mode is instant: local lexical/no-network selection."
-			: `Guidance before replies: can add reviewed active habits before replies. Current mode is smart and may call ${config.selector_model} with bounded redacted selector payloads.`,
-		"Background timer: unavailable in this package release. Setup will not install, enable, or start a timer.",
-		"Review suggestions: opens the human review list if candidates exist. Nothing is auto-approved.",
+			? "Use approved habits before replies: lets Pi add only human-approved habits as reminders before future replies. Current mode is local/no-network."
+			: `Use approved habits before replies: lets Pi add only human-approved habits as reminders before future replies. Current mode may call ${config.selector_model} with bounded redacted selector payloads.`,
+		"Background learning: unavailable in this package release. Setup will not install, enable, or start a timer.",
+		"Review suggested habits: opens the list of proposed habits for you to approve or reject. Nothing is auto-approved.",
 		anythingEnabled
-			? "Turn everything off: stops capture and all runtime gates. Existing local records are preserved."
-			: "When a setting is on, a Turn everything off row appears here to stop all runtime gates.",
+			? "Turn all experience features off: stops capture and all runtime gates. Existing local records are preserved."
+			: "When a setting is on, a Turn all experience features off row appears here to stop all runtime gates.",
 	].join("\n");
 }
 
@@ -226,61 +226,61 @@ async function chooseSetup(ctx: ExtensionCommandContext, title: string, options:
 }
 
 async function handleSetupConsolidation(ctx: ExtensionCommandContext) {
-	const choice = await chooseSetup(ctx, "Agent Experience learning/consolidation", [
-		"Explain learning/consolidation (no changes)",
-		"Enable manual consolidation flag (advanced; no timer/model starts)",
-		"Disable manual consolidation flag",
+	const choice = await chooseSetup(ctx, "Suggest habits from saved examples", [
+		"Explain habit suggestions (no changes)",
+		"Allow manual habit suggestions when I ask",
+		"Do not suggest habits",
 		"Back/cancel (no changes)",
 	]);
-	if (!choice || choice === "Back/cancel (no changes)") return notify(ctx, "Consolidation setup cancelled. No config changed.", "info");
-	if (choice === "Explain learning/consolidation (no changes)") {
+	if (!choice || choice === "Back/cancel (no changes)") return notify(ctx, "Habit-suggestion setup cancelled. No config changed.", "info");
+	if (choice === "Explain habit suggestions (no changes)") {
 		return notify(ctx, [
-			"Learning/consolidation means turning captured observations into review candidates.",
-			"This release does not run that automatically: no timer and no live consolidation model adapter are installed.",
-			"The manual consolidation flag only allows advanced maintainer/test CLI work; it does not create candidates by itself.",
+			"Habit suggestions means Pi can turn saved examples into proposed habits for you to review.",
+			"This release does not run that automatically: no timer and no live model job are installed.",
+			"Turning this on only allows explicit/manual candidate generation. It does not create or approve habits by itself.",
 		].join("\n"), "info");
 	}
-	if (choice === "Enable manual consolidation flag (advanced; no timer/model starts)") return handleConsolidation("on", ctx);
-	if (choice === "Disable manual consolidation flag") return handleConsolidation("off", ctx);
-	return notify(ctx, "Consolidation setup cancelled. No config changed.", "info");
+	if (choice === "Allow manual habit suggestions when I ask") return handleConsolidation("on", ctx);
+	if (choice === "Do not suggest habits") return handleConsolidation("off", ctx);
+	return notify(ctx, "Habit-suggestion setup cancelled. No config changed.", "info");
 }
 
 async function handleSetupSelector(ctx: ExtensionCommandContext) {
-	const choice = await chooseSetup(ctx, "Agent Experience guidance/pre-injection", [
-		"Explain guidance/pre-injection (no changes)",
-		"Enable guidance/pre-injection (advanced; uses configured selector mode)",
-		"Disable guidance/pre-injection",
+	const choice = await chooseSetup(ctx, "Use approved habits before replies", [
+		"Explain approved-habit reminders (no changes)",
+		"Use approved habits before replies",
+		"Do not use approved habits before replies",
 		"Back/cancel (no changes)",
 	]);
-	if (!choice || choice === "Back/cancel (no changes)") return notify(ctx, "Guidance setup cancelled. No config changed.", "info");
-	if (choice === "Explain guidance/pre-injection (no changes)") {
+	if (!choice || choice === "Back/cancel (no changes)") return notify(ctx, "Approved-habit reminder setup cancelled. No config changed.", "info");
+	if (choice === "Explain approved-habit reminders (no changes)") {
 		return notify(ctx, [
-			"Guidance/pre-injection can add approved active habits before a reply.",
-			"It never uses pending/candidate habits and never approves habits by itself.",
-			"Default instant mode is local/no-network. Smart mode is advanced and may call a configured model/provider.",
+			"Approved-habit reminders means Pi can add only human-approved habits as reminders before a reply.",
+			"It never uses unreviewed suggestions and never approves habits by itself.",
+			"Default mode is local/no-network. Advanced smart mode may call a configured model/provider only if separately configured.",
 		].join("\n"), "info");
 	}
-	if (choice === "Enable guidance/pre-injection (advanced; uses configured selector mode)") return handleSelector("on", ctx);
-	if (choice === "Disable guidance/pre-injection") return handleSelector("off", ctx);
-	return notify(ctx, "Guidance setup cancelled. No config changed.", "info");
+	if (choice === "Use approved habits before replies") return handleSelector("on", ctx);
+	if (choice === "Do not use approved habits before replies") return handleSelector("off", ctx);
+	return notify(ctx, "Approved-habit reminder setup cancelled. No config changed.", "info");
 }
 
 async function handleSetupTimer(ctx: ExtensionCommandContext) {
-	const choice = await chooseSetup(ctx, "Agent Experience background timer", [
-		"Explain timer/background learning (no changes)",
-		"Keep timer/background learning disabled",
+	const choice = await chooseSetup(ctx, "Background learning", [
+		"Explain background learning (no changes)",
+		"Keep background learning disabled",
 		"Show advanced timer notes (no changes)",
 		"Back/cancel (no changes)",
 	]);
 	if (!choice || choice === "Back/cancel (no changes)") return notify(ctx, "Timer setup cancelled. No config changed.", "info");
-	if (choice === "Keep timer/background learning disabled") {
+	if (choice === "Keep background learning disabled") {
 		const { config, path } = await setAgentExperienceTimerEnabled(false);
 		return notify(ctx, [
-			"Background timer remains disabled. No systemd unit was installed or started.",
-			`config: ${path}`,
-			`consolidation=${config.consolidation_enabled}`,
-			`timer=${config.timer_enabled}`,
-			`break_in=${config.break_in_enabled}`,
+			"Background learning remains disabled. No systemd unit was installed or started.",
+			`Config file: ${path}`,
+			`Suggest habits from saved examples when I ask: ${config.consolidation_enabled ? "ON" : "OFF"}`,
+			"Background learning: OFF",
+			"Break-in/interruption behavior: OFF",
 		].join("\n"), "info");
 	}
 	return notify(ctx, [
@@ -298,8 +298,17 @@ async function handleSetupDirect(args: string[], ctx: ExtensionCommandContext): 
 		case "1":
 		case "on":
 		case "enable":
-		case "capture":
 			await handleOn(ctx);
+			return true;
+		case "save":
+		case "capture":
+			if (value === "on" || value === "enable") {
+				const { config, path } = await setAgentExperienceCaptureActive(true);
+				notify(ctx, [`Save chat examples locally: ON`, `Config file: ${path}`, `Current setting: ${config.capture_enabled ? "ON" : "OFF"}`].join("\n"), "info");
+			} else if (value === "off" || value === "disable") {
+				const { config, path } = await setAgentExperienceCaptureActive(false);
+				notify(ctx, [`Save chat examples locally: OFF`, `Config file: ${path}`, `Current setting: ${config.capture_enabled ? "ON" : "OFF"}`].join("\n"), "info");
+			} else notify(ctx, "Usage: /experience setup save on|off", "warn");
 			return true;
 		case "2":
 		case "off":
@@ -315,30 +324,35 @@ async function handleSetupDirect(args: string[], ctx: ExtensionCommandContext): 
 			await handleReview(value ? args.slice(1) : ["list"], ctx);
 			return true;
 		case "5":
+		case "suggest":
+		case "habits":
 		case "consolidation":
 		case "consolidate":
 		case "learning":
 			if (value === "on" || value === "enable") await handleConsolidation("on", ctx);
 			else if (value === "off" || value === "disable") await handleConsolidation("off", ctx);
-			else notify(ctx, "Usage: /experience setup consolidation on|off", "warn");
+			else notify(ctx, "Usage: /experience setup suggest on|off", "warn");
 			return true;
 		case "6":
+		case "use-habits":
+		case "approved-habits":
+		case "reminders":
 		case "guidance":
 		case "selector":
 		case "pre-injection":
 		case "preinject":
 			if (value === "on" || value === "enable") await handleSelector("on", ctx);
 			else if (value === "off" || value === "disable") await handleSelector("off", ctx);
-			else notify(ctx, "Usage: /experience setup guidance on|off", "warn");
+			else notify(ctx, "Usage: /experience setup use-habits on|off", "warn");
 			return true;
 		case "7":
-		case "timer":
 		case "background":
+		case "timer":
 			if (!value || value === "explain" || value === "status") await handleSetupTimer(ctx);
 			else if (value === "off" || value === "disable") {
 				const { config, path } = await setAgentExperienceTimerEnabled(false);
-				notify(ctx, [`Background timer disabled.`, `config: ${path}`, `timer=${config.timer_enabled}`, `break_in=${config.break_in_enabled}`].join("\n"), "info");
-			} else notify(ctx, "Usage: /experience setup timer off", "warn");
+				notify(ctx, [`Background learning: OFF`, `Config file: ${path}`, `Break-in/interruption behavior: ${config.break_in_enabled ? "ON" : "OFF"}`].join("\n"), "info");
+			} else notify(ctx, "Usage: /experience setup background off", "warn");
 			return true;
 		case "8":
 		case "help": {
@@ -368,45 +382,44 @@ async function handleSetup(ctx: ExtensionCommandContext, args: string[] = []) {
 	while (true) {
 		const { config } = await readAgentExperienceConfig(getAgentExperiencePaths());
 		const options = buildSetupOptions(config);
-		const choice = await chooseSetup(ctx, "Agent Experience Settings — Enter toggles, Help explains, Done exits", options, false);
+		const choice = await chooseSetup(ctx, "Agent Experience Settings — Enter toggles, Explain explains, Done exits", options, false);
 		if (!choice || choice === "Done") return notify(ctx, "Agent Experience setup closed.", "info");
-		if (choice === "Status") {
+		if (choice === "Show current settings") {
 			await handleStatus(ctx);
 			continue;
 		}
-		if (choice === "Review suggestions") {
+		if (choice === "Review suggested habits") {
 			await handleReview(["list"], ctx);
 			continue;
 		}
-		if (choice === "Help") {
+		if (choice === "Explain these settings") {
 			notify(ctx, setupHelpMessage(config), "info");
 			continue;
 		}
-		if (choice === "Turn everything off") {
+		if (choice === "Turn all experience features off") {
 			await handleOff(ctx);
 			continue;
 		}
-		if (choice.startsWith("Background timer")) {
+		if (choice.startsWith("Background learning")) {
 			await handleSetupTimer(ctx);
 			continue;
 		}
-		if (choice.endsWith("Learning suggestions")) {
+		if (choice.endsWith("Suggest habits from saved examples when I ask")) {
 			await handleConsolidation(config.consolidation_enabled ? "off" : "on", ctx);
 			continue;
 		}
-		if (choice.endsWith("Guidance before replies")) {
+		if (choice.endsWith("Use approved habits before replies")) {
 			await handleSelector(config.selector_enabled ? "off" : "on", ctx);
 			continue;
 		}
-		if (choice.includes("Capture conversations")) {
+		if (choice.includes("Save chat examples locally")) {
 			if (config.enabled && config.capture_enabled) captureBuffer.clearAll();
 			const { config: updated, path } = await setAgentExperienceCaptureActive(!(config.enabled && config.capture_enabled));
 			notify(ctx, [
-				`Capture conversations ${updated.enabled && updated.capture_enabled ? "ON" : "OFF"}.`,
-				`config: ${path}`,
-				`capture=${updated.capture_enabled}`,
-				`learning=${updated.consolidation_enabled}`,
-				`guidance=${updated.selector_enabled}`,
+				`Save chat examples locally: ${updated.enabled && updated.capture_enabled ? "ON" : "OFF"}`,
+				`Config file: ${path}`,
+				`Suggest habits from saved examples when I ask: ${updated.consolidation_enabled ? "ON" : "OFF"}`,
+				`Use approved habits before replies: ${updated.selector_enabled ? "ON" : "OFF"}`, 
 			].join("\n"), "info");
 			continue;
 		}
@@ -415,17 +428,17 @@ async function handleSetup(ctx: ExtensionCommandContext, args: string[] = []) {
 }
 
 async function handleOn(ctx: ExtensionCommandContext) {
-	const { config, path } = await setAgentExperienceSimpleOn();
+	const { path } = await setAgentExperienceSimpleOn();
 	notify(
 		ctx,
 		[
 			"Agent Experience is ON.",
-			`config: ${path}`,
-			"Local redacted capture is active for completed turns.",
-			"Learning/candidates, timer, model calls, and pre-injection remain OFF in normal on/off mode.",
+			`Config file: ${path}`,
+			"Save chat examples locally: ON",
+			"Suggest habits from saved examples when I ask: OFF in normal on/off mode",
+			"Use approved habits before replies: OFF in normal on/off mode",
+			"Background learning: OFF",
 			"Run /experience status anytime for counts and next step.",
-			`enabled=${config.enabled}`,
-			`capture=${config.capture_enabled}`,
 		].join("\n"),
 		"info",
 	);
@@ -433,16 +446,17 @@ async function handleOn(ctx: ExtensionCommandContext) {
 
 async function handleOff(ctx: ExtensionCommandContext) {
 	captureBuffer.clearAll();
-	const { config, path } = await setAgentExperienceEnabled(false);
+	const { path } = await setAgentExperienceEnabled(false);
 	notify(
 		ctx,
 		[
 			"Agent Experience is OFF.",
-			`config: ${path}`,
-			"Capture, learning/candidates, selector/pre-injection, timer, model, embedding, and break-in gates are off.",
+			`Config file: ${path}`,
+			"Save chat examples locally: OFF",
+			"Suggest habits from saved examples when I ask: OFF",
+			"Use approved habits before replies: OFF",
+			"Background learning: OFF",
 			"Off drops in-memory capture buffers without writing observations. Existing records are preserved.",
-			`enabled=${config.enabled}`,
-			`capture=${config.capture_enabled}`,
 		].join("\n"),
 		"info",
 	);
@@ -466,11 +480,18 @@ function formatReviewReadError(error: unknown): string {
 function diagnosticFor(kind: "selector-runtime" | "capture-persist", error: unknown): { key: string; message: string } {
 	const raw = error instanceof Error ? error.message : String(error);
 	const redacted = redactText(raw).slice(0, 500);
+	if (kind === "selector-runtime") {
+		const lawMissing = /law file missing/i.test(redacted);
+		return {
+			key: `${kind}:${redacted}`,
+			message: lawMissing
+				? `Agent Experience approved-habit reminders are paused because the required law file is missing. To stop this warning, run /experience setup use-habits off, or create the configured law file. Detail: ${redacted}`
+				: `Agent Experience approved-habit reminders are paused: ${redacted}`,
+		};
+	}
 	return {
 		key: `${kind}:${redacted}`,
-		message: kind === "selector-runtime"
-			? `Agent Experience selector skipped: ${redacted}`
-			: `Agent Experience capture skipped after persistence failure: ${redacted}`,
+		message: `Agent Experience could not save this turn's example: ${redacted}`,
 	};
 }
 
@@ -638,12 +659,10 @@ async function handleConsolidation(command: string | undefined, ctx: ExtensionCo
 	notify(
 		ctx,
 		[
-			`Agent Experience consolidation ${value === "on" ? "enabled" : "disabled"} flag written.`,
-			`config: ${path}`,
-			"Consolidation is manual in this release: run experience-consolidate status/now explicitly; no timer or live model adapter is enabled.",
-			`enabled=${config.enabled}`,
-			`capture=${config.capture_enabled}`,
-			`consolidation=${config.consolidation_enabled}`,
+			`Suggest habits from saved examples when I ask: ${value === "on" ? "ON" : "OFF"}`,
+			`Config file: ${path}`,
+			"This is manual only in this release: no background job, timer, or live model job starts automatically.",
+			`Save chat examples locally: ${config.enabled && config.capture_enabled ? "ON" : "OFF"}`,
 		].join("\n"),
 		value === "on" ? "warn" : "info",
 	);
@@ -661,18 +680,14 @@ async function handleSelector(command: string | undefined, ctx: ExtensionCommand
 	notify(
 		ctx,
 		[
-			`Agent Experience pre-injection/selector ${value === "on" ? "enabled" : "disabled"} flag written.`,
-			`config: ${path}`,
-			"Selector is effective only when Agent Experience is also enabled and reviewed active habits exist.",
+			`Use approved habits before replies: ${value === "on" ? "ON" : "OFF"}`,
+			`Config file: ${path}`,
+			"This works only when Experience is ON and approved habits exist.",
 			config.selector_mode === "instant"
-				? "Selector mode instant: local lexical/no-network selection from active habits only; smart/model calls remain opt-in."
-				: "Selector mode smart: each user prompt may send per-prompt redacted selector payloads with bounded active-habit summaries to the configured selector model/provider and may write bounded redacted hit logs.",
-			"Selector never reads reports, pending review, quarantine, evidence, disabled/suppressed/dormant/candidate/archived rows, and never promotes or activates habits.",
-			`enabled=${config.enabled}`,
-			`selector=${config.selector_enabled}`,
-			`selector_mode=${config.selector_mode}`,
-			`selector_model=${config.selector_model}`,
-			`selector_daily_budget=${config.selector_daily_budget}`,
+				? "Current mode: local/no-network reminders from approved habits only."
+				: "Current mode: smart reminders may call the configured model/provider with bounded redacted summaries.",
+			"It never uses unreviewed suggestions and never approves habits by itself.",
+			`Save chat examples locally: ${config.enabled && config.capture_enabled ? "ON" : "OFF"}`,
 		].join("\n"),
 		value === "on" ? "warn" : "info",
 	);
@@ -703,8 +718,12 @@ function usage(topic = "") {
 	if (normalized === "setup") {
 		return [
 			"Agent Experience setup:",
-			"/experience setup   # checkbox-style settings panel: capture, learning, guidance, timer help, review, status, Help",
-			"/experience setup on|off|status|review|consolidation on|off|guidance on|off|timer off",
+			"/experience setup                         # checkbox-style panel; no changes until you choose",
+			"/experience setup save on|off             # save chat examples locally",
+			"/experience setup suggest on|off          # allow habit suggestions when you ask",
+			"/experience setup use-habits on|off       # use approved habits before replies",
+			"/experience setup background off          # keep background learning off",
+			"/experience setup status|review|help",
 			"/experience on      # shortcut: resume local redacted capture",
 			"/experience status  # see what is happening and the next step",
 			"/experience review  # inspect review candidates if any exist",
@@ -762,8 +781,12 @@ function usage(topic = "") {
 	}
 	return [
 		"Agent Experience:",
-		"/experience setup   # checkbox-style settings panel; no changes until you choose",
-		"/experience setup on|off|status|review|consolidation on|off|guidance on|off|timer off",
+		"/experience setup                         # checkbox-style panel; no changes until you choose",
+		"/experience setup save on|off             # save chat examples locally",
+		"/experience setup suggest on|off          # allow habit suggestions when you ask",
+		"/experience setup use-habits on|off       # use approved habits before replies",
+		"/experience setup background off          # keep background learning off",
+		"/experience setup status|review|help",
 		"/experience on      # shortcut: resume local redacted capture",
 		"/experience off     # stop capture and all runtime gates",
 		"/experience status  # plain dashboard",

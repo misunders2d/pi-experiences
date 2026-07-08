@@ -34,6 +34,7 @@ agentExperienceExtension(fakePi);
 assert.deepEqual([...commands.keys()], ['experience'], 'extension should register only /experience command');
 assert.deepEqual([...handlers.keys()].sort(), ['agent_end', 'before_agent_start', 'input', 'session_shutdown'], 'extension may register capture lifecycle plus fail-closed selector hook');
 
+const plainSetupLeakPattern = /capture=|learning=|guidance=|consolidation=|timer=|break_in=|selector=|selector_mode=|pre-injection/i;
 const paths = getAgentExperiencePaths();
 assert.equal(paths.root, process.env.AX_STATE_ROOT);
 assert.equal(existsSync(paths.root), false, 'extension load must not create state root');
@@ -77,7 +78,12 @@ const notifyOnlyCtx = {
 };
 await commands.get('experience').handler('setup', notifyOnlyCtx);
 assert.equal(existsSync(paths.root), false, 'setup with no select UI must not create state root');
-assert.ok(notes.some((note) => /setup controls/.test(note.message)), 'no-select setup must show fallback setup controls text');
+const fallbackNote = notes.find((note) => /setup controls/.test(note.message));
+assert.ok(fallbackNote, 'no-select setup must show fallback setup controls text');
+assert.match(fallbackNote.message, /setup save on\|off/);
+assert.match(fallbackNote.message, /setup suggest on\|off/);
+assert.match(fallbackNote.message, /setup use-habits on\|off/);
+assert.doesNotMatch(fallbackNote.message, /setup consolidation on\|off|setup guidance on\|off|setup timer off/);
 assert.ok(notes.some((note) => /no config changed/i.test(note.message)), 'no-select setup must say no config changed');
 const headlessCtx = {
   cwd: process.cwd(),
@@ -121,37 +127,39 @@ await commands.get('experience').handler('setup', ctx);
 assert.equal(existsSync(paths.root), false, 'escaped setup menu must not create state root');
 assert.match(notes.at(-1).message, /closed/);
 assert.deepEqual(notes.find((note) => note.level === 'select').options, [
-  '[ ] Capture conversations — turn on to start',
-  '[ ] Learning suggestions',
-  '[ ] Guidance before replies',
-  'Background timer — unavailable (explain)',
-  'Review suggestions',
-  'Status',
-  'Help',
+  '[ ] Save chat examples locally — turn on first',
+  '[ ] Suggest habits from saved examples when I ask',
+  '[ ] Use approved habits before replies',
+  'Background learning: off / not available (explain)',
+  'Review suggested habits',
+  'Show current settings',
+  'Explain these settings',
   'Done',
 ]);
 assert.ok(!notes.slice(notesBeforeInteractiveSetup).some((note) => /\/experience setup on/.test(note.message)), 'interactive setup must not print fallback subcommands before the menu');
+assert.ok(!notes.slice(notesBeforeInteractiveSetup).some((note) => /Learning suggestions|Guidance before replies|Capture conversations|Background timer|Review suggestions/.test(note.message)), 'interactive setup must not expose old jargon labels');
 setupChoices = ['Done'];
 await commands.get('experience').handler('setup', ctx);
 assert.equal(existsSync(paths.root), false, 'done setup menu must not create state root');
-setupChoices = ['Status', undefined];
+setupChoices = ['Show current settings', undefined];
 await commands.get('experience').handler('setup', ctx);
 assert.equal(existsSync(paths.root), false, 'setup status choice must not create state root');
-setupChoices = ['Review suggestions', undefined];
+setupChoices = ['Review suggested habits', undefined];
 await commands.get('experience').handler('setup', ctx);
 assert.equal(existsSync(paths.root), false, 'setup review choice must not create state root');
-setupChoices = ['Help', undefined];
+setupChoices = ['Explain these settings', undefined];
 await commands.get('experience').handler('setup', ctx);
 assert.equal(existsSync(paths.root), false, 'setup help choice must not create state root');
 assert.ok(notes.some((note) => /Agent Experience setup help/.test(note.message)), 'setup help must show integrated help text');
-assert.ok(notes.some((note) => /Guidance before replies/.test(note.message)), 'setup help must explain guidance');
+assert.ok(notes.some((note) => /Use approved habits before replies/.test(note.message)), 'setup help must explain guidance');
 await commands.get('experience').handler('setup help', ctx);
 assert.equal(existsSync(paths.root), false, 'setup help subcommand must not create state root');
 assert.match(notes.at(-1).message, /Agent Experience setup help/);
-assert.match(notes.at(-1).message, /Background timer: unavailable/);
+assert.match(notes.at(-1).message, /Background learning: unavailable/);
 assert.match(notes.at(-1).message, /turn this on first to start/);
-setupChoices = ['[ ] Capture conversations — turn on to start', undefined];
+setupChoices = ['[ ] Save chat examples locally — turn on first', undefined];
 await commands.get('experience').handler('setup', ctx);
+assert.doesNotMatch(notes.at(-1).message, plainSetupLeakPattern, 'save-examples setup confirmation must not expose internal flag names');
 assert.equal(existsSync(paths.root), true, 'setup menu choice may create state root');
 assert.equal(existsSync(paths.configPath), true, 'setup menu choice may write intended config');
 let rootStat = await stat(paths.root);
@@ -179,40 +187,56 @@ const configText = await readFile(paths.configPath, 'utf8');
 assert.match(configText, /law_path = "law\.md"/, 'config must persist law path');
 assert.doesNotMatch(configText, /TOKEN|SECRET|PRIVATE_KEY|BEGIN PRIVATE KEY/i, 'config must not contain secret-like fixture text');
 
-setupChoices = ['[ ] Learning suggestions', undefined];
+setupChoices = ['[ ] Suggest habits from saved examples when I ask', undefined];
 await commands.get('experience').handler('setup', ctx);
+assert.doesNotMatch(notes.at(-1).message, plainSetupLeakPattern, 'suggest-habits setup confirmation must not expose internal flag names');
 readResult = await readAgentExperienceConfig(paths);
 assert.equal(readResult.config.consolidation_enabled, true, 'setup toggle can enable manual consolidation flag');
 assert.equal(readResult.config.timer_enabled, false, 'consolidation setup must not start timer');
-setupChoices = ['[x] Learning suggestions', undefined];
+setupChoices = ['[x] Suggest habits from saved examples when I ask', undefined];
 await commands.get('experience').handler('setup', ctx);
 readResult = await readAgentExperienceConfig(paths);
 assert.equal(readResult.config.consolidation_enabled, false, 'setup toggle can disable manual consolidation flag');
+await commands.get('experience').handler('setup suggest on', ctx);
+assert.doesNotMatch(notes.at(-1).message, plainSetupLeakPattern, 'plain suggest setup command must not expose internal flag names');
+readResult = await readAgentExperienceConfig(paths);
+assert.equal(readResult.config.consolidation_enabled, true, 'plain setup subcommand can enable manual habit suggestions');
+await commands.get('experience').handler('setup suggest off', ctx);
+readResult = await readAgentExperienceConfig(paths);
+assert.equal(readResult.config.consolidation_enabled, false, 'plain setup subcommand can disable manual habit suggestions');
 await commands.get('experience').handler('setup consolidation on', ctx);
 readResult = await readAgentExperienceConfig(paths);
-assert.equal(readResult.config.consolidation_enabled, true, 'setup subcommand can enable manual consolidation flag');
+assert.equal(readResult.config.consolidation_enabled, true, 'advanced/backcompat setup subcommand can enable manual consolidation flag');
 await commands.get('experience').handler('setup consolidation off', ctx);
 readResult = await readAgentExperienceConfig(paths);
-assert.equal(readResult.config.consolidation_enabled, false, 'setup subcommand can disable manual consolidation flag');
+assert.equal(readResult.config.consolidation_enabled, false, 'advanced/backcompat setup subcommand can disable manual consolidation flag');
 
-setupChoices = ['[ ] Guidance before replies', undefined];
+setupChoices = ['[ ] Use approved habits before replies', undefined];
 await commands.get('experience').handler('setup', ctx);
+assert.doesNotMatch(notes.at(-1).message, plainSetupLeakPattern, 'use-habits setup confirmation must not expose internal flag names');
 readResult = await readAgentExperienceConfig(paths);
 assert.equal(readResult.config.selector_enabled, true, 'setup toggle can enable advanced guidance');
-setupChoices = ['[x] Guidance before replies', undefined];
+setupChoices = ['[x] Use approved habits before replies', undefined];
 await commands.get('experience').handler('setup', ctx);
 readResult = await readAgentExperienceConfig(paths);
 assert.equal(readResult.config.selector_enabled, false, 'setup toggle can disable guidance');
+await commands.get('experience').handler('setup use-habits on', ctx);
+assert.doesNotMatch(notes.at(-1).message, plainSetupLeakPattern, 'plain use-habits setup command must not expose internal flag names');
+readResult = await readAgentExperienceConfig(paths);
+assert.equal(readResult.config.selector_enabled, true, 'plain setup subcommand can enable approved-habit reminders');
+await commands.get('experience').handler('setup use-habits off', ctx);
+readResult = await readAgentExperienceConfig(paths);
+assert.equal(readResult.config.selector_enabled, false, 'plain setup subcommand can disable approved-habit reminders');
 await commands.get('experience').handler('setup guidance on', ctx);
 readResult = await readAgentExperienceConfig(paths);
-assert.equal(readResult.config.selector_enabled, true, 'setup subcommand can enable guidance');
+assert.equal(readResult.config.selector_enabled, true, 'advanced/backcompat setup subcommand can enable guidance');
 await commands.get('experience').handler('setup guidance off', ctx);
 readResult = await readAgentExperienceConfig(paths);
-assert.equal(readResult.config.selector_enabled, false, 'setup subcommand can disable guidance');
+assert.equal(readResult.config.selector_enabled, false, 'advanced/backcompat setup subcommand can disable guidance');
 
-setupChoices = ['[ ] Learning suggestions', undefined];
+setupChoices = ['[ ] Suggest habits from saved examples when I ask', undefined];
 await commands.get('experience').handler('setup', ctx);
-setupChoices = ['Background timer — unavailable (explain)', 'Keep timer/background learning disabled', undefined];
+setupChoices = ['Background learning: off / not available (explain)', 'Keep background learning disabled', undefined];
 await commands.get('experience').handler('setup', ctx);
 readResult = await readAgentExperienceConfig(paths);
 assert.equal(readResult.config.consolidation_enabled, true, 'timer setup must not disable manual consolidation flag');
@@ -231,7 +255,7 @@ await commands.get('experience').handler('review show candidate-1', ctx);
 assert.match(notes.at(-1).message, /Review ledger unreadable/);
 await commands.get('experience').handler('review diff', ctx);
 assert.match(notes.at(-1).message, /Review ledger unreadable/);
-setupChoices = ['Review suggestions', undefined];
+setupChoices = ['Review suggested habits', undefined];
 await commands.get('experience').handler('setup', ctx);
 assert.ok(notes.some((note) => /Review ledger unreadable/.test(note.message)), 'setup review toggle path must report unreadable ledger');
 await rm(join(paths.root, 'ledger.sqlite'), { force: true });
@@ -248,14 +272,14 @@ readResult = await readAgentExperienceConfig(paths);
 assert.equal(readResult.config.capture_enabled, false, 'capture off disables capture only');
 assert.equal(readResult.config.consolidation_enabled, true, 'capture off must not silently disable consolidation');
 assert.equal(readResult.config.selector_enabled, true, 'capture off must not silently disable selector');
-setupChoices = ['[ ] Capture conversations — turn on to start', undefined];
+setupChoices = ['[ ] Save chat examples locally — turn on first', undefined];
 await commands.get('experience').handler('setup', ctx);
 readResult = await readAgentExperienceConfig(paths);
 assert.equal(readResult.config.enabled, true, 'capture toggle on enables master switch');
 assert.equal(readResult.config.capture_enabled, true, 'capture toggle on enables capture');
 assert.equal(readResult.config.consolidation_enabled, true, 'capture toggle on must preserve consolidation');
 assert.equal(readResult.config.selector_enabled, true, 'capture toggle on must preserve selector');
-setupChoices = ['[x] Capture conversations', undefined];
+setupChoices = ['[x] Save chat examples locally', undefined];
 await commands.get('experience').handler('setup', ctx);
 readResult = await readAgentExperienceConfig(paths);
 assert.equal(readResult.config.capture_enabled, false, 'capture toggle off disables capture only');
@@ -266,7 +290,7 @@ readResult = await readAgentExperienceConfig(paths);
 assert.equal(readResult.config.selector_enabled, false, 'selector off disables selector only');
 assert.equal(readResult.config.consolidation_enabled, true, 'selector off must not silently disable consolidation');
 
-setupChoices = ['Turn everything off', undefined];
+setupChoices = ['Turn all experience features off', undefined];
 await commands.get('experience').handler('setup', ctx);
 readResult = await readAgentExperienceConfig(paths);
 assert.equal(readResult.config.enabled, false, 'setup menu can turn experience off');
@@ -278,9 +302,13 @@ readResult = await readAgentExperienceConfig(paths);
 assert.equal(readResult.config.enabled, true, 'setup on shortcut enables experience');
 assert.equal(readResult.config.capture_enabled, true, 'setup on shortcut enables capture');
 assert.equal(readResult.config.selector_enabled, false, 'setup on shortcut keeps selector off');
+await commands.get('experience').handler('setup background off', ctx);
+assert.doesNotMatch(notes.at(-1).message, plainSetupLeakPattern, 'plain background setup command must not expose internal flag names');
+readResult = await readAgentExperienceConfig(paths);
+assert.equal(readResult.config.timer_enabled, false, 'setup background off keeps timer disabled');
 await commands.get('experience').handler('setup timer off', ctx);
 readResult = await readAgentExperienceConfig(paths);
-assert.equal(readResult.config.timer_enabled, false, 'setup timer off keeps timer disabled');
+assert.equal(readResult.config.timer_enabled, false, 'advanced/backcompat setup timer off keeps timer disabled');
 await commands.get('experience').handler('setup off', ctx);
 readResult = await readAgentExperienceConfig(paths);
 assert.equal(readResult.config.enabled, false, 'setup off shortcut disables experience');
@@ -288,7 +316,7 @@ await setAgentExperienceSelectorEnabled(true, paths);
 readResult = await readAgentExperienceConfig(paths);
 assert.equal(readResult.config.enabled, false, 'stale selector test starts with master disabled');
 assert.equal(readResult.config.selector_enabled, true, 'stale selector flag can exist while master is disabled');
-setupChoices = ['[ ] Capture conversations — turn on to start', undefined];
+setupChoices = ['[ ] Save chat examples locally — turn on first', undefined];
 await commands.get('experience').handler('setup', ctx);
 readResult = await readAgentExperienceConfig(paths);
 assert.equal(readResult.config.enabled, true, 'capture toggle can enable master switch');

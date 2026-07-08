@@ -7,14 +7,15 @@ Opt-in Pi package extension for local Agent Experience capture, human review, an
 Use the setup menu first. It is the main control panel:
 
 ```text
-/experience setup   # checkbox-style settings panel; no changes until you choose
-/experience setup on
-/experience setup off
-/experience setup status
-/experience setup review
-/experience setup consolidation on|off
-/experience setup guidance on|off
-/experience setup timer off
+/experience setup                         # checkbox-style settings panel; no changes until you choose
+/experience setup save on|off             # save chat examples locally
+/experience setup suggest on|off          # allow habit suggestions when you ask
+/experience setup use-habits on|off       # use approved habits before replies
+/experience setup background off          # keep background learning off
+/experience setup status                  # show current settings
+/experience setup review                  # review suggested habits
+/experience setup help                    # explain every setting
+/experience setup off                     # turn all experience features off
 ```
 
 Optional shortcuts:
@@ -26,12 +27,12 @@ Optional shortcuts:
 /experience review  # inspect/accept/reject candidates if any exist
 ```
 
-`/experience setup` opens a checkbox-style settings panel for capture, learning suggestions, guidance before replies, background timer help, review suggestions, status, and Help. `[x]` means ON and `[ ]` means OFF; pressing Enter on a setting toggles it and returns to the panel until Done. Help is inside the panel and explains privacy/model/timer behavior. It changes nothing until you choose. If Pi does not render the interactive menu, use the explicit `/experience setup ...` subcommands. `/experience on` enables local redacted capture only. They do **not** install timers, run background learning, call live consolidation models, enable embeddings, enable break-in mode, or enable guidance before replies.
+`/experience setup` opens a checkbox-style settings panel for saving chat examples locally, suggesting habits from saved examples when asked, using approved habits before replies, background-learning explanation, reviewing suggested habits, showing current settings, and explaining every setting. `[x]` means ON and `[ ]` means OFF; pressing Enter on a setting toggles it and returns to the panel until Done. Explain these settings is inside the panel and explains privacy/model/timer behavior. It changes nothing until you choose. If Pi does not render the interactive menu, use the explicit `/experience setup ...` subcommands. `/experience on` enables local redacted capture only. They do **not** install timers, run background learning, call live model jobs, enable embeddings, enable break-in mode, or use approved habits before replies.
 
 ## Safety defaults
 
 - Package install alone does not enable capture, selector, consolidation, timer, or live runtime behavior.
-- The setup menu changes config only after an explicit menu choice. `/experience on` enables only `enabled=true` and `capture_enabled=true`.
+- The setup menu changes config only after an explicit menu choice. `/experience on` only turns on saving redacted chat examples locally; it leaves habit suggestions, approved-habit reminders, timers, embeddings, break-in mode, and model jobs off.
 - Selector/pre-injection remains off until advanced explicit enable.
 - Default selector mode, once selector is enabled, is `instant`: local lexical selection only, no model/network call.
 - `smart` selector mode is advanced opt-in and may call the configured model/provider.
@@ -131,7 +132,7 @@ Model-output safety:
 
 ## Systemd timer templates — disabled advanced templates
 
-Templates live in `extensions/agent-experience/units/`, but 0.1.9 does **not** provide a package-owned timer or live consolidation adapter. `/experience setup` menu actions and `/experience on` never install, enable, or start these units.
+Templates live in `extensions/agent-experience/units/`, but 0.1.10 does **not** provide a package-owned timer or live consolidation adapter. `/experience setup` menu actions and `/experience on` never install, enable, or start these units.
 
 The bundled service intentionally fails with an explicit message until a maintainer replaces `ExecStart` with an approved reviewed consolidation command. Do not copy/enable the timer as normal UX.
 

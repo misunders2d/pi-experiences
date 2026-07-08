@@ -150,7 +150,7 @@ await diagnostic.commands.get('experience').handler('on', ctx(diagnosticNotes));
 await mkdir(resolvePrivatePath(diagnosticPaths.root, 'observations.jsonl'));
 await diagnostic.handlers.get('input')({ type: 'input', text: 'diagnostic user private@example.invalid', source: 'interactive' }, ctx(diagnosticNotes));
 await diagnostic.handlers.get('agent_end')({ type: 'agent_end', messages: [{ role: 'assistant', content: 'diagnostic assistant' }] }, ctx(diagnosticNotes));
-assert.match(diagnosticNotes.at(-1).message, /capture skipped after persistence failure/);
+assert.match(diagnosticNotes.at(-1).message, /could not save this turn's example/);
 assert.doesNotMatch(diagnosticNotes.at(-1).message, /private@example\.invalid|diagnostic user|diagnostic assistant/);
 process.env.AX_STATE_ROOT = join(temp, 'state');
 
