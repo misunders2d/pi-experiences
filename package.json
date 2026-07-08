@@ -1,6 +1,6 @@
 {
   "name": "pi-experiences",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "A Pi extension package for capturing and reviewing behavioral experience patterns separately from skills and memory.",
   "license": "MIT",
   "type": "module",
@@ -24,7 +24,7 @@
   },
   "homepage": "https://github.com/misunders2d/pi-experiences#readme",
   "bin": {
-    "experience-consolidate": "./bin/experience-consolidate.mjs"
+    "experience-consolidate": "bin/experience-consolidate.mjs"
   },
   "scripts": {
     "check": "npm run check:agent-experience",
