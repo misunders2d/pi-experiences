@@ -77,8 +77,8 @@ const notifyOnlyCtx = {
 };
 await commands.get('experience').handler('setup', notifyOnlyCtx);
 assert.equal(existsSync(paths.root), false, 'setup with no select UI must not create state root');
-assert.ok(notes.some((note) => /setup menu is interactive/.test(note.message)), 'no-select setup must show fallback setup menu text');
-assert.ok(notes.some((note) => /No config changed|made no config changes/.test(note.message)), 'no-select setup must say no config changed');
+assert.ok(notes.some((note) => /setup controls/.test(note.message)), 'no-select setup must show fallback setup controls text');
+assert.ok(notes.some((note) => /no config changed/i.test(note.message)), 'no-select setup must say no config changed');
 const headlessCtx = {
   cwd: process.cwd(),
   hasUI: false,
@@ -118,6 +118,7 @@ assert.match(notes.at(-1).message, /No config changed/);
 setupChoices = [undefined];
 await commands.get('experience').handler('setup', ctx);
 assert.equal(existsSync(paths.root), false, 'escaped setup menu must not create state root');
+assert.ok(notes.some((note) => /\/experience setup on/.test(note.message)), 'bare setup must show explicit setup subcommands even when selector is unavailable');
 assert.match(notes.at(-1).message, /cancelled/);
 assert.deepEqual(notes.find((note) => note.level === 'select').options, [
   'Turn on safe local capture (no timers/models/pre-injection)',
@@ -180,15 +181,27 @@ setupChoices = ['Configure learning/consolidation', 'Disable manual consolidatio
 await commands.get('experience').handler('setup', ctx);
 readResult = await readAgentExperienceConfig(paths);
 assert.equal(readResult.config.consolidation_enabled, false, 'setup menu can disable manual consolidation flag');
+await commands.get('experience').handler('setup consolidation on', ctx);
+readResult = await readAgentExperienceConfig(paths);
+assert.equal(readResult.config.consolidation_enabled, true, 'setup subcommand can enable manual consolidation flag');
+await commands.get('experience').handler('setup consolidation off', ctx);
+readResult = await readAgentExperienceConfig(paths);
+assert.equal(readResult.config.consolidation_enabled, false, 'setup subcommand can disable manual consolidation flag');
 
 setupChoices = ['Configure guidance/pre-injection', 'Enable guidance/pre-injection (advanced; uses configured selector mode)'];
 await commands.get('experience').handler('setup', ctx);
 readResult = await readAgentExperienceConfig(paths);
-assert.equal(readResult.config.selector_enabled, true, 'setup menu can enable advanced instant guidance');
+assert.equal(readResult.config.selector_enabled, true, 'setup menu can enable advanced guidance');
 setupChoices = ['Configure guidance/pre-injection', 'Disable guidance/pre-injection'];
 await commands.get('experience').handler('setup', ctx);
 readResult = await readAgentExperienceConfig(paths);
 assert.equal(readResult.config.selector_enabled, false, 'setup menu can disable guidance');
+await commands.get('experience').handler('setup guidance on', ctx);
+readResult = await readAgentExperienceConfig(paths);
+assert.equal(readResult.config.selector_enabled, true, 'setup subcommand can enable guidance');
+await commands.get('experience').handler('setup guidance off', ctx);
+readResult = await readAgentExperienceConfig(paths);
+assert.equal(readResult.config.selector_enabled, false, 'setup subcommand can disable guidance');
 
 setupChoices = ['Configure learning/consolidation', 'Enable manual consolidation flag (advanced; no timer/model starts)'];
 await commands.get('experience').handler('setup', ctx);
@@ -240,6 +253,17 @@ assert.equal(readResult.config.enabled, false, 'setup menu can turn experience o
 assert.equal(readResult.config.capture_enabled, false);
 assert.equal(readResult.config.selector_enabled, false);
 assert.equal(readResult.config.consolidation_enabled, false);
+await commands.get('experience').handler('setup on', ctx);
+readResult = await readAgentExperienceConfig(paths);
+assert.equal(readResult.config.enabled, true, 'setup on shortcut enables experience');
+assert.equal(readResult.config.capture_enabled, true, 'setup on shortcut enables capture');
+assert.equal(readResult.config.selector_enabled, false, 'setup on shortcut keeps selector off');
+await commands.get('experience').handler('setup timer off', ctx);
+readResult = await readAgentExperienceConfig(paths);
+assert.equal(readResult.config.timer_enabled, false, 'setup timer off keeps timer disabled');
+await commands.get('experience').handler('setup off', ctx);
+readResult = await readAgentExperienceConfig(paths);
+assert.equal(readResult.config.enabled, false, 'setup off shortcut disables experience');
 await commands.get('experience').handler('on', ctx);
 await commands.get('experience').handler('off', ctx);
 readResult = await readAgentExperienceConfig(paths);

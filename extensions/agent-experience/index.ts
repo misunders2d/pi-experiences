@@ -157,20 +157,31 @@ const SETUP_OPTIONS = [
 	"Cancel (no changes)",
 ] as const;
 
-function setupUnavailableMessage(): string {
+function setupControlsMessage(): string {
 	return [
-		"Agent Experience setup menu is interactive and made no config changes.",
+		"Agent Experience setup controls — no config changed yet.",
 		"Available setup actions:",
-		...SETUP_OPTIONS.map((option) => `- ${option}`),
-		"In non-interactive mode use direct commands only when you intentionally want a change:",
-		"/experience on, /experience off, /experience status, /experience review",
+		...SETUP_OPTIONS.map((option, index) => `${index + 1}. ${option}`),
+		"If no menu appears or selection is unavailable, manage settings through the setup namespace:",
+		"/experience setup on",
+		"/experience setup off",
+		"/experience setup status",
+		"/experience setup review",
+		"/experience setup consolidation on|off",
+		"/experience setup guidance on|off",
+		"/experience setup timer off",
+		"/experience setup help",
 	].join("\n");
 }
 
-async function chooseSetup(ctx: ExtensionCommandContext, title: string, options: readonly string[]): Promise<string | undefined> {
+function setupUnavailableMessage(): string {
+	return setupControlsMessage();
+}
+
+async function chooseSetup(ctx: ExtensionCommandContext, title: string, options: readonly string[], showUnavailable = true): Promise<string | undefined> {
 	const ui = (ctx as { hasUI?: boolean; ui?: { select?: (title: string, options: string[]) => Promise<string | undefined> | string | undefined } })?.ui;
 	if ((ctx as { hasUI?: boolean }).hasUI === false || typeof ui?.select !== "function") {
-		notify(ctx, setupUnavailableMessage(), "info");
+		if (showUnavailable) notify(ctx, setupUnavailableMessage(), "info");
 		return undefined;
 	}
 	try {
@@ -254,8 +265,74 @@ async function handleSetupTimer(ctx: ExtensionCommandContext) {
 	].join("\n"), "info");
 }
 
-async function handleSetup(ctx: ExtensionCommandContext) {
-	const choice = await chooseSetup(ctx, "Agent Experience setup — choose an action; no config changes until selection", SETUP_OPTIONS);
+async function handleSetupDirect(args: string[], ctx: ExtensionCommandContext): Promise<boolean> {
+	const [action = "", value = ""] = args.map((arg) => arg.toLowerCase());
+	if (!action) return false;
+	switch (action) {
+		case "1":
+		case "on":
+		case "enable":
+		case "capture":
+			await handleOn(ctx);
+			return true;
+		case "2":
+		case "off":
+		case "disable":
+			await handleOff(ctx);
+			return true;
+		case "3":
+		case "status":
+			await handleStatus(ctx);
+			return true;
+		case "4":
+		case "review":
+			await handleReview(value ? args.slice(1) : ["list"], ctx);
+			return true;
+		case "5":
+		case "consolidation":
+		case "consolidate":
+		case "learning":
+			if (value === "on" || value === "enable") await handleConsolidation("on", ctx);
+			else if (value === "off" || value === "disable") await handleConsolidation("off", ctx);
+			else notify(ctx, "Usage: /experience setup consolidation on|off", "warn");
+			return true;
+		case "6":
+		case "guidance":
+		case "selector":
+		case "pre-injection":
+		case "preinject":
+			if (value === "on" || value === "enable") await handleSelector("on", ctx);
+			else if (value === "off" || value === "disable") await handleSelector("off", ctx);
+			else notify(ctx, "Usage: /experience setup guidance on|off", "warn");
+			return true;
+		case "7":
+		case "timer":
+		case "background":
+			if (!value || value === "explain" || value === "status") await handleSetupTimer(ctx);
+			else if (value === "off" || value === "disable") {
+				const { config, path } = await setAgentExperienceTimerEnabled(false);
+				notify(ctx, [`Background timer disabled.`, `config: ${path}`, `timer=${config.timer_enabled}`, `break_in=${config.break_in_enabled}`].join("\n"), "info");
+			} else notify(ctx, "Usage: /experience setup timer off", "warn");
+			return true;
+		case "8":
+		case "help":
+		case "advanced":
+			notify(ctx, usage(action === "advanced" ? "advanced" : "setup"), "info");
+			return true;
+		case "9":
+		case "cancel":
+			notify(ctx, "Agent Experience setup cancelled. No config changed.", "info");
+			return true;
+		default:
+			notify(ctx, `${setupUnavailableMessage()}\nUnknown setup action: ${redactText(action).slice(0, 120)}\nNo config changed.`, "warn");
+			return true;
+	}
+}
+
+async function handleSetup(ctx: ExtensionCommandContext, args: string[] = []) {
+	if (await handleSetupDirect(args, ctx)) return;
+	notify(ctx, setupControlsMessage(), "info");
+	const choice = await chooseSetup(ctx, "Agent Experience setup — choose an action; no config changes until selection", SETUP_OPTIONS, false);
 	if (!choice || choice === "Cancel (no changes)") return notify(ctx, "Agent Experience setup cancelled. No config changed.", "info");
 	if (choice === "Show current status (no changes)") return handleStatus(ctx);
 	if (choice === "Review candidates (no changes)") return handleReview(["list"], ctx);
@@ -577,6 +654,7 @@ function usage(topic = "") {
 		return [
 			"Agent Experience setup:",
 			"/experience setup   # main settings menu: on/off, review, consolidation, guidance, timer notes; no changes until you choose",
+			"/experience setup on|off|status|review|consolidation on|off|guidance on|off|timer off",
 			"/experience on      # shortcut: resume local redacted capture",
 			"/experience status  # see what is happening and the next step",
 			"/experience review  # inspect review candidates if any exist",
@@ -635,6 +713,7 @@ function usage(topic = "") {
 	return [
 		"Agent Experience:",
 		"/experience setup   # main settings menu; no changes until you choose",
+		"/experience setup on|off|status|review|consolidation on|off|guidance on|off|timer off",
 		"/experience on      # shortcut: resume local redacted capture",
 		"/experience off     # stop capture and all runtime gates",
 		"/experience status  # plain dashboard",
@@ -655,7 +734,7 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 					await handleStatus(ctx);
 					return;
 				case "setup":
-					await handleSetup(ctx);
+					await handleSetup(ctx, tokens.slice(1));
 					return;
 				case "on":
 				case "enable":
