@@ -1,6 +1,6 @@
 {
   "name": "pi-experiences",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A Pi extension package for capturing and reviewing behavioral experience patterns separately from skills and memory.",
   "license": "MIT",
   "type": "module",
@@ -39,7 +39,11 @@
     "@earendil-works/pi-coding-agent": "latest"
   },
   "pi": {
-    "extensions": ["./extensions"],
-    "skills": ["./skills"]
+    "extensions": [
+      "./extensions"
+    ],
+    "skills": [
+      "./skills"
+    ]
   }
 }

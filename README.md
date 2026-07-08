@@ -46,10 +46,22 @@ These are not domain skills and not factual memories. They are behavior patterns
 
 ## Install
 
-Git install, pinned to a tag:
+Recommended stable install from npm:
 
 ```bash
-pi install git:github.com/misunders2d/pi-experiences@v0.1.0
+pi install npm:pi-experiences
+```
+
+Pi can update npm-installed packages to the latest published stable version:
+
+```bash
+pi update --extensions
+```
+
+Pinned GitHub tag install is also available when you want an exact source ref:
+
+```bash
+pi install git:github.com/misunders2d/pi-experiences@v0.1.1
 ```
 
 For local development:
@@ -231,25 +243,32 @@ This package is intentionally TypeScript-source-first for Pi's extension loader.
 
 ## Release and update model
 
-This first package is intended for GitHub tag installs:
+GitHub is the source of truth. npm is the stable distribution channel.
+
+For users who want latest stable updates:
 
 ```bash
-pi install git:github.com/misunders2d/pi-experiences@v0.1.0
+pi install npm:pi-experiences
+pi update --extensions
 ```
 
-Git package refs are pinned. `pi update --extensions` reconciles the pinned ref but does not float users to a new tag.
+For users who want a pinned exact source ref:
+
+```bash
+pi install git:github.com/misunders2d/pi-experiences@v0.1.1
+```
+
+Git package refs are pinned. `pi update --extensions` reconciles the pinned ref but does not float Git installs to a new tag.
 
 For a bug fix:
 
 1. update this repo;
 2. add or update regression tests;
 3. run review and `npm run check`;
-4. commit and tag, for example `v0.1.1`;
-5. users update explicitly:
-
-```bash
-pi install git:github.com/misunders2d/pi-experiences@v0.1.1
-```
+4. bump `package.json` version;
+5. commit and tag, for example `v0.1.2`;
+6. publish the same commit to npm;
+7. npm users update with `pi update --extensions`; Git-pinned users install the new tag explicitly.
 
 ## Status
 
