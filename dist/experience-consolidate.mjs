@@ -1482,7 +1482,7 @@ function usage() {
   return [
     "Usage: experience-consolidate status|now [--dry-run] [--fixture-output FILE] [--root DIR] [--user USER] [--generation active]",
     "Advanced maintainer/test CLI. Normal users should use /experience status and /experience review.",
-    "0.1.7 has no live consolidation model adapter and never installs/enables timers.",
+    "0.1.8 has no live consolidation model adapter and never installs/enables timers.",
     "--dry-run produces reviewable output and must not advance watermarks or mutate ledger state.",
     "Without a fixture/model adapter, now fails closed rather than guessing model output."
   ].join("\n");

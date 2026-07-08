@@ -3,6 +3,7 @@ import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@e
 import {
 	getAgentExperiencePaths,
 	readAgentExperienceConfig,
+	setAgentExperienceCaptureActive,
 	setAgentExperienceCaptureEnabled,
 	setAgentExperienceConsolidationEnabled,
 	setAgentExperienceEnabled,
@@ -145,23 +146,30 @@ async function handleStatus(ctx: ExtensionCommandContext) {
 	].join("\n"), config.enabled ? "info" : "warn");
 }
 
-const SETUP_OPTIONS = [
-	"Turn on safe local capture (no timers/models/pre-injection)",
-	"Turn Agent Experience off (capture + all runtime gates)",
-	"Show current status (no changes)",
-	"Review candidates (no changes)",
-	"Configure learning/consolidation",
-	"Configure guidance/pre-injection",
-	"Background timer settings",
-	"Show advanced help (no changes)",
-	"Cancel (no changes)",
-] as const;
+function onOff(value: boolean): "ON" | "OFF" {
+	return value ? "ON" : "OFF";
+}
+
+function buildSetupOptions(config: { enabled: boolean; capture_enabled: boolean; consolidation_enabled: boolean; selector_enabled: boolean }): string[] {
+	const captureActive = config.enabled && config.capture_enabled;
+	const anythingEnabled = config.enabled || config.capture_enabled || config.consolidation_enabled || config.selector_enabled;
+	return [
+		`Everything: ${onOff(anythingEnabled)} — toggle all features`,
+		`Capture: ${onOff(captureActive)} — toggle safe local capture`,
+		`Learning suggestions: ${onOff(config.consolidation_enabled)} — toggle manual candidate generation`,
+		`Guidance setting: ${onOff(config.selector_enabled)} — toggle reviewed-habit guidance`,
+		"Background/timer: OFF — explain",
+		"Status",
+		"Review suggestions",
+		"Advanced help",
+		"Done",
+	];
+}
 
 function setupControlsMessage(): string {
 	return [
 		"Agent Experience setup controls — no config changed yet.",
-		"Available setup actions:",
-		...SETUP_OPTIONS.map((option, index) => `${index + 1}. ${option}`),
+		"Menu items are toggles and the menu returns after each change.",
 		"If no menu appears or selection is unavailable, manage settings through the setup namespace:",
 		"/experience setup on",
 		"/experience setup off",
@@ -332,36 +340,56 @@ async function handleSetupDirect(args: string[], ctx: ExtensionCommandContext): 
 async function handleSetup(ctx: ExtensionCommandContext, args: string[] = []) {
 	if (await handleSetupDirect(args, ctx)) return;
 	notify(ctx, setupControlsMessage(), "info");
-	const choice = await chooseSetup(ctx, "Agent Experience setup — choose an action; no config changes until selection", SETUP_OPTIONS, false);
-	if (!choice || choice === "Cancel (no changes)") return notify(ctx, "Agent Experience setup cancelled. No config changed.", "info");
-	if (choice === "Show current status (no changes)") return handleStatus(ctx);
-	if (choice === "Review candidates (no changes)") return handleReview(["list"], ctx);
-	if (choice === "Show advanced help (no changes)") return notify(ctx, usage("advanced"), "info");
-	if (choice === "Configure learning/consolidation") return handleSetupConsolidation(ctx);
-	if (choice === "Configure guidance/pre-injection") return handleSetupSelector(ctx);
-	if (choice === "Background timer settings") return handleSetupTimer(ctx);
-	if (choice === "Turn Agent Experience off (capture + all runtime gates)") return handleOff(ctx);
-	if (choice === "Turn on safe local capture (no timers/models/pre-injection)") {
-		captureBuffer.clearAll();
-		const { config, path } = await setAgentExperienceSimpleOn();
-		return notify(
-			ctx,
-			[
-				"Agent Experience safe local capture is ON.",
+	while (true) {
+		const { config } = await readAgentExperienceConfig(getAgentExperiencePaths());
+		const options = buildSetupOptions(config);
+		const choice = await chooseSetup(ctx, "Agent Experience setup — toggles return here after each change", options, false);
+		if (!choice || choice === "Done") return notify(ctx, "Agent Experience setup closed.", "info");
+		if (choice === "Status") {
+			await handleStatus(ctx);
+			continue;
+		}
+		if (choice === "Review suggestions") {
+			await handleReview(["list"], ctx);
+			continue;
+		}
+		if (choice === "Advanced help") {
+			notify(ctx, usage("advanced"), "info");
+			continue;
+		}
+		if (choice.startsWith("Background/timer:")) {
+			await handleSetupTimer(ctx);
+			continue;
+		}
+		if (choice.startsWith("Learning suggestions:")) {
+			await handleConsolidation(config.consolidation_enabled ? "off" : "on", ctx);
+			continue;
+		}
+		if (choice.startsWith("Guidance setting:")) {
+			await handleSelector(config.selector_enabled ? "off" : "on", ctx);
+			continue;
+		}
+		if (choice.startsWith("Everything:")) {
+			const anythingEnabled = config.enabled || config.capture_enabled || config.consolidation_enabled || config.selector_enabled;
+			if (anythingEnabled) await handleOff(ctx);
+			else await handleOn(ctx);
+			continue;
+		}
+		if (choice.startsWith("Capture:")) {
+			if (config.enabled && config.capture_enabled) captureBuffer.clearAll();
+			const { config: updated, path } = await setAgentExperienceCaptureActive(!(config.enabled && config.capture_enabled));
+			notify(ctx, [
+				`Capture is ${updated.enabled && updated.capture_enabled ? "ON" : "OFF"}.`,
 				`config: ${path}`,
-				"Learning/candidates are not automatic: no timer or live consolidation model is installed.",
-				"Guidance/pre-injection is OFF until advanced controls enable it and reviewed active habits exist.",
-				"No habits are approved automatically. Records under ~/.agents/experience are preserved.",
-				`enabled=${config.enabled}`,
-				`capture=${config.capture_enabled}`,
-				`selector=${config.selector_enabled}`,
-				`consolidation=${config.consolidation_enabled}`,
-				`timer=${config.timer_enabled}`,
-			].join("\n"),
-			"info",
-		);
+				`enabled=${updated.enabled}`,
+				`capture=${updated.capture_enabled}`,
+				`learning=${updated.consolidation_enabled}`,
+				`guidance=${updated.selector_enabled}`,
+			].join("\n"), "info");
+			continue;
+		}
+		return notify(ctx, "Agent Experience setup closed. No further changes.", "info");
 	}
-	return notify(ctx, "Agent Experience setup cancelled. No config changed.", "info");
 }
 
 async function handleOn(ctx: ExtensionCommandContext) {

@@ -112,6 +112,22 @@ export async function setAgentExperienceCaptureEnabled(captureEnabled: boolean, 
 	return { config, path: paths.configPath };
 }
 
+export async function setAgentExperienceCaptureActive(captureActive: boolean, paths = getAgentExperiencePaths()): Promise<{ config: AgentExperienceConfig; path: string }> {
+	const current = await readAgentExperienceConfig(paths);
+	const enablesMaster = captureActive && !current.config.enabled;
+	const config = {
+		...DEFAULT_AGENT_EXPERIENCE_CONFIG,
+		...current.config,
+		enabled: captureActive ? true : current.config.enabled,
+		capture_enabled: captureActive,
+		// If capture has to enable the master switch, do not accidentally make a stale
+		// selector/guidance flag effective. Guidance remains an explicit toggle.
+		selector_enabled: enablesMaster ? false : current.config.selector_enabled,
+	};
+	await writeAgentExperienceConfig(config, paths);
+	return { config, path: paths.configPath };
+}
+
 export async function setAgentExperienceConsolidationEnabled(consolidationEnabled: boolean, paths = getAgentExperiencePaths()): Promise<{ config: AgentExperienceConfig; path: string }> {
 	const current = await readAgentExperienceConfig(paths);
 	const config = {
