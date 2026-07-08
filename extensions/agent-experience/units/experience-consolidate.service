@@ -5,7 +5,7 @@ ConditionPathExists=%h/.agents/experience/agent-experience.toml
 
 [Service]
 Type=oneshot
-# Template only. 0.1.8 does not provide a live consolidation model adapter or package-owned timer.
+# Template only. 0.1.9 does not provide a live consolidation model adapter or package-owned timer.
 # Do not enable this unit as-is. Replace ExecStart with an explicit reviewed adapter/fixture command.
 ExecStart=/usr/bin/env sh -c 'echo "Agent Experience timer template disabled: replace ExecStart with an explicit reviewed consolidation adapter/fixture command before enabling." >&2; exit 1'
 Nice=10

@@ -80,7 +80,7 @@ pi update --extensions
 Pinned GitHub tag install is also available when you want an exact source ref:
 
 ```bash
-pi install git:github.com/misunders2d/pi-experiences@v0.1.8
+pi install git:github.com/misunders2d/pi-experiences@v0.1.9
 ```
 
 For local development:
@@ -114,11 +114,11 @@ Duplicate copies can register the same hooks twice and cause duplicate capture o
 ### Plain-language pieces
 
 - **Experience** is the whole behavior-learning layer.
-- **Setup** is the main control panel. It opens a menu for on/off, status, review, consolidation, guidance/pre-injection, timer notes, and advanced help. It must not change config until you choose an action. The safe capture choice turns on local redacted capture and leaves timers, model learning, and pre-injection off.
+- **Setup** is the main control panel. It opens a checkbox-style settings panel for capture, learning suggestions, guidance before replies, background timer help, review, status, and Help. It must not change config until you choose an item. The safe capture choice turns on local redacted capture and leaves timers, model learning, and guidance off unless you explicitly toggle them.
 - **Capture** means saving redacted text fields and metadata from completed user/assistant turns to `observations.jsonl`. It is the raw material. Capture does **not** create habits by itself.
-- **Learning / consolidation** means reading captures and proposing possible habits/corrections. In 0.1.8 this is **not automatic**: no timer or live consolidation model adapter is installed.
+- **Learning suggestions** means allowing manual candidate-generation/review workflows. In 0.1.9 this is **not automatic**: no timer or live consolidation model adapter is installed.
 - **Pending review** means proposed habits are waiting for you to approve or reject them. Pending items are not used for injection.
-- **Active habits** are reviewed habits. Normal setup/on does not inject them until advanced guidance/pre-injection is explicitly enabled.
+- **Active habits** are reviewed habits. Normal setup/on does not inject them until guidance before replies is explicitly enabled.
 - **Timer** is only a future/advanced way to run learning in the background. It is not installed, started, or managed by this package.
 
 Inside Pi:
@@ -142,7 +142,7 @@ The file stores redacted conversation-pair records with bounded text fields and 
 The normal UX is a single control panel plus optional shortcuts:
 
 ```text
-/experience setup   # main setup/settings menu; no change until you choose
+/experience setup   # checkbox-style settings panel; no change until you choose
 /experience setup on
 /experience setup off
 /experience setup status
@@ -156,9 +156,9 @@ The normal UX is a single control panel plus optional shortcuts:
 /experience review  # shortcut: inspect/accept/reject candidates if any exist
 ```
 
-The interactive `/experience setup` menu is toggle-based: it shows ON/OFF state, flips the selected setting, then returns to the menu until you choose Done. You can also manage all settings from `/experience setup ...` without remembering the shortcuts. If Pi does not render the interactive menu, use the explicit setup subcommands above.
+The interactive `/experience setup` panel uses checkbox-style rows: `[x]` means ON and `[ ]` means OFF. Press Enter on a setting to toggle it; Status, Review suggestions, and Help live inside the panel; Done exits. You can also manage all settings from `/experience setup ...` without remembering the shortcuts. If Pi does not render the interactive menu, use the explicit setup subcommands above.
 
-If observations are growing but `/experience review` shows no candidates, capture is working. In 0.1.8, candidate generation is not automatic because the package does not ship a live consolidation model adapter or install/manage a timer.
+If observations are growing but `/experience review` shows no candidates, capture is working. In 0.1.9, candidate generation is not automatic because the package does not ship a live consolidation model adapter or install/manage a timer.
 
 Advanced/backcompat commands such as `/experience capture`, `/experience consolidation`, `/experience selector`, `/experience pending`, and `experience-consolidate --fixture-output` are maintainer/testing controls, not the normal first-run path.
 
@@ -201,7 +201,7 @@ The extension is designed around human review.
 capture redacted pairs -> future/advanced consolidation -> proposed candidates -> human review -> active habits -> optional advanced selector injection
 ```
 
-In 0.1.8, the package captures locally but does **not** automatically create candidates. The bundled `experience-consolidate` command is an advanced maintainer/test CLI that requires explicit fixture/model output; normal users should not need it.
+In 0.1.9, the package captures locally but does **not** automatically create candidates. The bundled `experience-consolidate` command is an advanced maintainer/test CLI that requires explicit fixture/model output; normal users should not need it.
 
 Review commands:
 
@@ -332,7 +332,7 @@ For a bug fix:
 3. run reviewer/debate for non-trivial safety or runtime changes;
 4. run `npm run check`;
 5. bump `package.json` version;
-6. commit and tag, for example `v0.1.8`;
+6. commit and tag, for example `v0.1.9`;
 7. publish the same commit to npm;
 8. tell npm users to run `pi update --extensions`.
 
@@ -364,7 +364,7 @@ pi update --extensions
 For users who want a pinned exact source ref:
 
 ```bash
-pi install git:github.com/misunders2d/pi-experiences@v0.1.8
+pi install git:github.com/misunders2d/pi-experiences@v0.1.9
 ```
 
 Git package refs are pinned. `pi update --extensions` reconciles the pinned ref but does not float Git installs to a new tag.
@@ -375,7 +375,7 @@ For a bug fix:
 2. add or update regression tests;
 3. run review and `npm run check`;
 4. bump `package.json` version;
-5. commit and tag, for example `v0.1.8`;
+5. commit and tag, for example `v0.1.9`;
 6. publish the same commit to npm;
 7. npm users update with `pi update --extensions`; Git-pinned users install the new tag explicitly.
 

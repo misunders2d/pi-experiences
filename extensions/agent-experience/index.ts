@@ -146,22 +146,22 @@ async function handleStatus(ctx: ExtensionCommandContext) {
 	].join("\n"), config.enabled ? "info" : "warn");
 }
 
-function onOff(value: boolean): "ON" | "OFF" {
-	return value ? "ON" : "OFF";
+function checkbox(value: boolean): "[x]" | "[ ]" {
+	return value ? "[x]" : "[ ]";
 }
 
 function buildSetupOptions(config: { enabled: boolean; capture_enabled: boolean; consolidation_enabled: boolean; selector_enabled: boolean }): string[] {
 	const captureActive = config.enabled && config.capture_enabled;
 	const anythingEnabled = config.enabled || config.capture_enabled || config.consolidation_enabled || config.selector_enabled;
 	return [
-		`Everything: ${onOff(anythingEnabled)} — toggle all features`,
-		`Capture: ${onOff(captureActive)} — toggle safe local capture`,
-		`Learning suggestions: ${onOff(config.consolidation_enabled)} — toggle manual candidate generation`,
-		`Guidance setting: ${onOff(config.selector_enabled)} — toggle reviewed-habit guidance`,
-		"Background/timer: OFF — explain",
-		"Status",
+		captureActive ? "[x] Capture conversations" : "[ ] Capture conversations — turn on to start",
+		`${checkbox(config.consolidation_enabled)} Learning suggestions`,
+		`${checkbox(config.selector_enabled)} Guidance before replies`,
+		"Background timer — unavailable (explain)",
 		"Review suggestions",
-		"Advanced help",
+		"Status",
+		"Help",
+		...(anythingEnabled ? ["Turn everything off"] : []),
 		"Done",
 	];
 }
@@ -184,6 +184,24 @@ function setupControlsMessage(): string {
 
 function setupUnavailableMessage(): string {
 	return setupControlsMessage();
+}
+
+function setupHelpMessage(config: { enabled: boolean; capture_enabled: boolean; consolidation_enabled: boolean; selector_enabled: boolean; selector_mode: string; selector_model: string }): string {
+	const anythingEnabled = config.enabled || config.capture_enabled || config.consolidation_enabled || config.selector_enabled;
+	return [
+		"Agent Experience setup help:",
+		"[x] means ON. [ ] means OFF. Press Enter on a setting to toggle it; choose Done to exit.",
+		"Capture conversations: turn this on first to start. It stores redacted completed user/assistant pairs locally under ~/.agents/experience and does not store raw full prompts or injected text.",
+		"Learning suggestions: allows manual candidate generation/review workflows. It does not start a timer or run background model learning by itself.",
+		config.selector_mode === "instant"
+			? "Guidance before replies: can add reviewed active habits before replies. Current mode is instant: local lexical/no-network selection."
+			: `Guidance before replies: can add reviewed active habits before replies. Current mode is smart and may call ${config.selector_model} with bounded redacted selector payloads.`,
+		"Background timer: unavailable in this package release. Setup will not install, enable, or start a timer.",
+		"Review suggestions: opens the human review list if candidates exist. Nothing is auto-approved.",
+		anythingEnabled
+			? "Turn everything off: stops capture and all runtime gates. Existing local records are preserved."
+			: "When a setting is on, a Turn everything off row appears here to stop all runtime gates.",
+	].join("\n");
 }
 
 async function chooseSetup(ctx: ExtensionCommandContext, title: string, options: readonly string[], showUnavailable = true): Promise<string | undefined> {
@@ -323,9 +341,13 @@ async function handleSetupDirect(args: string[], ctx: ExtensionCommandContext): 
 			} else notify(ctx, "Usage: /experience setup timer off", "warn");
 			return true;
 		case "8":
-		case "help":
+		case "help": {
+			const { config } = await readAgentExperienceConfig(getAgentExperiencePaths());
+			notify(ctx, setupHelpMessage(config), "info");
+			return true;
+		}
 		case "advanced":
-			notify(ctx, usage(action === "advanced" ? "advanced" : "setup"), "info");
+			notify(ctx, usage("advanced"), "info");
 			return true;
 		case "9":
 		case "cancel":
@@ -339,11 +361,14 @@ async function handleSetupDirect(args: string[], ctx: ExtensionCommandContext): 
 
 async function handleSetup(ctx: ExtensionCommandContext, args: string[] = []) {
 	if (await handleSetupDirect(args, ctx)) return;
-	notify(ctx, setupControlsMessage(), "info");
+	if ((ctx as { hasUI?: boolean }).hasUI === false || typeof (ctx as { ui?: { select?: unknown } }).ui?.select !== "function") {
+		notify(ctx, setupUnavailableMessage(), "info");
+		return;
+	}
 	while (true) {
 		const { config } = await readAgentExperienceConfig(getAgentExperiencePaths());
 		const options = buildSetupOptions(config);
-		const choice = await chooseSetup(ctx, "Agent Experience setup — toggles return here after each change", options, false);
+		const choice = await chooseSetup(ctx, "Agent Experience Settings — Enter toggles, Help explains, Done exits", options, false);
 		if (!choice || choice === "Done") return notify(ctx, "Agent Experience setup closed.", "info");
 		if (choice === "Status") {
 			await handleStatus(ctx);
@@ -353,35 +378,32 @@ async function handleSetup(ctx: ExtensionCommandContext, args: string[] = []) {
 			await handleReview(["list"], ctx);
 			continue;
 		}
-		if (choice === "Advanced help") {
-			notify(ctx, usage("advanced"), "info");
+		if (choice === "Help") {
+			notify(ctx, setupHelpMessage(config), "info");
 			continue;
 		}
-		if (choice.startsWith("Background/timer:")) {
+		if (choice === "Turn everything off") {
+			await handleOff(ctx);
+			continue;
+		}
+		if (choice.startsWith("Background timer")) {
 			await handleSetupTimer(ctx);
 			continue;
 		}
-		if (choice.startsWith("Learning suggestions:")) {
+		if (choice.endsWith("Learning suggestions")) {
 			await handleConsolidation(config.consolidation_enabled ? "off" : "on", ctx);
 			continue;
 		}
-		if (choice.startsWith("Guidance setting:")) {
+		if (choice.endsWith("Guidance before replies")) {
 			await handleSelector(config.selector_enabled ? "off" : "on", ctx);
 			continue;
 		}
-		if (choice.startsWith("Everything:")) {
-			const anythingEnabled = config.enabled || config.capture_enabled || config.consolidation_enabled || config.selector_enabled;
-			if (anythingEnabled) await handleOff(ctx);
-			else await handleOn(ctx);
-			continue;
-		}
-		if (choice.startsWith("Capture:")) {
+		if (choice.includes("Capture conversations")) {
 			if (config.enabled && config.capture_enabled) captureBuffer.clearAll();
 			const { config: updated, path } = await setAgentExperienceCaptureActive(!(config.enabled && config.capture_enabled));
 			notify(ctx, [
-				`Capture is ${updated.enabled && updated.capture_enabled ? "ON" : "OFF"}.`,
+				`Capture conversations ${updated.enabled && updated.capture_enabled ? "ON" : "OFF"}.`,
 				`config: ${path}`,
-				`enabled=${updated.enabled}`,
 				`capture=${updated.capture_enabled}`,
 				`learning=${updated.consolidation_enabled}`,
 				`guidance=${updated.selector_enabled}`,
@@ -681,7 +703,7 @@ function usage(topic = "") {
 	if (normalized === "setup") {
 		return [
 			"Agent Experience setup:",
-			"/experience setup   # main settings menu: on/off, review, consolidation, guidance, timer notes; no changes until you choose",
+			"/experience setup   # checkbox-style settings panel: capture, learning, guidance, timer help, review, status, Help",
 			"/experience setup on|off|status|review|consolidation on|off|guidance on|off|timer off",
 			"/experience on      # shortcut: resume local redacted capture",
 			"/experience status  # see what is happening and the next step",
@@ -740,7 +762,7 @@ function usage(topic = "") {
 	}
 	return [
 		"Agent Experience:",
-		"/experience setup   # main settings menu; no changes until you choose",
+		"/experience setup   # checkbox-style settings panel; no changes until you choose",
 		"/experience setup on|off|status|review|consolidation on|off|guidance on|off|timer off",
 		"/experience on      # shortcut: resume local redacted capture",
 		"/experience off     # stop capture and all runtime gates",
