@@ -1,21 +1,56 @@
 # Pi Experiences
 
-Pi Experiences is an experimental Pi package that tries to give coding agents a third kind of long-term learning: **experience**.
+Pi Experiences is an experimental Pi package for giving coding agents a third kind of long-term learning: **experience**.
 
-Most agent setups already have two buckets:
+## For humans: what is this for?
 
-1. **Skills** — explicit procedures: how to do a task, which workflow to follow, what tools to use.
-2. **Memory** — remembered facts: preferences, entities, project notes, decisions, history.
+Most agent personalization gets mixed into two buckets:
 
-Pi Experiences explores a separate bucket:
+- **Skills** — explicit procedures: "when doing X, follow these steps."
+- **Memory** — remembered facts: "this project uses Y," "the user prefers Z," "this decision happened."
 
-3. **Experience** — reviewed behavioral patterns inferred from repeated interaction: how the agent tends to help this user better, which communication habits work, which review/caution patterns recur, and which response styles should be nudged at the right moment.
+But humans also learn a third way: through repeated interaction. We develop habits, tone, caution, timing, and judgment patterns. We learn things like:
 
-The goal is not to replace skills or memory. The goal is to keep behavioral/habitual traits out of both, review them explicitly, and inject only small, relevant guidance when it is safe.
+- when to be brief vs. careful;
+- when to ask before acting;
+- when a user wants a rollback path before a risky change;
+- when a repeated correction means "change your behavior next time." 
 
-## What it does
+Pi Experiences tries to model that third bucket separately.
 
-The package installs the `agent-experience` Pi extension and an explanatory skill.
+```text
+skills     = procedures you intentionally wrote down
+memory     = facts you want the agent to remember
+experience = behavioral patterns inferred from repeated interaction, then reviewed
+```
+
+The goal is **not** to let an agent silently rewrite itself. The goal is to capture behavioral patterns, make them reviewable, and only inject small, relevant guidance after they are accepted.
+
+Think of it as a local, review-first habit layer:
+
+```text
+normal work
+  -> redacted local observations
+  -> candidate habits
+  -> human review
+  -> active habits
+  -> optional just-in-time guidance
+```
+
+Examples of experience-style habits:
+
+- "When discussing risky runtime changes, summarize rollback path first."
+- "When tests pass but live runtime may be stale, ask for reload before claiming smoke success."
+- "When packaging public code, explain install/update semantics in human terms."
+
+Those are not skills. They are not facts. They are behavioral tendencies that may help the agent feel less reset between sessions.
+
+## What gets installed?
+
+The package installs:
+
+- the `agent-experience` Pi extension;
+- a small public `agent-experience` skill explaining how to operate it.
 
 The extension can:
 
@@ -28,22 +63,6 @@ The extension can:
 - inject only bounded guidance, never raw conversation history;
 - keep skills, memory, reports, pending review rows, and quarantine rows out of selector input.
 
-## Mental model
-
-```text
-skills  = procedures you wrote on purpose
-memory  = facts you want the agent to remember
-experience = habits inferred from repeated interaction, then reviewed
-```
-
-Examples of experience-style habits might be:
-
-- "When discussing risky runtime changes, summarize rollback path first."
-- "When a user asks for public packaging, mention install/update semantics."
-- "When tests pass but live runtime is stale, ask for reload before claiming smoke success."
-
-These are not domain skills and not factual memories. They are behavior patterns. Pi Experiences keeps them separate so they can be inspected, accepted, disabled, or allowed to decay.
-
 ## Install
 
 Recommended stable install from npm:
@@ -52,7 +71,7 @@ Recommended stable install from npm:
 pi install npm:pi-experiences
 ```
 
-Pi can update npm-installed packages to the latest published stable version:
+Update npm-installed Pi packages to the latest published stable version:
 
 ```bash
 pi update --extensions
@@ -61,7 +80,7 @@ pi update --extensions
 Pinned GitHub tag install is also available when you want an exact source ref:
 
 ```bash
-pi install git:github.com/misunders2d/pi-experiences@v0.1.1
+pi install git:github.com/misunders2d/pi-experiences@v0.1.2
 ```
 
 For local development:
@@ -149,45 +168,6 @@ Privacy and safety invariants:
 - no law-file writes are performed by the extension;
 - no automatic habit activation happens from selector use.
 
-## Law file
-
-Agent Experience uses a configured law snapshot for habit activation and selector freshness. Default:
-
-```toml
-law_path = "law.md"
-```
-
-Relative paths resolve under the state root (`~/.agents/experience/law.md`). Absolute paths are also supported.
-
-If the law file is missing:
-
-- habit activation commands fail closed;
-- selector injection fails closed;
-- the selector emits a bounded warning instead of silently doing nothing.
-
-The current law check is deterministic v1: it requires a configured law file for freshness hashing and blocks a small denylist of dangerous habit text patterns. It does **not** semantically compare every habit against the full law text. Future semantic contradiction checks should route to pending review, not direct injection.
-
-## Selector modes
-
-### Instant mode
-
-Default when selector is enabled.
-
-- local only;
-- no model/network call;
-- active same-user habits only;
-- confidence, freshness, staleness, overlap, and daily-budget gates;
-- bounded guidance injection.
-
-### Smart mode
-
-Opt-in.
-
-- calls the configured model/provider through Pi;
-- uses the same active/freshness/staleness/confidence/budget gates;
-- no hidden fallback;
-- model/auth/timeout/malformed output fails closed to no injection.
-
 ## Review flow
 
 The extension is designed around human review.
@@ -231,6 +211,107 @@ Environment override for state root:
 AX_STATE_ROOT=/path/to/private/state pi
 ```
 
+## Law file
+
+Agent Experience uses a configured law snapshot for habit activation and selector freshness. Default:
+
+```toml
+law_path = "law.md"
+```
+
+Relative paths resolve under the state root (`~/.agents/experience/law.md`). Absolute paths are also supported.
+
+If the law file is missing:
+
+- habit activation commands fail closed;
+- selector injection fails closed;
+- the selector emits a bounded warning instead of silently doing nothing.
+
+The current law check is deterministic v1: it requires a configured law file for freshness hashing and blocks a small denylist of dangerous habit text patterns. It does **not** semantically compare every habit against the full law text. Future semantic contradiction checks should route to pending review, not direct injection.
+
+## Selector modes
+
+### Instant mode
+
+Default when selector is enabled.
+
+- local only;
+- no model/network call;
+- active same-user habits only;
+- confidence, freshness, staleness, overlap, and daily-budget gates;
+- bounded guidance injection.
+
+### Smart mode
+
+Opt-in.
+
+- calls the configured model/provider through Pi;
+- uses the same active/freshness/staleness/confidence/budget gates;
+- no hidden fallback;
+- model/auth/timeout/malformed output fails closed to no injection.
+
+<details>
+<summary>For agents and maintainers: technical contract, caveats, and release discipline</summary>
+
+### Package contract
+
+- `package.json` includes the `pi-package` keyword.
+- `pi.extensions` points at `./extensions`.
+- `pi.skills` points at `./skills`.
+- Pi core packages are peer dependencies, not bundled runtime code.
+- The package is TypeScript-source-first for Pi's extension loader.
+- Node engine: `>=22.18.0`.
+
+### Hard invariants
+
+- Do not persist raw prompts, raw session logs, or raw injected guidance in selector logs.
+- Keep `prompt_hash = "omitted"` unless a future design explicitly proves non-linkability.
+- Selector candidates must be active same-user habits only.
+- No injection from reports, pending review, quarantine, evidence, disabled, dormant, candidate, suppressed, or archived rows.
+- Selector remains disabled by default.
+- Default selector mode remains `instant`.
+- Smart mode must fail closed on auth/model/timeout/malformed output.
+- Missing ledger/law must fail closed.
+- Hot selector path must not initialize storage or run migrations.
+- No law-file writes from the extension.
+- No automatic activation from selector use.
+
+### Capture contract
+
+- Capture writes redacted conversation-pair records to `observations.jsonl`.
+- Completed pairs flush at `agent_end`, not at next input, so the last turn survives normal process exit.
+- `close_reason = "agent_end"` is expected for normal capture records.
+- `prev_pair_ref` links records so later consolidation can reason over sequence without storing reaction inside the previous pair.
+
+### Law-check caveat
+
+The current law checker is deterministic v1. It checks law freshness and a small denylist of dangerous habit text patterns. It is not full semantic contradiction detection. Future semantic checks should create pending-review items, not direct activations.
+
+### Selector caveats
+
+- Instant mode is lexical and deterministic; it is intentionally simple.
+- Smart mode may add latency and requires measured p95 before recommending always-on use.
+- No-injection paths intentionally do not write skip rows unless an injection transaction is already happening; this preserves the no durable trace invariant for failed selection paths.
+
+### Release discipline
+
+GitHub is the source of truth. npm is the stable distribution channel.
+
+For a bug fix:
+
+1. patch source in GitHub repo;
+2. add a regression test;
+3. run reviewer/debate for non-trivial safety or runtime changes;
+4. run `npm run check`;
+5. bump `package.json` version;
+6. commit and tag, for example `v0.1.3`;
+7. publish the same commit to npm;
+8. tell npm users to run `pi update --extensions`.
+
+Git installs are pinned. They do not float to newer tags.
+
+</details>
+
 ## Development
 
 Run checks:
@@ -255,7 +336,7 @@ pi update --extensions
 For users who want a pinned exact source ref:
 
 ```bash
-pi install git:github.com/misunders2d/pi-experiences@v0.1.1
+pi install git:github.com/misunders2d/pi-experiences@v0.1.2
 ```
 
 Git package refs are pinned. `pi update --extensions` reconciles the pinned ref but does not float Git installs to a new tag.
@@ -266,7 +347,7 @@ For a bug fix:
 2. add or update regression tests;
 3. run review and `npm run check`;
 4. bump `package.json` version;
-5. commit and tag, for example `v0.1.2`;
+5. commit and tag, for example `v0.1.3`;
 6. publish the same commit to npm;
 7. npm users update with `pi update --extensions`; Git-pinned users install the new tag explicitly.
 
