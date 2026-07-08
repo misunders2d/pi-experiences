@@ -87,9 +87,18 @@ export async function setAgentExperienceCaptureEnabled(captureEnabled: boolean, 
 		...DEFAULT_AGENT_EXPERIENCE_CONFIG,
 		...current.config,
 		capture_enabled: captureEnabled,
-		selector_enabled: false,
-		embedding_enabled: false,
-		consolidation_enabled: false,
+	};
+	await writeAgentExperienceConfig(config, paths);
+	return { config, path: paths.configPath };
+}
+
+export async function setAgentExperienceConsolidationEnabled(consolidationEnabled: boolean, paths = getAgentExperiencePaths()): Promise<{ config: AgentExperienceConfig; path: string }> {
+	const current = await readAgentExperienceConfig(paths);
+	const config = {
+		...DEFAULT_AGENT_EXPERIENCE_CONFIG,
+		...current.config,
+		consolidation_enabled: consolidationEnabled,
+		// Timer/model automation remains a separate future gate.
 		timer_enabled: false,
 		break_in_enabled: false,
 	};
@@ -103,10 +112,6 @@ export async function setAgentExperienceSelectorEnabled(selectorEnabled: boolean
 		...DEFAULT_AGENT_EXPERIENCE_CONFIG,
 		...current.config,
 		selector_enabled: selectorEnabled,
-		embedding_enabled: false,
-		consolidation_enabled: false,
-		timer_enabled: false,
-		break_in_enabled: false,
 	};
 	await writeAgentExperienceConfig(config, paths);
 	return { config, path: paths.configPath };

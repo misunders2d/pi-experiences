@@ -5,6 +5,7 @@ import {
 	getAgentExperiencePaths,
 	readAgentExperienceConfig,
 	setAgentExperienceCaptureEnabled,
+	setAgentExperienceConsolidationEnabled,
 	setAgentExperienceEnabled,
 	setAgentExperienceSelectorEnabled,
 } from "./src/paths.ts";
@@ -213,6 +214,26 @@ async function handleHabits(args: string[], ctx: ExtensionCommandContext) {
 	notify(ctx, `Generated report-only ${result.path}\n${formatResult({ user_id: result.user_id, report_only: result.report_only, injectable: result.injectable })}`, "info");
 }
 
+async function handleConsolidation(command: string | undefined, ctx: ExtensionCommandContext) {
+	const value = (command || "").toLowerCase();
+	if (value !== "on" && value !== "off") {
+		return notify(ctx, "Usage: /experience consolidation on|off", "warn");
+	}
+	const { config, path } = await setAgentExperienceConsolidationEnabled(value === "on");
+	notify(
+		ctx,
+		[
+			`Agent Experience consolidation ${value === "on" ? "enabled" : "disabled"} flag written.`,
+			`config: ${path}`,
+			"Consolidation is manual in this release: run experience-consolidate status/now explicitly; no timer or live model adapter is enabled.",
+			`enabled=${config.enabled}`,
+			`capture=${config.capture_enabled}`,
+			`consolidation=${config.consolidation_enabled}`,
+		].join("\n"),
+		value === "on" ? "warn" : "info",
+	);
+}
+
 async function handleSelector(command: string | undefined, ctx: ExtensionCommandContext) {
 	const value = (command || "").toLowerCase();
 	if (value === "calibrate") {
@@ -225,9 +246,9 @@ async function handleSelector(command: string | undefined, ctx: ExtensionCommand
 	notify(
 		ctx,
 		[
-			`Agent Experience selector ${value === "on" ? "enabled" : "disabled"} flag written.`,
+			`Agent Experience pre-injection/selector ${value === "on" ? "enabled" : "disabled"} flag written.`,
 			`config: ${path}`,
-			"Selector is effective only when Agent Experience is also enabled.",
+			"Selector is effective only when Agent Experience is also enabled and reviewed active habits exist.",
 			config.selector_mode === "instant"
 				? "Selector mode instant: local lexical/no-network selection from active habits only; smart/model calls remain opt-in."
 				: "Selector mode smart: each user prompt may send per-prompt redacted selector payloads with bounded active-habit summaries to the configured selector model/provider and may write bounded redacted hit logs.",
@@ -271,8 +292,11 @@ function usage(topic = "") {
 			"2. /experience enable        # master switch only",
 			"3. /experience capture on    # collect redacted conversation pairs",
 			"4. Work normally for a few turns/sessions.",
-			"5. /experience pending list  # review candidates after consolidation/review work exists",
-			"Safe default: selector stays off until /experience selector on.",
+			"5. /experience consolidation on # allow/manual-track consolidation work",
+			"6. Run experience-consolidate now --fixture-output <file> to consolidate observations into review candidates.",
+			"7. /experience pending list  # review candidates after consolidation exists",
+			"8. /experience selector on   # pre-injection from approved active habits only",
+			"No automatic timer/model adapter is installed by default."
 		].join("\n");
 	}
 	if (normalized === "review") {
@@ -291,7 +315,7 @@ function usage(topic = "") {
 	if (normalized === "selector") {
 		return [
 			"Agent Experience selector:",
-			"/experience selector on       # instant mode by default; local lexical/no-network",
+			"/experience selector on       # pre-injection; instant mode by default; local lexical/no-network",
 			"/experience selector off",
 			"/experience selector calibrate # manual aggregate check; no recurring reminder",
 			"Selector defaults disabled. When enabled, default mode is instant (local lexical/no-network). Smart mode is opt-in and may call the configured model/provider.",
@@ -304,6 +328,7 @@ function usage(topic = "") {
 			"/experience status                 # verify enabled=true and capture=true",
 			"ls -la ~/.agents/experience        # config and observations.jsonl live here by default",
 			"tail -3 ~/.agents/experience/observations.jsonl",
+			"experience-consolidate status # verify bundled CLI can read config; consolidation is manual",
 			"If no observations appear after a normal turn, restart Pi so the latest extension code is loaded.",
 			"Capture writes completed turns at agent_end; selector/ledger are separate.",
 		].join("\n");
@@ -317,6 +342,7 @@ function usage(topic = "") {
 		"/experience help troubleshoot",
 		"/experience enable|disable",
 		"/experience capture on|off",
+		"/experience consolidation on|off",
 		"/experience selector on|off|calibrate",
 		"/experience pending list|show|diff|accept|reject",
 		"/experience habit explain <id>",
@@ -331,7 +357,7 @@ function usage(topic = "") {
 
 export default function agentExperienceExtension(pi: ExtensionAPI) {
 	pi.registerCommand("experience", {
-		description: "Agent Experience status/config/capture/review/selector controls: /experience status|enable|disable|capture on|capture off|selector on|selector off|pending ...|habit ...|habits report",
+		description: "Agent Experience controls: status, enable/disable, capture, consolidation, selector/pre-injection, pending review, habits report",
 		handler: async (args, ctx) => {
 			const [command = "status", subcommand] = String(args || "").trim().split(/\s+/).filter(Boolean);
 			switch (command.toLowerCase()) {
@@ -347,7 +373,14 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 				case "capture":
 					await handleCapture(subcommand, ctx);
 					return;
+				case "consolidation":
+				case "consolidate":
+					await handleConsolidation(subcommand, ctx);
+					return;
 				case "selector":
+				case "pre-injection":
+				case "preinject":
+				case "injection":
 					await handleSelector(subcommand, ctx);
 					return;
 				case "pending":

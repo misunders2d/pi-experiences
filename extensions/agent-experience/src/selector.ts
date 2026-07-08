@@ -1,6 +1,6 @@
 import { canonicalJson, checksumJson, sha256Hex } from "./storage/checksum.ts";
 import { normalizeUserId } from "./storage/private-root.ts";
-import { containsUnredactedSensitiveText, redactJson } from "./storage/redaction.ts";
+import { containsUnredactedSensitiveText, redactJson, redactText } from "./storage/redaction.ts";
 import { buildTypedStorageRow } from "./storage/sqlite.ts";
 import { activationEligibilityFromHabit, checkHabitConflict, checkHabitLaw, type LawSnapshot } from "./review.ts";
 import type { AgentExperienceConfig } from "./config.ts";
@@ -150,7 +150,8 @@ export function selectInstantSelectorCandidates(candidates: SelectorCandidate[],
 }
 
 export function buildSelectorPrompt(candidates: SelectorCandidate[], input: { prompt: string; maxHabits: number }): string {
-	const payload = redactJson({ schema_version: 1, task: "select_agent_experience_habits", max_selected: Math.max(0, Math.min(3, Math.trunc(input.maxHabits))), user_prompt_summary: normalizeText(input.prompt).slice(0, 500), candidates: candidates.map((candidate) => ({ id: candidate.id, condition: candidate.condition, behavior: candidate.behavior, confidence_bp: candidate.confidence_bp, staleness: candidate.staleness })) });
+	const safePromptSummary = normalizeText(redactText(input.prompt)).slice(0, 500);
+	const payload = redactJson({ schema_version: 1, task: "select_agent_experience_habits", max_selected: Math.max(0, Math.min(3, Math.trunc(input.maxHabits))), user_prompt_summary: safePromptSummary, candidates: candidates.map((candidate) => ({ id: candidate.id, condition: candidate.condition, behavior: candidate.behavior, confidence_bp: candidate.confidence_bp, staleness: candidate.staleness })) });
 	const text = canonicalJson(payload);
 	if (text.length > 12000) throw new Error("Selector prompt too large");
 	if (containsUnredactedSensitiveText(text)) throw new Error("Selector prompt contains unredacted sensitive text");

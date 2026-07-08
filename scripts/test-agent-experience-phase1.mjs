@@ -90,6 +90,23 @@ const configText = await readFile(paths.configPath, 'utf8');
 assert.match(configText, /law_path = "law\.md"/, 'config must persist law path');
 assert.doesNotMatch(configText, /TOKEN|SECRET|PRIVATE_KEY|BEGIN PRIVATE KEY/i, 'config must not contain secret-like fixture text');
 
+await commands.get('experience').handler('capture on', ctx);
+await commands.get('experience').handler('consolidation on', ctx);
+await commands.get('experience').handler('selector on', ctx);
+readResult = await readAgentExperienceConfig(paths);
+assert.equal(readResult.config.capture_enabled, true, 'capture gate can be enabled independently');
+assert.equal(readResult.config.consolidation_enabled, true, 'consolidation gate can be enabled independently');
+assert.equal(readResult.config.selector_enabled, true, 'selector/pre-injection gate can be enabled independently');
+await commands.get('experience').handler('capture off', ctx);
+readResult = await readAgentExperienceConfig(paths);
+assert.equal(readResult.config.capture_enabled, false, 'capture off disables capture only');
+assert.equal(readResult.config.consolidation_enabled, true, 'capture off must not silently disable consolidation');
+assert.equal(readResult.config.selector_enabled, true, 'capture off must not silently disable selector');
+await commands.get('experience').handler('selector off', ctx);
+readResult = await readAgentExperienceConfig(paths);
+assert.equal(readResult.config.selector_enabled, false, 'selector off disables selector only');
+assert.equal(readResult.config.consolidation_enabled, true, 'selector off must not silently disable consolidation');
+
 await commands.get('experience').handler('disable', ctx);
 readResult = await readAgentExperienceConfig(paths);
 assert.equal(readResult.config.enabled, false);

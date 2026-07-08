@@ -15,6 +15,17 @@ Use three separate concepts:
 
 Do not blur them. A habit is not a skill unless it describes a repeatable workflow. A habit is not memory unless it is a durable fact. Experience should stay small, reviewed, and injectable only when relevant.
 
+## Plain-language pieces
+
+- **Experience** is the whole behavior-learning layer.
+- **Capture** saves redacted text fields and metadata from completed turns to `observations.jsonl`. It creates raw material only, not habits.
+- **Consolidation** reads captures and proposes habit candidates. In the public package today this is manual through `experience-consolidate`; no timer/model adapter runs automatically.
+- **Pending review** means proposed habits await approval/rejection and are not injectable yet.
+- **Active habits** are reviewed habits eligible for later use.
+- **Pre-injection / selector** checks active same-user habits before an answer and injects only bounded relevant guidance. It is off until explicitly enabled.
+
+Full loop gates: `/experience enable`, `/experience capture on`, `/experience consolidation on` plus manual `experience-consolidate`, human review, then `/experience selector on` for pre-injection.
+
 ## Safety defaults
 
 - Capture starts disabled.
@@ -34,6 +45,17 @@ Setup:
 /experience status
 /experience enable
 /experience capture on
+```
+
+Manual consolidation:
+
+```text
+/experience consolidation on
+```
+
+```bash
+experience-consolidate status
+experience-consolidate now --fixture-output /path/to/model-output.json
 ```
 
 Help:

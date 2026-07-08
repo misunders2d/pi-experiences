@@ -36,6 +36,8 @@ async function main() {
     return;
   }
   if (command !== 'now') throw new Error(usage());
+  if (!config.enabled) throw new Error('consolidation_disabled: run /experience enable before experience-consolidate now');
+  if (!config.consolidation_enabled) throw new Error('consolidation_disabled: run /experience consolidation on before experience-consolidate now');
   const fixturePath = argValue(args, '--fixture-output');
   if (!fixturePath) throw new Error('consolidation_model_adapter_unavailable: provide --fixture-output for package-local dry-run/test, or run through an approved Pi adapter path');
   const generation = argValue(args, '--generation') || 'active';

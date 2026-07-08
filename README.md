@@ -56,9 +56,9 @@ The extension can:
 
 - opt in to local capture of redacted conversation pairs;
 - store captures under a private state root, default `~/.agents/experience/`;
-- consolidate repeated observations into candidate habits;
+- manually consolidate repeated observations into candidate habits through the bundled `experience-consolidate` CLI;
 - require human review before habits become active;
-- keep selector injection disabled by default;
+- keep pre-injection / selector injection disabled by default;
 - when enabled, select only active same-user habits;
 - inject only bounded guidance, never raw conversation history;
 - keep skills, memory, reports, pending review rows, and quarantine rows out of selector input.
@@ -80,7 +80,7 @@ pi update --extensions
 Pinned GitHub tag install is also available when you want an exact source ref:
 
 ```bash
-pi install git:github.com/misunders2d/pi-experiences@v0.1.2
+pi install git:github.com/misunders2d/pi-experiences@v0.1.4
 ```
 
 For local development:
@@ -111,6 +111,15 @@ Duplicate copies can register the same hooks twice and cause duplicate capture o
 
 ## First run
 
+### Plain-language pieces
+
+- **Experience** is the whole behavior-learning layer. Turning it on means Pi may use this package, but it does not by itself capture, consolidate, or inject anything.
+- **Capture** means saving redacted text fields and metadata from completed user/assistant turns to `observations.jsonl`. It is the raw material. Capture does **not** create habits by itself.
+- **Consolidation** means reading many captured observations and proposing possible habits/corrections. Today this is a manual CLI step; no timer/model adapter runs automatically.
+- **Pending review** means proposed habits are waiting for you to approve or reject them. Pending items are not used for injection.
+- **Active habits** are the only reviewed habits eligible for use.
+- **Pre-injection / selector** means Pi checks active habits before a reply and injects only the few relevant ones as bounded guidance. It is off until `/experience selector on`.
+
 Inside Pi:
 
 ```text
@@ -125,7 +134,24 @@ Then use Pi normally for a few turns. Captures are written locally to:
 ~/.agents/experience/observations.jsonl
 ```
 
-The file stores redacted conversation-pair records, not raw full session logs.
+The file stores redacted conversation-pair records with bounded text fields and metadata, not raw full session logs.
+
+### What must be enabled for the full loop?
+
+Agent Experience has separate gates. This is intentional, but easy to miss:
+
+1. **Experience master switch** — `/experience enable` sets `enabled=true`.
+2. **Capture** — `/experience capture on` sets `capture_enabled=true` and writes completed turns to `observations.jsonl`.
+3. **Consolidation** — currently manual. Run `/experience consolidation on` so the config explicitly allows/manual-tracks consolidation work, then run:
+   ```bash
+   experience-consolidate status
+   experience-consolidate now --fixture-output /path/to/model-output.json
+   ```
+   No automatic timer, recurring job, or live model adapter is installed by default.
+4. **Human review** — use `/experience pending list|show|accept|reject` to approve candidates. Unreviewed candidates are not active habits.
+5. **Pre-injection / selector** — `/experience selector on` sets `selector_enabled=true`. Default mode is `instant`, local, lexical, and no-network. It only considers active same-user habits.
+
+If observations are growing but `/experience pending list` is empty, capture is working but consolidation has not successfully produced review candidates yet.
 
 Helpful commands:
 
@@ -175,6 +201,15 @@ The extension is designed around human review.
 ```text
 capture redacted pairs -> consolidate observations -> propose candidate habits -> human review -> active habits -> optional selector injection
 ```
+
+**Consolidation is currently a manual CLI step.** The package installs a bundled `experience-consolidate` command, but it does not install or enable a systemd timer, recurring job, or live model adapter by default. For now, run consolidation explicitly with reviewed fixture/model output:
+
+```bash
+experience-consolidate status
+experience-consolidate now --fixture-output /path/to/model-output.json
+```
+
+If observations are growing but `/experience pending list` shows no candidates, consolidation has probably not run successfully yet.
 
 Review commands:
 
@@ -304,7 +339,7 @@ For a bug fix:
 3. run reviewer/debate for non-trivial safety or runtime changes;
 4. run `npm run check`;
 5. bump `package.json` version;
-6. commit and tag, for example `v0.1.3`;
+6. commit and tag, for example `v0.1.4`;
 7. publish the same commit to npm;
 8. tell npm users to run `pi update --extensions`.
 
@@ -320,7 +355,7 @@ Run checks:
 npm run check
 ```
 
-This package is intentionally TypeScript-source-first for Pi's extension loader. It does not compile to `dist/` for normal use.
+This package keeps TypeScript extension source for Pi's extension loader and builds the public consolidation CLI to `dist/experience-consolidate.mjs` for npm/Git installs.
 
 ## Release and update model
 
@@ -336,7 +371,7 @@ pi update --extensions
 For users who want a pinned exact source ref:
 
 ```bash
-pi install git:github.com/misunders2d/pi-experiences@v0.1.2
+pi install git:github.com/misunders2d/pi-experiences@v0.1.4
 ```
 
 Git package refs are pinned. `pi update --extensions` reconciles the pinned ref but does not float Git installs to a new tag.
@@ -347,7 +382,7 @@ For a bug fix:
 2. add or update regression tests;
 3. run review and `npm run check`;
 4. bump `package.json` version;
-5. commit and tag, for example `v0.1.3`;
+5. commit and tag, for example `v0.1.4`;
 6. publish the same commit to npm;
 7. npm users update with `pi update --extensions`; Git-pinned users install the new tag explicitly.
 

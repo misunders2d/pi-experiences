@@ -7,7 +7,7 @@ import { promisify } from 'node:util';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import agentExperienceExtension from '../extensions/agent-experience/index.ts';
-import { DEFAULT_AGENT_EXPERIENCE_CONFIG, parseAgentExperienceConfig } from '../extensions/agent-experience/src/config.ts';
+import { DEFAULT_AGENT_EXPERIENCE_CONFIG, formatAgentExperienceConfig, parseAgentExperienceConfig } from '../extensions/agent-experience/src/config.ts';
 import { collectAgentExperienceMetrics } from '../extensions/agent-experience/src/metrics.ts';
 import { createBackup, restoreBackup } from '../extensions/agent-experience/src/storage/backup.ts';
 import { canonicalJson } from '../extensions/agent-experience/src/storage/checksum.ts';
@@ -213,6 +213,8 @@ try {
   assert.equal(selectStorageRecordsByUser(restored.db, 'habits', 'owner').some((row) => row.id === 'rollback-extra'), false, 'rollback restore removes post-backup selector-visible state');
   restored.db.close();
 
+  await assert.rejects(() => execFileAsync(process.execPath, ['--experimental-strip-types', './bin/experience-consolidate.mjs', 'now', '--dry-run', '--fixture-output', fixture, '--root', root], { cwd: process.cwd() }), /consolidation_disabled/);
+  await writeFile(join(root, 'agent-experience.toml'), formatAgentExperienceConfig({ ...DEFAULT_AGENT_EXPERIENCE_CONFIG, enabled: true, consolidation_enabled: true }), 'utf8');
   const { stdout } = await execFileAsync(process.execPath, ['--experimental-strip-types', './bin/experience-consolidate.mjs', 'now', '--dry-run', '--fixture-output', fixture, '--root', root], { cwd: process.cwd() });
   assert.match(stdout, /"dry_run": true/);
   assert.equal(existsSync(join(root, '.consolidate.lock')), false, 'CLI dry-run must not leave lock');

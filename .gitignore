@@ -7,3 +7,7 @@ npm-debug.log*
 *.db
 dist/
 coverage/
+
+# Track the published bundled CLI for pinned git installs.
+!dist/
+!dist/experience-consolidate.mjs

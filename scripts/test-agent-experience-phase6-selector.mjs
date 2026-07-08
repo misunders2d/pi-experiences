@@ -10,6 +10,7 @@ import { insertPendingReview } from '../extensions/agent-experience/src/consolid
 import { generateHabitsReport, lawSnapshotForTest, readConfiguredLawSnapshot } from '../extensions/agent-experience/src/review.ts';
 import {
   buildInjectionMessage,
+  buildSelectorPrompt,
   countDailySelectorInjections,
   insertSelectorHitLog,
   isValidSelectorHitLog,
@@ -103,6 +104,10 @@ try {
   assert.equal(narrowedA.length <= 20, true);
   assert.equal(narrowedA.some((row) => row.id === 'active-stale'), false, 'stale habit must be gated out');
   assert.equal(narrowedA[0].id, 'active-1');
+
+  const smartPrompt = buildSelectorPrompt(narrowedA, { prompt: 'please read sergey@example.invalid and /home/misunderstood/private-file before selecting', maxHabits: 3 });
+  assert.doesNotMatch(smartPrompt, /sergey@example\.invalid|\/home\/misunderstood\/private-file/i, 'smart selector prompt must redact before normalization');
+  assert.match(smartPrompt, /redacted/i, 'smart selector prompt should preserve only redacted prompt signal');
 
   assert.deepEqual(parseSelectorModelOutput({ schema_version: 1, selected: [{ id: 'active-1', confidence_bp: 9000 }] }, { candidateIds: narrowedA.map((row) => row.id), maxSelected: 3, minConfidenceBp: 7500 }), [{ id: 'active-1', confidence_bp: 9000 }]);
   assert.throws(() => parseSelectorModelOutput({ schema_version: 1, selected: [{ id: 'candidate-1', confidence_bp: 9000 }] }, { candidateIds: narrowedA.map((row) => row.id), maxSelected: 3, minConfidenceBp: 7500 }), /Unknown/);
