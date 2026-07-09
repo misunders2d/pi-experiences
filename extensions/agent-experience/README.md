@@ -10,7 +10,7 @@ Use exactly one normal-user command:
 /experience setup
 ```
 
-`/experience setup` opens the normal-user control panel for saving chat examples locally, choosing the habit-learning model from live typeahead search or exact model entry with the current model visible, analyzing saved examples now, reviewing suggested habits, approving/rejecting, using approved habits before replies, showing current settings, and explaining schedule/privacy behavior. Checkbox rows show `[x]` for ON and `[ ]` for OFF. Space or Enter toggles checkbox rows or opens action rows, then returns to the menu until Done. It changes nothing until you choose.
+`/experience setup` opens the normal-user control panel for saving chat examples locally, choosing the habit-learning model from live typeahead search or exact model entry with the current model visible, analyzing saved examples now, reviewing suggested habits, resolving semantic duplicates, reviewing/disable/re-enable/archive approved habits, enabling duplicate prevention after scan/backfill, using approved habits before replies, showing current settings, and explaining schedule/privacy behavior. Checkbox rows show `[x]` for ON and `[ ]` for OFF. Space or Enter toggles checkbox rows or opens action rows, then returns to the menu until Done. It changes nothing until you choose.
 
 No typed setup subcommands are required for normal use. If Pi does not render the interactive panel, restart Pi so the latest extension UI loads and run `/experience setup` again. Setup does **not** install timers, run background learning, enable embeddings, enable break-in mode, auto-approve suggestions, or use approved habits before replies unless explicitly enabled from the setup menu.
 
@@ -22,8 +22,10 @@ Human setup procedure:
 4. Choose **Choose model for habit learning**. Type to filter live, e.g. `5.5`; the current model is visible and marked `(current)`.
 5. Choose **Analyze saved examples now**. It starts one nonblocking model job.
 6. Choose **Review suggested habits**. Inspect details in the focused panel, then Approve / Reject / Back.
-7. Choose **Review approved habits** to browse actual active/disabled approved habits and disable or re-enable one without typing IDs or checksums.
-8. Optionally toggle **Use approved habits before replies** to `[x] ON`.
+7. Choose **Review approved habits** to browse actual active/disabled approved habits and disable, re-enable, or archive/hide one without typing IDs or checksums.
+8. Optionally choose **Prevent duplicate habits**. Enabling runs a setup-visible scan/backfill before the gate is armed. OpenAI-compatible embeddings require explicit opt-in and send only normalized condition plus behavior; local providers can use the adapter interface without requiring sqlite vector extensions.
+9. If duplicates are found, choose **Resolve duplicate habits** to merge evidence, supersede old wording, keep separate with a reason, or archive/hide a duplicate.
+10. Optionally toggle **Use approved habits before replies** to `[x] ON`.
 
 Agent/operator setup rules:
 
@@ -111,7 +113,11 @@ Normal users review from the same setup menu:
 
 Then choose **Review suggested habits**, inspect a suggestion in a focused review panel, and choose Approve or Reject. Review details are not dumped into chat history. Checksums protect stale review actions internally. Review never auto-approves habits.
 
-Use **Review approved habits** to browse only actual approved habits (`active` or `disabled`). It does not show candidates or pending suggestions. Select a habit to see When/Do/status/confidence/evidence count/created/updated, then disable an active habit or re-enable a disabled one. Internal IDs and checksums remain hidden.
+Use **Review approved habits** to browse only actual approved habits (`active` or `disabled`). It does not show candidates, pending suggestions, or archived habits. Select a habit to see When/Do/status/confidence/evidence count/created/updated, then disable an active habit, re-enable a disabled one, or archive/hide either. Archive/hide preserves audit/history, hides the habit from normal browsing/search, and prevents selector use. Internal IDs and checksums remain hidden.
+
+Use **Prevent duplicate habits** to opt in to semantic duplicate prevention. The embedding input is structurally limited to normalized `condition + "\\n" + behavior`; raw observations, source refs, evidence summaries, residual JSON, file paths, checksums, and audit text are not embedded. The private SQLite cache is user-scoped and separated by provider/model/dimensions/input-version/checksums; stale cache rows are ignored/replaced. Duplicate relation/audit rows store scores/decisions, not raw vectors. Defaults are 7500bp review and 8500bp strong. Semantically similar habits are routed to **Resolve duplicate habits** and are never auto-merged.
+
+Use **Resolve duplicate habits** to resolve pending semantic pairs inside setup without typing IDs/checksums: merge evidence, supersede old wording, keep separate with a reason, or archive/hide a duplicate. Enabling or scanning duplicate prevention also reconciles pending pairs against current thresholds; pending pairs below the current review threshold are dismissed with audit while keep-separate decisions survive threshold changes.
 
 Candidate habits must generalize the reusable behavioral essence. Durable tool/task categories are allowed when they define the repeated situation, but one-off project/package names, versions, file paths, hashes, and screenshots are not. Prefer `When preparing an npm package release, verify the real end-to-end install/update path before calling it done` over `When working on Agent Experience, do the setup flow`.
 

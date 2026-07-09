@@ -18,6 +18,10 @@ export interface AgentExperienceConfig {
 	embedding_provider: string;
 	embedding_model: string;
 	embedding_dimensions: number;
+	embedding_review_threshold_bp: number;
+	embedding_strong_threshold_bp: number;
+	embedding_timeout_ms: number;
+	embedding_openai_compatible_opt_in: boolean;
 	consolidation_model: string;
 	law_path: string;
 }
@@ -42,6 +46,10 @@ export const DEFAULT_AGENT_EXPERIENCE_CONFIG: AgentExperienceConfig = Object.fre
 	embedding_provider: "openai-compatible",
 	embedding_model: "text-embedding-3-small",
 	embedding_dimensions: 1536,
+	embedding_review_threshold_bp: 7500,
+	embedding_strong_threshold_bp: 8500,
+	embedding_timeout_ms: 10000,
+	embedding_openai_compatible_opt_in: false,
 	consolidation_model: "openai-codex/gpt-5.5",
 	law_path: "law.md",
 });
@@ -54,6 +62,7 @@ const BOOLEAN_KEYS = new Set<keyof AgentExperienceConfig>([
 	"consolidation_enabled",
 	"timer_enabled",
 	"break_in_enabled",
+	"embedding_openai_compatible_opt_in",
 ]);
 
 const NUMBER_KEYS = new Set<keyof AgentExperienceConfig>([
@@ -65,6 +74,9 @@ const NUMBER_KEYS = new Set<keyof AgentExperienceConfig>([
 	"selector_max_habits",
 	"selector_staleness_max",
 	"embedding_dimensions",
+	"embedding_review_threshold_bp",
+	"embedding_strong_threshold_bp",
+	"embedding_timeout_ms",
 ]);
 
 function parseTomlScalar(raw: string): string | number | boolean | undefined {
@@ -163,6 +175,10 @@ export function formatAgentExperienceConfig(config: AgentExperienceConfig): stri
 		`embedding_provider = ${quote(merged.embedding_provider)}`,
 		`embedding_model = ${quote(merged.embedding_model)}`,
 		`embedding_dimensions = ${merged.embedding_dimensions}`,
+		`embedding_review_threshold_bp = ${Math.trunc(merged.embedding_review_threshold_bp)}`,
+		`embedding_strong_threshold_bp = ${Math.trunc(merged.embedding_strong_threshold_bp)}`,
+		`embedding_timeout_ms = ${Math.trunc(merged.embedding_timeout_ms)}`,
+		`embedding_openai_compatible_opt_in = ${merged.embedding_openai_compatible_opt_in}`,
 		`consolidation_model = ${quote(merged.consolidation_model)}`,
 		`law_path = ${quote(merged.law_path)}`,
 		"",
@@ -176,7 +192,7 @@ export function summarizeAgentExperienceConfig(config: AgentExperienceConfig, co
 		`capture=${config.capture_enabled}`,
 		`selector=${config.selector_enabled} mode=${config.selector_mode} timeout_ms=${config.selector_timeout_ms} daily_budget=${config.selector_daily_budget} min_confidence_bp=${config.selector_min_confidence_bp} min_overlap_score=${config.selector_min_overlap_score} max_habits=${config.selector_max_habits}`,
 		config.selector_mode === "instant" ? "selector mode instant: local lexical/no-network selection" : `selector mode smart: may call configured model/provider ${config.selector_model}`,
-		`embedding=${config.embedding_enabled} provider=${config.embedding_provider} model=${config.embedding_model} dimensions=${config.embedding_dimensions}`,
+		`embedding=${config.embedding_enabled} provider=${config.embedding_provider} model=${config.embedding_model} dimensions=${config.embedding_dimensions} review_threshold_bp=${config.embedding_review_threshold_bp} strong_threshold_bp=${config.embedding_strong_threshold_bp} opt_in=${config.embedding_openai_compatible_opt_in}`,
 		`consolidation=${config.consolidation_enabled}`,
 		`law_path=${config.law_path} (relative paths resolve under state root)`,
 		`timer=${config.timer_enabled}`,

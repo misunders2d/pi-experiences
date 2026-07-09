@@ -422,6 +422,7 @@ ctx.ui.custom = async (factory) => {
   assert.match(rendered, /When:/, 'approved habit detail panel must show condition');
   assert.match(rendered, /Do:/, 'approved habit detail panel must show behavior');
   assert.match(rendered, /Disable habit/, 'active habit detail panel must offer disable action');
+  assert.match(rendered, /Archive\/hide habit/, 'active habit detail panel must offer archive/hide action');
   approvedHabitDetailSeen = true;
   approvedHabitActionDone = true;
   component.handleInput(' ');
@@ -465,6 +466,7 @@ ctx.ui.custom = async (factory) => {
   }
   assert.match(rendered, /Status: disabled/, 'approved habit detail panel must show disabled status');
   assert.match(rendered, /Re-enable habit/, 'disabled habit detail panel must offer re-enable action');
+  assert.match(rendered, /Archive\/hide habit/, 'disabled habit detail panel must offer archive/hide action');
   reenableDetailSeen = true;
   reenableActionDone = true;
   component.handleInput(' ');
@@ -484,6 +486,20 @@ try {
 } finally {
   storage.db.close();
 }
+
+notes.length = 0;
+const oldOpenAiKey = process.env.OPENAI_API_KEY;
+const oldAxOpenAiKey = process.env.AX_OPENAI_EMBEDDING_API_KEY;
+delete process.env.OPENAI_API_KEY;
+delete process.env.AX_OPENAI_EMBEDDING_API_KEY;
+setupChoices = ['[ ] Prevent duplicate habits', 'Enable and scan for duplicate habits', 'I understand: send only normalized When/Do habit text for embeddings', 'Done'];
+await commands.get('experience').handler('setup', ctx);
+if (oldOpenAiKey === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = oldOpenAiKey;
+if (oldAxOpenAiKey === undefined) delete process.env.AX_OPENAI_EMBEDDING_API_KEY; else process.env.AX_OPENAI_EMBEDDING_API_KEY = oldAxOpenAiKey;
+configResult = await readAgentExperienceConfig(paths);
+assert.equal(configResult.config.embedding_enabled, false, 'setup semantic enable must leave gate off when provider is unavailable');
+assert.ok(notes.some((note) => /Semantic duplicate prevention was not enabled/.test(note.message || '')), 'setup semantic enable must show clear provider blocker');
+assert.ok(!notes.some((note) => /OPENAI_API_KEY|AX_OPENAI_EMBEDDING_API_KEY/.test(note.message || '')), 'setup semantic blocker must not expose credential names as secrets to normal UI');
 
 notes.length = 0;
 setupChoices = ['Analyze saved examples now', 'Done'];

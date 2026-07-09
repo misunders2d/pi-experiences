@@ -1,6 +1,10 @@
 import { normalizeUserId } from "../storage/private-root.ts";
 import { canonicalJson, checksumJson, sha256Hex } from "../storage/checksum.ts";
 import { buildTypedStorageRow } from "../storage/sqlite.ts";
+import { chooseCanonicalHabit, classifySimilarityBp, cosineBp } from "../semantic/core.ts";
+import { ensureHabitEmbedding, findSemanticDuplicateMatches, sanitizePolicy } from "../semantic/service.ts";
+import { insertHabitDuplicateAudit, upsertHabitDuplicate } from "../semantic/storage.ts";
+import type { EmbeddingAdapter, SemanticDedupePolicy } from "../semantic/types.ts";
 import type { ValidatedObservationRecord } from "./observations.ts";
 import { observationKey } from "./observations.ts";
 import { validateProposalBatch, type HabitCandidateProposal, type ValidatedProposalBatch } from "./proposals.ts";
@@ -32,6 +36,7 @@ interface CommitInput {
 	proposalBatch: unknown;
 	observations: ValidatedObservationRecord[];
 	readCoverage?: { seq_start: number; last: ValidatedObservationRecord };
+	semantic?: { policy?: Partial<SemanticDedupePolicy>; provider?: EmbeddingAdapter; signal?: AbortSignal };
 }
 
 function stableId(prefix: string, value: unknown): string {
@@ -262,7 +267,7 @@ function proposalEvidenceData(_batch: ValidatedProposalBatch, proposal: HabitCan
 	};
 }
 
-export function consolidateProposalBatch(input: CommitInput): ConsolidationResult {
+export async function consolidateProposalBatch(input: CommitInput): Promise<ConsolidationResult> {
 	const userId = normalizeUserId(input.userId);
 	const batch = validateProposalBatch(input.proposalBatch, userId);
 	const fileGeneration = requireSingleGeneration(batch);
@@ -271,6 +276,43 @@ export function consolidateProposalBatch(input: CommitInput): ConsolidationResul
 	const allRefs = batch.proposals.flatMap((proposal) => proposal.source_refs);
 	const maxRef = allRefs.reduce((max, ref) => (ref.seq > max.seq ? ref : max), allRefs[0]);
 	if (!maxRef) throw new Error("Proposal batch missing source refs");
+	const policy = sanitizePolicy(input.semantic?.policy);
+	if (policy.enabled && !input.semantic?.provider) throw new Error("Semantic duplicate provider unavailable");
+	const staged: Array<{ proposal: HabitCandidateProposal; sourceDates: string[]; candidateId: string; evidenceId: string; candidateData: any; evidenceData: any; duplicateMatch?: any }> = [];
+	const stagedSemanticRows: any[] = [];
+	for (let i = 0; i < batch.proposals.length; i++) {
+		const proposal = batch.proposals[i];
+		const sourceDates = sourceRecordsByProposal[i].map((record) => record.created_at);
+		let candidateData = proposalCandidateData(batch, proposal, sourceDates);
+		const candidateId = stableId("candidate", habitIdentity(proposal, userId));
+		let evidenceHabitId = candidateId;
+		let duplicateMatch: any;
+		let stagedRow: any;
+		if (policy.enabled && input.semantic?.provider) {
+			stagedRow = buildTypedStorageRow("habits", { id: candidateId, userId, data: candidateData, now: batch.created_at });
+			const targetRow = { id: stagedRow.id, user_id: stagedRow.user_id, status: stagedRow.status, condition: stagedRow.condition, behavior: stagedRow.behavior, polarity: stagedRow.polarity, checksum: stagedRow.checksum, created_at: stagedRow.created_at, updated_at: stagedRow.updated_at, data_json: stagedRow.data_json };
+			const matches = await findSemanticDuplicateMatches(input.db, { userId, target: targetRow, policy, provider: input.semantic.provider, now: batch.created_at, signal: input.semantic.signal });
+			for (const previous of stagedSemanticRows) {
+				const left = await ensureHabitEmbedding(input.db, { userId, habit: targetRow, policy, provider: input.semantic.provider, now: batch.created_at, signal: input.semantic.signal });
+				const right = await ensureHabitEmbedding(input.db, { userId, habit: previous, policy, provider: input.semantic.provider, now: batch.created_at, signal: input.semantic.signal });
+				const similarityBp = cosineBp(left.vector, right.vector);
+				const strength = classifySimilarityBp(similarityBp, policy);
+				if (strength !== "none") matches.push({ habit: previous, similarityBp, strength });
+			}
+			matches.sort((a: any, b: any) => (b.similarityBp - a.similarityBp) || a.habit.id.localeCompare(b.habit.id));
+			if (matches.length) {
+				const best = matches[0];
+				const canonical = chooseCanonicalHabit({ id: candidateId, created_at: batch.created_at }, best.habit);
+				const canonicalId = canonical.id;
+				duplicateMatch = { matched_habit_id: best.habit.id, matched_status: best.habit.status, similarity_bp: best.similarityBp, strength: best.strength, canonical_habit_id: canonicalId, pending_evidence_route_habit_id: canonicalId };
+				candidateData = { ...candidateData, review_status: "duplicate_resolution", active: false, injectable: false, semantic_duplicate: duplicateMatch };
+			}
+		}
+		const evidenceData = proposalEvidenceData(batch, proposal, sourceDates, evidenceHabitId);
+		const evidenceId = stableId("evidence", { schema_version: 2, user_id: userId, payload: evidenceData });
+		staged.push({ proposal, sourceDates, candidateId, evidenceId, candidateData, evidenceData, duplicateMatch });
+		if (policy.enabled && stagedRow) stagedSemanticRows.push({ id: stagedRow.id, user_id: stagedRow.user_id, status: stagedRow.status, condition: stagedRow.condition, behavior: stagedRow.behavior, polarity: stagedRow.polarity, checksum: stagedRow.checksum, created_at: stagedRow.created_at, updated_at: stagedRow.updated_at, data_json: stagedRow.data_json });
+	}
 	let result: ConsolidationResult | undefined;
 	input.db.exec("BEGIN IMMEDIATE");
 	try {
@@ -279,15 +321,13 @@ export function consolidateProposalBatch(input: CommitInput): ConsolidationResul
 		const evidenceIds: string[] = [];
 		let insertedCandidates = 0;
 		let insertedEvidence = 0;
-		for (let i = 0; i < batch.proposals.length; i++) {
-			const proposal = batch.proposals[i];
-			const sourceDates = sourceRecordsByProposal[i].map((record) => record.created_at);
-			const candidateData = proposalCandidateData(batch, proposal, sourceDates);
-			const candidateId = stableId("candidate", habitIdentity(proposal, userId));
-			const evidenceData = proposalEvidenceData(batch, proposal, sourceDates, candidateId);
-			const evidenceId = stableId("evidence", { schema_version: 2, user_id: userId, payload: evidenceData });
-			const candidate = insertIdempotentStorageRecord(input.db, "habits", { id: candidateId, userId, data: candidateData, now: batch.created_at });
-			const evidence = insertIdempotentStorageRecord(input.db, "evidence", { id: evidenceId, userId, data: evidenceData, now: batch.created_at });
+		for (const item of staged) {
+			const candidate = insertIdempotentStorageRecord(input.db, "habits", { id: item.candidateId, userId, data: item.candidateData, now: batch.created_at });
+			const evidence = insertIdempotentStorageRecord(input.db, "evidence", { id: item.evidenceId, userId, data: item.evidenceData, now: batch.created_at });
+			if (item.duplicateMatch && policy.enabled) {
+				const relation = upsertHabitDuplicate(input.db, { userId, habitId: item.candidateId, otherHabitId: item.duplicateMatch.matched_habit_id, canonicalHabitId: item.duplicateMatch.canonical_habit_id, duplicateHabitId: item.candidateId, similarityBp: item.duplicateMatch.similarity_bp, thresholdBp: policy.reviewThresholdBp, provider: policy.provider, model: policy.model, dimensions: policy.dimensions, decision: "pending", data: { action: "proposal_duplicate_route", pending_evidence_route_habit_id: item.duplicateMatch.pending_evidence_route_habit_id, evidence_current_habit_id: item.evidenceData.habit_id, strength: item.duplicateMatch.strength }, now: batch.created_at });
+				insertHabitDuplicateAudit(input.db, { userId, duplicateId: relation.id, targetKind: "habit_duplicate", targetId: relation.id, action: "proposal_duplicate_route", before: null, after: relation, data: { pending_evidence_route_habit_id: item.duplicateMatch.pending_evidence_route_habit_id, evidence_current_habit_id: item.evidenceData.habit_id, candidate_habit_id: item.candidateId, matched_habit_id: item.duplicateMatch.matched_habit_id, similarity_bp: item.duplicateMatch.similarity_bp }, now: batch.created_at });
+			}
 			candidateIds.push(candidate.id);
 			evidenceIds.push(evidence.id);
 			if (candidate.inserted) insertedCandidates++;

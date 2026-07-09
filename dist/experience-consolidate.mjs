@@ -31,6 +31,10 @@ var DEFAULT_AGENT_EXPERIENCE_CONFIG = Object.freeze({
   embedding_provider: "openai-compatible",
   embedding_model: "text-embedding-3-small",
   embedding_dimensions: 1536,
+  embedding_review_threshold_bp: 7500,
+  embedding_strong_threshold_bp: 8500,
+  embedding_timeout_ms: 1e4,
+  embedding_openai_compatible_opt_in: false,
   consolidation_model: "openai-codex/gpt-5.5",
   law_path: "law.md"
 });
@@ -41,7 +45,8 @@ var BOOLEAN_KEYS = /* @__PURE__ */ new Set([
   "embedding_enabled",
   "consolidation_enabled",
   "timer_enabled",
-  "break_in_enabled"
+  "break_in_enabled",
+  "embedding_openai_compatible_opt_in"
 ]);
 var NUMBER_KEYS = /* @__PURE__ */ new Set([
   "break_in_auto_apply_min_confidence_bp",
@@ -51,7 +56,10 @@ var NUMBER_KEYS = /* @__PURE__ */ new Set([
   "selector_min_overlap_score",
   "selector_max_habits",
   "selector_staleness_max",
-  "embedding_dimensions"
+  "embedding_dimensions",
+  "embedding_review_threshold_bp",
+  "embedding_strong_threshold_bp",
+  "embedding_timeout_ms"
 ]);
 function parseTomlScalar(raw) {
   const value = raw.trim();
@@ -248,7 +256,7 @@ function containsUnredactedSensitiveText(value) {
 }
 
 // extensions/agent-experience/src/storage/schema.ts
-var STORAGE_SCHEMA_VERSION = 5;
+var STORAGE_SCHEMA_VERSION = 6;
 var STORAGE_STATUS_VALUES = ["candidate", "active", "dormant", "archived", "suppressed_by_law", "disabled"];
 var STORAGE_TYPED_FIELDS = [
   "record_kind",
@@ -407,6 +415,71 @@ CREATE TABLE IF NOT EXISTS experience_review_audit (
 );
 
 CREATE INDEX IF NOT EXISTS idx_experience_review_audit_user_target ON experience_review_audit(user_id, target_kind, target_id);
+
+CREATE TABLE IF NOT EXISTS habit_embeddings (
+  user_id TEXT NOT NULL,
+  habit_id TEXT NOT NULL,
+  embedding_input_version TEXT NOT NULL,
+  embedding_input_checksum TEXT NOT NULL,
+  habit_row_checksum TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  model TEXT NOT NULL,
+  dimensions INTEGER NOT NULL CHECK(dimensions > 0 AND dimensions <= 8192),
+  vector_blob BLOB NOT NULL,
+  vector_checksum TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  row_checksum TEXT NOT NULL,
+  PRIMARY KEY (user_id, habit_id, provider, model, dimensions, embedding_input_version)
+);
+
+CREATE INDEX IF NOT EXISTS idx_habit_embeddings_user_habit ON habit_embeddings(user_id, habit_id);
+CREATE INDEX IF NOT EXISTS idx_habit_embeddings_user_model ON habit_embeddings(user_id, provider, model, dimensions);
+
+CREATE TABLE IF NOT EXISTS habit_duplicates (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  pair_key TEXT NOT NULL,
+  habit_a TEXT NOT NULL,
+  habit_b TEXT NOT NULL,
+  canonical_habit_id TEXT,
+  duplicate_habit_id TEXT,
+  similarity_bp INTEGER NOT NULL CHECK(similarity_bp BETWEEN -10000 AND 10000),
+  threshold_bp INTEGER NOT NULL CHECK(threshold_bp BETWEEN 0 AND 10000),
+  method TEXT NOT NULL,
+  provider TEXT,
+  model TEXT,
+  dimensions INTEGER,
+  decision TEXT NOT NULL CHECK(decision IN ('pending','merged','superseded','kept_separate','archived_duplicate','dismissed_threshold_change')),
+  data_json TEXT NOT NULL,
+  checksum TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  decided_at TEXT,
+  CHECK(habit_a < habit_b),
+  UNIQUE(user_id, pair_key, method)
+);
+
+CREATE INDEX IF NOT EXISTS idx_habit_duplicates_user_decision ON habit_duplicates(user_id, decision);
+CREATE INDEX IF NOT EXISTS idx_habit_duplicates_user_a ON habit_duplicates(user_id, habit_a);
+CREATE INDEX IF NOT EXISTS idx_habit_duplicates_user_b ON habit_duplicates(user_id, habit_b);
+
+CREATE TABLE IF NOT EXISTS habit_duplicate_audit (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  duplicate_id TEXT,
+  target_kind TEXT NOT NULL,
+  target_id TEXT,
+  action TEXT NOT NULL,
+  before_json TEXT NOT NULL,
+  after_json TEXT NOT NULL,
+  data_json TEXT NOT NULL,
+  checksum TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_habit_duplicate_audit_user_created ON habit_duplicate_audit(user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_habit_duplicate_audit_user_duplicate ON habit_duplicate_audit(user_id, duplicate_id);
 
 CREATE TABLE IF NOT EXISTS selector_hit_log (
   id TEXT PRIMARY KEY,
@@ -785,6 +858,305 @@ function observationKey(ref) {
 import { mkdir as mkdir3, rm, writeFile } from "node:fs/promises";
 import { join as join2 } from "node:path";
 
+// extensions/agent-experience/src/semantic/openai-compatible.ts
+async function withTimeout(ms, fn, outerSignal) {
+  const controller = new AbortController();
+  let timer;
+  const onAbort = () => controller.abort(outerSignal?.reason || new Error("embedding_aborted"));
+  if (outerSignal) outerSignal.addEventListener("abort", onAbort, { once: true });
+  try {
+    return await Promise.race([
+      fn(controller.signal),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          controller.abort(new Error("embedding_timeout"));
+          reject(new Error("embedding_timeout"));
+        }, Math.max(1, ms));
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (outerSignal) outerSignal.removeEventListener("abort", onAbort);
+  }
+}
+function createOpenAICompatibleEmbeddingAdapter(options) {
+  const apiKey = options.apiKey || process.env.OPENAI_API_KEY || process.env.AX_OPENAI_EMBEDDING_API_KEY;
+  if (!apiKey) throw new Error("OpenAI-compatible embedding API key unavailable");
+  const base = (options.baseUrl || process.env.AX_OPENAI_EMBEDDING_BASE_URL || process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
+  return {
+    id: `openai-compatible:${options.model}:${options.dimensions}`,
+    provider: "openai-compatible",
+    model: options.model,
+    dimensions: options.dimensions,
+    async embed(texts, input = {}) {
+      return withTimeout(options.timeoutMs || 1e4, async (signal) => {
+        const response = await fetch(`${base}/embeddings`, {
+          method: "POST",
+          headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
+          body: JSON.stringify({ model: options.model, input: texts, dimensions: options.dimensions }),
+          signal
+        });
+        if (!response.ok) throw new Error(`embedding_provider_http_${response.status}`);
+        const json = await response.json();
+        const data = Array.isArray(json?.data) ? json.data.slice().sort((a, b) => Number(a.index) - Number(b.index)) : [];
+        if (data.length !== texts.length) throw new Error("embedding_provider_bad_count");
+        return data.map((item) => {
+          if (!Array.isArray(item?.embedding) || item.embedding.length !== options.dimensions) throw new Error("embedding_provider_bad_dimensions");
+          return Float32Array.from(item.embedding.map((value) => Number(value)));
+        });
+      }, input.signal);
+    }
+  };
+}
+
+// extensions/agent-experience/src/semantic/core.ts
+var SEMANTIC_EMBEDDING_INPUT_VERSION = "habit_embedding_input_v1";
+function normalizeSemanticText(value) {
+  return String(value ?? "").trim().replace(/\s+/g, " ").toLowerCase();
+}
+function habitEmbeddingInputV1(input) {
+  return `${normalizeSemanticText(input.condition)}
+${normalizeSemanticText(input.behavior)}`;
+}
+function embeddingInputChecksum(text) {
+  return sha256Hex(`${SEMANTIC_EMBEDDING_INPUT_VERSION}
+${text}`);
+}
+function normalizedVector(vector) {
+  const raw = vector instanceof Float32Array ? vector : Float32Array.from(vector);
+  let sum = 0;
+  for (const value of raw) {
+    if (!Number.isFinite(value)) throw new Error("Invalid embedding vector value");
+    sum += value * value;
+  }
+  const magnitude = Math.sqrt(sum);
+  if (!Number.isFinite(magnitude) || magnitude <= 0) throw new Error("Invalid zero embedding vector");
+  const out = new Float32Array(raw.length);
+  for (let i = 0; i < raw.length; i++) out[i] = raw[i] / magnitude;
+  return out;
+}
+function vectorToBlob(vector) {
+  return Buffer.from(vector.buffer.slice(vector.byteOffset, vector.byteOffset + vector.byteLength));
+}
+function blobToVector(blob, dimensions) {
+  const buffer = Buffer.from(blob);
+  if (buffer.byteLength !== dimensions * 4) throw new Error("Embedding vector dimension mismatch");
+  return new Float32Array(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength));
+}
+function vectorChecksum(vector) {
+  return sha256Hex(vectorToBlob(vector));
+}
+function cosineSimilarity(a, b) {
+  if (a.length !== b.length) throw new Error("Embedding vector dimension mismatch");
+  if (!a.length) throw new Error("Embedding vector dimension mismatch");
+  let dot = 0;
+  let a2 = 0;
+  let b2 = 0;
+  for (let i = 0; i < a.length; i++) {
+    const av = a[i];
+    const bv = b[i];
+    if (!Number.isFinite(av) || !Number.isFinite(bv)) throw new Error("Invalid embedding vector value");
+    dot += av * bv;
+    a2 += av * av;
+    b2 += bv * bv;
+  }
+  if (a2 <= 0 || b2 <= 0) throw new Error("Invalid zero embedding vector");
+  return dot / (Math.sqrt(a2) * Math.sqrt(b2));
+}
+function cosineBp(a, b) {
+  const cosine = cosineSimilarity(a, b);
+  if (!Number.isFinite(cosine)) throw new Error("Invalid embedding cosine");
+  return Math.trunc(cosine * 1e4);
+}
+function classifySimilarityBp(similarityBp, policy) {
+  if (similarityBp >= policy.strongThresholdBp) return "strong";
+  if (similarityBp >= policy.reviewThresholdBp) return "review";
+  return "none";
+}
+function semanticPairKey(a, b) {
+  if (a === b) throw new Error("Semantic duplicate pair requires two habits");
+  const [habitA, habitB] = [String(a), String(b)].sort();
+  return { pairKey: `${habitA}\0${habitB}`, habitA, habitB };
+}
+function chooseCanonicalHabit(left, right) {
+  const leftCreated = String(left.created_at || "");
+  const rightCreated = String(right.created_at || "");
+  if (leftCreated && rightCreated && leftCreated !== rightCreated) return leftCreated < rightCreated ? left : right;
+  return left.id <= right.id ? left : right;
+}
+
+// extensions/agent-experience/src/semantic/storage.ts
+function boundedJson(value, max = 24e3) {
+  const safe = redactJson(value ?? {});
+  const text = canonicalJson(safe);
+  if (text.length > max) throw new Error("Semantic dedupe JSON too large");
+  if (containsUnredactedSensitiveText(text)) throw new Error("Semantic dedupe JSON contains unredacted sensitive text");
+  return text;
+}
+function stableId(prefix, value) {
+  return `${prefix}-${sha256Hex(canonicalJson(value)).slice(0, 40)}`;
+}
+function embeddingRowChecksum(row) {
+  return checksumJson({ table: "habit_embeddings", row });
+}
+function duplicateChecksum(row) {
+  return checksumJson({ table: "habit_duplicates", row });
+}
+function auditChecksum(row) {
+  return checksumJson({ table: "habit_duplicate_audit", row });
+}
+function normalizeStatuses(statuses) {
+  return [...new Set(statuses.map((status) => String(status)).filter(Boolean))];
+}
+function selectSemanticHabitRows(db, input) {
+  const userId = normalizeUserId(input.userId);
+  const statuses = normalizeStatuses(input.statuses);
+  if (!statuses.length) return [];
+  const statusPlaceholders = statuses.map(() => "?").join(",");
+  const idFilter = input.ids?.length ? ` AND id IN (${input.ids.map(() => "?").join(",")})` : "";
+  return db.prepare(`SELECT id, user_id, status, condition, behavior, polarity, checksum, created_at, updated_at, data_json FROM habits WHERE user_id = ? AND status IN (${statusPlaceholders})${idFilter} ORDER BY created_at, id`).all(userId, ...statuses, ...input.ids || []).map((row) => ({ ...row, polarity: Number(row.polarity) }));
+}
+function getCachedHabitEmbedding(db, input) {
+  const row = db.prepare(`SELECT * FROM habit_embeddings WHERE user_id = ? AND habit_id = ? AND embedding_input_version = ? AND embedding_input_checksum = ? AND habit_row_checksum = ? AND provider = ? AND model = ? AND dimensions = ?`).get(normalizeUserId(input.userId), input.habitId, SEMANTIC_EMBEDDING_INPUT_VERSION, input.embeddingInputChecksum, input.habitRowChecksum, input.provider, input.model, input.dimensions);
+  if (!row) return null;
+  const expected = embeddingRowChecksum({ user_id: row.user_id, habit_id: row.habit_id, embedding_input_version: row.embedding_input_version, embedding_input_checksum: row.embedding_input_checksum, habit_row_checksum: row.habit_row_checksum, provider: row.provider, model: row.model, dimensions: Number(row.dimensions), vector_checksum: row.vector_checksum, created_at: row.created_at, updated_at: row.updated_at });
+  if (expected !== row.row_checksum) return null;
+  const vector = blobToVector(row.vector_blob, Number(row.dimensions));
+  if (vectorChecksum(vector) !== row.vector_checksum) return null;
+  return { ...row, dimensions: Number(row.dimensions), vector };
+}
+function upsertCachedHabitEmbedding(db, input) {
+  const userId = normalizeUserId(input.userId);
+  if (!Number.isInteger(input.dimensions) || input.dimensions < 1 || input.dimensions > 8192) throw new Error("Invalid embedding dimensions");
+  if (input.vector.length !== input.dimensions) throw new Error("Embedding vector dimension mismatch");
+  const existing = getCachedHabitEmbedding(db, input);
+  const vector_checksum = vectorChecksum(input.vector);
+  const created_at = existing?.created_at || input.now;
+  const rowBase = { user_id: userId, habit_id: input.habitId, embedding_input_version: SEMANTIC_EMBEDDING_INPUT_VERSION, embedding_input_checksum: input.embeddingInputChecksum, habit_row_checksum: input.habitRowChecksum, provider: input.provider, model: input.model, dimensions: input.dimensions, vector_checksum, created_at, updated_at: input.now };
+  const row_checksum = embeddingRowChecksum(rowBase);
+  db.prepare(`INSERT INTO habit_embeddings (user_id, habit_id, embedding_input_version, embedding_input_checksum, habit_row_checksum, provider, model, dimensions, vector_blob, vector_checksum, created_at, updated_at, row_checksum)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(user_id, habit_id, provider, model, dimensions, embedding_input_version) DO UPDATE SET embedding_input_checksum=excluded.embedding_input_checksum, habit_row_checksum=excluded.habit_row_checksum, vector_blob=excluded.vector_blob, vector_checksum=excluded.vector_checksum, created_at=excluded.created_at, updated_at=excluded.updated_at, row_checksum=excluded.row_checksum`).run(userId, input.habitId, SEMANTIC_EMBEDDING_INPUT_VERSION, input.embeddingInputChecksum, input.habitRowChecksum, input.provider, input.model, input.dimensions, vectorToBlob(input.vector), vector_checksum, created_at, input.now, row_checksum);
+  const saved = getCachedHabitEmbedding(db, input);
+  if (!saved) throw new Error("Embedding cache write failed");
+  return saved;
+}
+function duplicateMethod(input) {
+  return `embedding:${input.provider}:${input.model}:${input.dimensions}:${SEMANTIC_EMBEDDING_INPUT_VERSION}`;
+}
+function upsertHabitDuplicate(db, input) {
+  const userId = normalizeUserId(input.userId);
+  const pair = semanticPairKey(input.habitId, input.otherHabitId);
+  const method = duplicateMethod(input);
+  const existing = db.prepare("SELECT * FROM habit_duplicates WHERE user_id = ? AND pair_key = ? AND method = ?").get(userId, pair.pairKey, method);
+  const decision = input.decision || existing?.decision || "pending";
+  const created_at = existing?.created_at || input.now;
+  const decided_at = decision === "pending" ? null : input.now;
+  const data_json = boundedJson(input.data ?? {});
+  const base = { user_id: userId, pair_key: pair.pairKey, habit_a: pair.habitA, habit_b: pair.habitB, canonical_habit_id: input.canonicalHabitId, duplicate_habit_id: input.duplicateHabitId, similarity_bp: input.similarityBp, threshold_bp: input.thresholdBp, method, provider: input.provider, model: input.model, dimensions: input.dimensions, decision, data_json, created_at, updated_at: input.now, decided_at };
+  const checksum = duplicateChecksum(base);
+  const id = existing?.id || stableId("habit-dup", { user_id: userId, pair_key: pair.pairKey, method });
+  db.prepare(`INSERT INTO habit_duplicates (id, user_id, pair_key, habit_a, habit_b, canonical_habit_id, duplicate_habit_id, similarity_bp, threshold_bp, method, provider, model, dimensions, decision, data_json, checksum, created_at, updated_at, decided_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(user_id, pair_key, method) DO UPDATE SET canonical_habit_id=excluded.canonical_habit_id, duplicate_habit_id=excluded.duplicate_habit_id, similarity_bp=excluded.similarity_bp, threshold_bp=excluded.threshold_bp, provider=excluded.provider, model=excluded.model, dimensions=excluded.dimensions, decision=excluded.decision, data_json=excluded.data_json, checksum=excluded.checksum, updated_at=excluded.updated_at, decided_at=excluded.decided_at`).run(id, userId, pair.pairKey, pair.habitA, pair.habitB, input.canonicalHabitId, input.duplicateHabitId, input.similarityBp, input.thresholdBp, method, input.provider, input.model, input.dimensions, decision, data_json, checksum, created_at, input.now, decided_at);
+  return db.prepare("SELECT * FROM habit_duplicates WHERE id = ?").get(id);
+}
+function getKeptSeparateDuplicate(db, input) {
+  const pair = semanticPairKey(input.habitId, input.otherHabitId);
+  return db.prepare("SELECT * FROM habit_duplicates WHERE user_id = ? AND pair_key = ? AND method = ? AND decision = 'kept_separate'").get(normalizeUserId(input.userId), pair.pairKey, duplicateMethod(input));
+}
+function insertHabitDuplicateAudit(db, input) {
+  const userId = normalizeUserId(input.userId);
+  const before_json = boundedJson(input.before ?? null);
+  const after_json = boundedJson(input.after ?? null);
+  const data_json = boundedJson(input.data ?? {});
+  const base = { user_id: userId, duplicate_id: input.duplicateId ?? null, target_kind: input.targetKind, target_id: input.targetId ?? null, action: input.action, before_json, after_json, data_json, created_at: input.now };
+  const checksum = auditChecksum(base);
+  const id = stableId("habit-dup-audit", { ...base, checksum });
+  const existing = db.prepare("SELECT id, checksum FROM habit_duplicate_audit WHERE id = ?").get(id);
+  if (existing) {
+    if (existing.checksum !== checksum) throw new Error("Habit duplicate audit collision");
+    return { id, inserted: false };
+  }
+  db.prepare("INSERT INTO habit_duplicate_audit (id, user_id, duplicate_id, target_kind, target_id, action, before_json, after_json, data_json, checksum, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(id, userId, input.duplicateId ?? null, input.targetKind, input.targetId ?? null, input.action, before_json, after_json, data_json, checksum, input.now);
+  return { id, inserted: true };
+}
+
+// extensions/agent-experience/src/semantic/service.ts
+var SEMANTIC_COMPARISON_STATUSES = ["active", "disabled", "candidate"];
+function sanitizePolicy(policy) {
+  const rawReview = policy?.reviewThresholdBp === void 0 ? 7500 : Math.trunc(Number(policy.reviewThresholdBp));
+  const reviewThresholdBp = Number.isFinite(rawReview) ? Math.max(0, Math.min(1e4, rawReview)) : 7500;
+  const rawStrong = policy?.strongThresholdBp === void 0 ? 8500 : Math.trunc(Number(policy.strongThresholdBp));
+  const requestedStrongThresholdBp = Number.isFinite(rawStrong) ? Math.max(0, Math.min(1e4, rawStrong)) : 8500;
+  return {
+    enabled: policy?.enabled === true,
+    provider: String(policy?.provider || "openai-compatible"),
+    model: String(policy?.model || "text-embedding-3-small"),
+    dimensions: Math.max(1, Math.min(8192, Math.trunc(Number(policy?.dimensions ?? 1536)))) || 1536,
+    reviewThresholdBp,
+    strongThresholdBp: Math.max(reviewThresholdBp, requestedStrongThresholdBp),
+    timeoutMs: Math.max(1, Math.min(12e4, Math.trunc(Number(policy?.timeoutMs ?? 1e4)))) || 1e4,
+    openAiCompatibleOptIn: policy?.openAiCompatibleOptIn === true
+  };
+}
+function assertProviderMatches(policy, provider) {
+  if (provider.provider !== policy.provider || provider.model !== policy.model || provider.dimensions !== policy.dimensions) throw new Error("Semantic embedding provider does not match configured policy");
+}
+async function ensureHabitEmbedding(db, input) {
+  const policy = sanitizePolicy(input.policy);
+  assertProviderMatches(policy, input.provider);
+  const text = habitEmbeddingInputV1({ condition: input.habit.condition, behavior: input.habit.behavior });
+  const checksum = embeddingInputChecksum(text);
+  const cached = getCachedHabitEmbedding(db, { userId: input.userId, habitId: input.habit.id, embeddingInputChecksum: checksum, habitRowChecksum: input.habit.checksum, provider: policy.provider, model: policy.model, dimensions: policy.dimensions });
+  if (cached) return cached;
+  const vectors = await input.provider.embed([text], { signal: input.signal });
+  const vector = vectors[0];
+  if (!vector) throw new Error("Semantic embedding provider returned no vector");
+  if (vector.length !== policy.dimensions) throw new Error("Semantic embedding provider returned wrong dimensions");
+  const normalized = normalizedVector(vector);
+  return upsertCachedHabitEmbedding(db, { userId: input.userId, habitId: input.habit.id, embeddingInputChecksum: checksum, habitRowChecksum: input.habit.checksum, provider: policy.provider, model: policy.model, dimensions: policy.dimensions, vector: normalized, now: input.now });
+}
+async function findSemanticDuplicateMatches(db, input) {
+  const policy = sanitizePolicy(input.policy);
+  if (!policy.enabled) return [];
+  const targetEmbedding = await ensureHabitEmbedding(db, { userId: input.userId, habit: input.target, policy, provider: input.provider, now: input.now, signal: input.signal });
+  const rows = selectSemanticHabitRows(db, { userId: input.userId, statuses: input.statuses || SEMANTIC_COMPARISON_STATUSES }).filter((row) => row.id !== input.target.id).filter((row) => row.status !== "archived" && row.status !== "suppressed_by_law");
+  const matches = [];
+  for (const row of rows) {
+    if (getKeptSeparateDuplicate(db, { userId: input.userId, habitId: input.target.id, otherHabitId: row.id, provider: policy.provider, model: policy.model, dimensions: policy.dimensions })) continue;
+    const embedding = await ensureHabitEmbedding(db, { userId: input.userId, habit: row, policy, provider: input.provider, now: input.now, signal: input.signal });
+    const similarityBp = cosineBp(targetEmbedding.vector, embedding.vector);
+    const strength = classifySimilarityBp(similarityBp, policy);
+    if (strength === "none") continue;
+    matches.push({ habit: row, similarityBp, strength });
+  }
+  return matches.sort((a, b) => b.similarityBp - a.similarityBp || a.habit.id.localeCompare(b.habit.id));
+}
+
+// extensions/agent-experience/src/semantic/config.ts
+function semanticPolicyFromConfig(config, overrides = {}) {
+  return sanitizePolicy({
+    enabled: config.embedding_enabled,
+    provider: config.embedding_provider,
+    model: config.embedding_model,
+    dimensions: config.embedding_dimensions,
+    reviewThresholdBp: config.embedding_review_threshold_bp,
+    strongThresholdBp: config.embedding_strong_threshold_bp,
+    timeoutMs: config.embedding_timeout_ms,
+    openAiCompatibleOptIn: config.embedding_openai_compatible_opt_in,
+    ...overrides
+  });
+}
+function createEmbeddingAdapterFromConfig(config) {
+  const policy = semanticPolicyFromConfig(config);
+  if (policy.provider === "openai-compatible") {
+    if (!policy.openAiCompatibleOptIn) return void 0;
+    return createOpenAICompatibleEmbeddingAdapter({ model: policy.model, dimensions: policy.dimensions, timeoutMs: policy.timeoutMs });
+  }
+  return void 0;
+}
+
 // extensions/agent-experience/src/consolidate/proposals.ts
 var TOP_LEVEL_KEYS = /* @__PURE__ */ new Set(["schema_version", "user_id", "batch_id", "created_at", "proposals"]);
 var PROPOSAL_KEYS = /* @__PURE__ */ new Set([
@@ -879,7 +1251,7 @@ function validateProposalBatch(value, expectedUserId) {
 }
 
 // extensions/agent-experience/src/consolidate/commit.ts
-function stableId(prefix, value) {
+function stableId2(prefix, value) {
   return `${prefix}-${sha256Hex(canonicalJson(value)).slice(0, 40)}`;
 }
 function normalizeIdentityText(value) {
@@ -1003,7 +1375,7 @@ function upsertProposalReadWatermark(db, input) {
 }
 function insertAudit(db, input) {
   const data = {
-    run_id: stableId("run", { batch_checksum: input.batch.checksum, action: input.action }),
+    run_id: stableId2("run", { batch_checksum: input.batch.checksum, action: input.action }),
     proposal_batch_checksum: input.batch.checksum,
     action: input.action,
     candidate_ids: input.candidateIds,
@@ -1013,7 +1385,7 @@ function insertAudit(db, input) {
   };
   const dataJson = canonicalJson(data);
   const checksum = checksumJson({ table: "consolidation_audit", user_id: input.userId, data });
-  const id = stableId("audit", { user_id: input.userId, file_generation: input.fileGeneration, batch_checksum: input.batch.checksum, action: input.action });
+  const id = stableId2("audit", { user_id: input.userId, file_generation: input.fileGeneration, batch_checksum: input.batch.checksum, action: input.action });
   const existing = db.prepare("SELECT id, user_id, data_json, checksum FROM consolidation_audit WHERE id = ?").get(id);
   if (existing) {
     const existingData = JSON.parse(existing.data_json);
@@ -1082,7 +1454,7 @@ function proposalEvidenceData(_batch, proposal, sourceDates, habitId) {
     ...proposal.evidence_summary === void 0 ? {} : { evidence_summary: proposal.evidence_summary }
   };
 }
-function consolidateProposalBatch(input) {
+async function consolidateProposalBatch(input) {
   const userId = normalizeUserId(input.userId);
   const batch = validateProposalBatch(input.proposalBatch, userId);
   const fileGeneration = requireSingleGeneration(batch);
@@ -1091,6 +1463,43 @@ function consolidateProposalBatch(input) {
   const allRefs = batch.proposals.flatMap((proposal) => proposal.source_refs);
   const maxRef = allRefs.reduce((max, ref) => ref.seq > max.seq ? ref : max, allRefs[0]);
   if (!maxRef) throw new Error("Proposal batch missing source refs");
+  const policy = sanitizePolicy(input.semantic?.policy);
+  if (policy.enabled && !input.semantic?.provider) throw new Error("Semantic duplicate provider unavailable");
+  const staged = [];
+  const stagedSemanticRows = [];
+  for (let i = 0; i < batch.proposals.length; i++) {
+    const proposal = batch.proposals[i];
+    const sourceDates = sourceRecordsByProposal[i].map((record) => record.created_at);
+    let candidateData = proposalCandidateData(batch, proposal, sourceDates);
+    const candidateId = stableId2("candidate", habitIdentity(proposal, userId));
+    let evidenceHabitId = candidateId;
+    let duplicateMatch;
+    let stagedRow;
+    if (policy.enabled && input.semantic?.provider) {
+      stagedRow = buildTypedStorageRow("habits", { id: candidateId, userId, data: candidateData, now: batch.created_at });
+      const targetRow = { id: stagedRow.id, user_id: stagedRow.user_id, status: stagedRow.status, condition: stagedRow.condition, behavior: stagedRow.behavior, polarity: stagedRow.polarity, checksum: stagedRow.checksum, created_at: stagedRow.created_at, updated_at: stagedRow.updated_at, data_json: stagedRow.data_json };
+      const matches = await findSemanticDuplicateMatches(input.db, { userId, target: targetRow, policy, provider: input.semantic.provider, now: batch.created_at, signal: input.semantic.signal });
+      for (const previous of stagedSemanticRows) {
+        const left = await ensureHabitEmbedding(input.db, { userId, habit: targetRow, policy, provider: input.semantic.provider, now: batch.created_at, signal: input.semantic.signal });
+        const right = await ensureHabitEmbedding(input.db, { userId, habit: previous, policy, provider: input.semantic.provider, now: batch.created_at, signal: input.semantic.signal });
+        const similarityBp = cosineBp(left.vector, right.vector);
+        const strength = classifySimilarityBp(similarityBp, policy);
+        if (strength !== "none") matches.push({ habit: previous, similarityBp, strength });
+      }
+      matches.sort((a, b) => b.similarityBp - a.similarityBp || a.habit.id.localeCompare(b.habit.id));
+      if (matches.length) {
+        const best = matches[0];
+        const canonical = chooseCanonicalHabit({ id: candidateId, created_at: batch.created_at }, best.habit);
+        const canonicalId = canonical.id;
+        duplicateMatch = { matched_habit_id: best.habit.id, matched_status: best.habit.status, similarity_bp: best.similarityBp, strength: best.strength, canonical_habit_id: canonicalId, pending_evidence_route_habit_id: canonicalId };
+        candidateData = { ...candidateData, review_status: "duplicate_resolution", active: false, injectable: false, semantic_duplicate: duplicateMatch };
+      }
+    }
+    const evidenceData = proposalEvidenceData(batch, proposal, sourceDates, evidenceHabitId);
+    const evidenceId = stableId2("evidence", { schema_version: 2, user_id: userId, payload: evidenceData });
+    staged.push({ proposal, sourceDates, candidateId, evidenceId, candidateData, evidenceData, duplicateMatch });
+    if (policy.enabled && stagedRow) stagedSemanticRows.push({ id: stagedRow.id, user_id: stagedRow.user_id, status: stagedRow.status, condition: stagedRow.condition, behavior: stagedRow.behavior, polarity: stagedRow.polarity, checksum: stagedRow.checksum, created_at: stagedRow.created_at, updated_at: stagedRow.updated_at, data_json: stagedRow.data_json });
+  }
   let result;
   input.db.exec("BEGIN IMMEDIATE");
   try {
@@ -1099,15 +1508,13 @@ function consolidateProposalBatch(input) {
     const evidenceIds = [];
     let insertedCandidates = 0;
     let insertedEvidence = 0;
-    for (let i = 0; i < batch.proposals.length; i++) {
-      const proposal = batch.proposals[i];
-      const sourceDates = sourceRecordsByProposal[i].map((record) => record.created_at);
-      const candidateData = proposalCandidateData(batch, proposal, sourceDates);
-      const candidateId = stableId("candidate", habitIdentity(proposal, userId));
-      const evidenceData = proposalEvidenceData(batch, proposal, sourceDates, candidateId);
-      const evidenceId = stableId("evidence", { schema_version: 2, user_id: userId, payload: evidenceData });
-      const candidate = insertIdempotentStorageRecord(input.db, "habits", { id: candidateId, userId, data: candidateData, now: batch.created_at });
-      const evidence = insertIdempotentStorageRecord(input.db, "evidence", { id: evidenceId, userId, data: evidenceData, now: batch.created_at });
+    for (const item of staged) {
+      const candidate = insertIdempotentStorageRecord(input.db, "habits", { id: item.candidateId, userId, data: item.candidateData, now: batch.created_at });
+      const evidence = insertIdempotentStorageRecord(input.db, "evidence", { id: item.evidenceId, userId, data: item.evidenceData, now: batch.created_at });
+      if (item.duplicateMatch && policy.enabled) {
+        const relation = upsertHabitDuplicate(input.db, { userId, habitId: item.candidateId, otherHabitId: item.duplicateMatch.matched_habit_id, canonicalHabitId: item.duplicateMatch.canonical_habit_id, duplicateHabitId: item.candidateId, similarityBp: item.duplicateMatch.similarity_bp, thresholdBp: policy.reviewThresholdBp, provider: policy.provider, model: policy.model, dimensions: policy.dimensions, decision: "pending", data: { action: "proposal_duplicate_route", pending_evidence_route_habit_id: item.duplicateMatch.pending_evidence_route_habit_id, evidence_current_habit_id: item.evidenceData.habit_id, strength: item.duplicateMatch.strength }, now: batch.created_at });
+        insertHabitDuplicateAudit(input.db, { userId, duplicateId: relation.id, targetKind: "habit_duplicate", targetId: relation.id, action: "proposal_duplicate_route", before: null, after: relation, data: { pending_evidence_route_habit_id: item.duplicateMatch.pending_evidence_route_habit_id, evidence_current_habit_id: item.evidenceData.habit_id, candidate_habit_id: item.candidateId, matched_habit_id: item.duplicateMatch.matched_habit_id, similarity_bp: item.duplicateMatch.similarity_bp }, now: batch.created_at });
+      }
       candidateIds.push(candidate.id);
       evidenceIds.push(evidence.id);
       if (candidate.inserted) insertedCandidates++;
@@ -1343,7 +1750,7 @@ function modelOutputToProposalBatch(batch) {
   });
   return { schema_version: 1, user_id: batch.user_id, batch_id: batch.batch_id, created_at: batch.created_at, proposals };
 }
-function stableId2(prefix, value) {
+function stableId3(prefix, value) {
   return `${prefix}-${sha256Hex(canonicalJson(value)).slice(0, 40)}`;
 }
 function quarantineRowChecksum(row) {
@@ -1358,7 +1765,7 @@ function insertPendingReview(db, input) {
   const payloadJson = canonicalJson(payload);
   if (payloadJson.length > 24e3) throw new Error("Pending review payload too large");
   const checksum = pendingReviewChecksum({ user_id: userId, kind: input.kind, status: "open", payload_json: payloadJson });
-  const id = stableId2("pending", { user_id: userId, kind: input.kind, checksum });
+  const id = stableId3("pending", { user_id: userId, kind: input.kind, checksum });
   const existing = db.prepare("SELECT id, checksum FROM pending_review WHERE id = ?").get(id);
   if (existing) {
     if (existing.checksum !== checksum) throw new Error("Pending review stable id collision");
@@ -1374,7 +1781,7 @@ function insertModelOutputQuarantine(db, input) {
   const outputJson = canonicalJson(redacted);
   if (outputJson.length > 24e3) throw new Error("Quarantine output too large");
   const checksum = checksumJson({ schema: "agent_experience_model_output_quarantine_v1", output: JSON.parse(outputJson) });
-  const id = stableId2("quarantine", { user_id: userId, file_generation: input.fileGeneration, seq_start: input.seqStart, seq_end: input.seqEnd, reason: input.reason, checksum });
+  const id = stableId3("quarantine", { user_id: userId, file_generation: input.fileGeneration, seq_start: input.seqStart, seq_end: input.seqEnd, reason: input.reason, checksum });
   const rowChecksum = quarantineRowChecksum({ user_id: userId, file_generation: input.fileGeneration, seq_start: input.seqStart, seq_end: input.seqEnd, reason: input.reason, model: input.model, output_json: outputJson, checksum, created_at: input.createdAt });
   const existing = db.prepare("SELECT id, checksum, row_checksum FROM model_output_quarantine WHERE id = ?").get(id);
   if (existing) {
@@ -1403,7 +1810,7 @@ function findCandidateKeyConflict(output) {
   }
   return null;
 }
-function processValidatedModelOutput(input) {
+async function processValidatedModelOutput(input) {
   const userId = normalizeUserId(input.userId);
   if (input.output.user_id !== userId) throw new Error("Model output user mismatch");
   validateModelOutputSourceRefs(input.output, input.observations);
@@ -1432,7 +1839,7 @@ function processValidatedModelOutput(input) {
     const zero = recordZeroProposalReadCoverage({ db: input.db, userId, fileGeneration: input.output.file_generation, seqStart: input.output.seq_start, last: sourceLast, createdAt: input.output.created_at });
     return { user_id: userId, file_generation: input.output.file_generation, candidate_ids: [], evidence_ids: [], watermark_after: null, read_watermark_after: zero.watermark_after, inserted: zero.inserted };
   }
-  return consolidateProposalBatch({ db: input.db, userId, proposalBatch: modelOutputToProposalBatch(input.output), observations: input.observations, readCoverage: { seq_start: input.output.seq_start, last: sourceLast } });
+  return consolidateProposalBatch({ db: input.db, userId, proposalBatch: modelOutputToProposalBatch(input.output), observations: input.observations, readCoverage: { seq_start: input.output.seq_start, last: sourceLast }, semantic: input.semantic });
 }
 
 // extensions/agent-experience/src/consolidate/runner.ts
@@ -1517,7 +1924,19 @@ async function runConsolidationOnce(input) {
     if (input.dryRun || breakInReviewOnly) {
       return { ok: true, dry_run: true, break_in_review_only: breakInReviewOnly, expected, diff, before, after: tableCounts(input.db) };
     }
-    const result = processValidatedModelOutput({ db: input.db, userId, output, observations: input.observations, expectedRange: expected });
+    const semanticPolicy = input.semantic?.policy ? sanitizePolicy(input.semantic.policy) : input.config ? semanticPolicyFromConfig(input.config) : void 0;
+    let semantic;
+    if (semanticPolicy?.enabled) {
+      let provider = input.semantic?.provider;
+      try {
+        provider = provider || createEmbeddingAdapterFromConfig(input.config);
+      } catch (error) {
+        return { ok: false, dry_run: false, reason: "semantic_embedding_provider_unavailable", detail: String(error?.message || error).slice(0, 300), expected, diff, before, after: tableCounts(input.db) };
+      }
+      if (!provider) return { ok: false, dry_run: false, reason: "semantic_embedding_provider_unavailable", expected, diff, before, after: tableCounts(input.db) };
+      semantic = { policy: semanticPolicy, provider, signal: input.semantic?.signal };
+    }
+    const result = await processValidatedModelOutput({ db: input.db, userId, output, observations: input.observations, expectedRange: expected, semantic });
     return { ok: true, dry_run: false, expected, diff, result, before, after: tableCounts(input.db) };
   } finally {
     await lock.release();

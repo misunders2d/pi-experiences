@@ -11,6 +11,8 @@ import {
 	setAgentExperienceCaptureEnabled,
 	setAgentExperienceConsolidationEnabled,
 	setAgentExperienceConsolidationModel,
+	setAgentExperienceEmbeddingEnabledAfterScan,
+	setAgentExperienceEmbeddingOptIn,
 	setAgentExperienceEnabled,
 	setAgentExperienceSelectorEnabled,
 	setAgentExperienceSimpleOn,
@@ -21,6 +23,7 @@ import { initExperienceStorage, openExistingExperienceStorage } from "./src/stor
 import {
 	acceptCandidateHabit,
 	acceptPendingReview,
+	archiveHideHabit,
 	diffPendingReviewItems,
 	disableHabit,
 	enableHabit,
@@ -31,8 +34,12 @@ import {
 	readConfiguredLawSnapshot,
 	rejectCandidateHabit,
 	rejectPendingReview,
+	resolveHabitDuplicate,
 	showPendingReviewItem,
 } from "./src/review.ts";
+import { semanticPolicyFromConfig, createEmbeddingAdapterFromConfig } from "./src/semantic/config.ts";
+import { scanAndBackfillSemanticDuplicates } from "./src/semantic/service.ts";
+import { listHabitDuplicates } from "./src/semantic/storage.ts";
 import { normalizeUserId, openSensitiveFileForWrite, resolvePrivatePath } from "./src/storage/private-root.ts";
 import { redactText } from "./src/storage/redaction.ts";
 import { classifyCaptureInput, type CaptureKey } from "./src/capture/origin.ts";
@@ -67,12 +74,12 @@ let consolidationModelAdapter: ConsolidationModelAdapter | undefined;
 const analyzeJobs = new Map<string, Promise<void>>();
 
 type SetupReviewAction = "Approve" | "Reject" | "Back to review list";
-type SetupHabitAction = "Disable habit" | "Re-enable habit" | "Back to habit list";
+type SetupHabitAction = "Disable habit" | "Re-enable habit" | "Archive/hide habit" | "Back to habit list";
 
 const DETAIL_PANEL_CUSTOM_OPTIONS = { overlay: false } as const;
 
 type LiveModelSearchResult = { model?: string; exact?: true };
-type SetupAction = "save" | "model" | "analyze" | "review" | "habits" | "use" | "schedule" | "status" | "help" | "off" | "done";
+type SetupAction = "save" | "model" | "analyze" | "review" | "duplicates" | "habits" | "embedding" | "use" | "schedule" | "status" | "help" | "off" | "done";
 
 const RESET = "\x1b[0m";
 const PANEL_BG = "\x1b[48;5;235m";
@@ -145,15 +152,17 @@ function modelValueForSetup(config: { consolidation_model: string }): string {
 	return config.consolidation_model || "choose model";
 }
 
-function buildSetupSettingItems(config: { enabled: boolean; capture_enabled: boolean; consolidation_enabled: boolean; consolidation_model: string; selector_enabled: boolean }): SettingItem[] {
+function buildSetupSettingItems(config: { enabled: boolean; capture_enabled: boolean; consolidation_enabled: boolean; consolidation_model: string; selector_enabled: boolean; embedding_enabled?: boolean }): SettingItem[] {
 	const captureActive = config.enabled && config.capture_enabled;
-	const anythingEnabled = config.enabled || config.capture_enabled || config.consolidation_enabled || config.selector_enabled;
+	const anythingEnabled = config.enabled || config.capture_enabled || config.consolidation_enabled || config.selector_enabled || config.embedding_enabled;
 	return [
 		{ id: "save", label: "Save chat examples locally", currentValue: checkboxValue(captureActive), values: ["[ ] OFF", "[x] ON"], description: "Space/Enter toggles local redacted example capture." },
 		{ id: "model", label: "Choose model for habit learning", currentValue: modelValueForSetup(config), values: [modelValueForSetup(config)], description: "Space/Enter opens live typeahead model search. Type 5.5, codex, glm, etc." },
 		{ id: "analyze", label: "Analyze saved examples now", currentValue: "open", values: ["open"], description: "Starts nonblocking analysis. No habits are auto-approved." },
 		{ id: "review", label: "Review suggested habits", currentValue: "open", values: ["open"], description: "Inspect each suggestion in a boxed panel, then approve/reject/back." },
-		{ id: "habits", label: "Review approved habits", currentValue: "open", values: ["open"], description: "Browse active/disabled habits, then disable or re-enable one." },
+		{ id: "duplicates", label: "Resolve duplicate habits", currentValue: "open", values: ["open"], description: "Review semantically similar habits and choose merge/supersede/keep/archive." },
+		{ id: "habits", label: "Review approved habits", currentValue: "open", values: ["open"], description: "Browse active/disabled habits, then disable, re-enable, or archive/hide one." },
+		{ id: "embedding", label: "Prevent duplicate habits", currentValue: checkboxValue(config.embedding_enabled === true), values: ["[ ] OFF", "[x] ON"], description: "Space/Enter runs a duplicate scan before enabling semantic duplicate gates." },
 		{ id: "use", label: "Use approved habits before replies", currentValue: checkboxValue(config.selector_enabled), values: ["[ ] OFF", "[x] ON"], description: "Space/Enter toggles approved-habit reminders. Suggestions still require review first." },
 		{ id: "schedule", label: "Automatic schedule", currentValue: "Phase 2 / off", values: ["Phase 2 / off"], description: "No timer is installed or enabled by setup." },
 		{ id: "status", label: "Show current settings", currentValue: "open", values: ["open"], description: "Show current Agent Experience status." },
@@ -167,12 +176,12 @@ class SetupSettingsComponent implements Component {
 	private readonly box: Box;
 	private readonly list: SettingsList;
 
-	constructor(config: { enabled: boolean; capture_enabled: boolean; consolidation_enabled: boolean; consolidation_model: string; selector_enabled: boolean }, done: (result: SetupAction | undefined) => void) {
+	constructor(config: { enabled: boolean; capture_enabled: boolean; consolidation_enabled: boolean; consolidation_model: string; selector_enabled: boolean; embedding_enabled?: boolean }, done: (result: SetupAction | undefined) => void) {
 		this.box = new Box(2, 1, panelBg);
 		this.box.addChild(new Text(style("Agent Experience setup", FG_ACCENT, BOLD), 0, 0));
 		this.box.addChild(new Text(style("Space/Enter toggles checkbox rows or opens action rows. Esc closes.", FG_DIM), 0, 0));
 		this.box.addChild({ render: () => [""], invalidate() {} });
-		this.list = new SettingsList(buildSetupSettingItems(config), 10, setupSettingsTheme, (id) => done(id as SetupAction), () => done("done"), { enableSearch: false });
+		this.list = new SettingsList(buildSetupSettingItems(config), 13, setupSettingsTheme, (id) => done(id as SetupAction), () => done("done"), { enableSearch: false });
 		this.box.addChild(this.list);
 	}
 
@@ -913,15 +922,17 @@ async function handleHelpSetup(ctx: ExtensionCommandContext, config: AgentExperi
 	notify(ctx, message, "info");
 }
 
-function buildSetupOptions(config: { enabled: boolean; capture_enabled: boolean; consolidation_enabled: boolean; consolidation_model: string; selector_enabled: boolean }): string[] {
+function buildSetupOptions(config: { enabled: boolean; capture_enabled: boolean; consolidation_enabled: boolean; consolidation_model: string; selector_enabled: boolean; embedding_enabled?: boolean }): string[] {
 	const captureActive = config.enabled && config.capture_enabled;
-	const anythingEnabled = config.enabled || config.capture_enabled || config.consolidation_enabled || config.selector_enabled;
+	const anythingEnabled = config.enabled || config.capture_enabled || config.consolidation_enabled || config.selector_enabled || config.embedding_enabled;
 	return [
 		`${captureActive ? "[x]" : "[ ]"} Save chat examples locally`,
 		`Choose model for habit learning (${modelValueForSetup(config)})`,
 		"Analyze saved examples now",
 		"Review suggested habits",
+		"Resolve duplicate habits",
 		"Review approved habits",
+		`${config.embedding_enabled ? "[x]" : "[ ]"} Prevent duplicate habits`,
 		`${config.selector_enabled ? "[x]" : "[ ]"} Use approved habits before replies`,
 		"Automatic schedule: Phase 2 / off (explain)",
 		"Show current settings",
@@ -945,8 +956,8 @@ function setupUnavailableMessage(): string {
 	return setupControlsMessage();
 }
 
-function setupHelpMessage(config: { enabled: boolean; capture_enabled: boolean; consolidation_enabled: boolean; selector_enabled: boolean; selector_mode: string; selector_model: string }): string {
-	const anythingEnabled = config.enabled || config.capture_enabled || config.consolidation_enabled || config.selector_enabled;
+function setupHelpMessage(config: { enabled: boolean; capture_enabled: boolean; consolidation_enabled: boolean; selector_enabled: boolean; embedding_enabled?: boolean; selector_mode: string; selector_model: string }): string {
+	const anythingEnabled = config.enabled || config.capture_enabled || config.consolidation_enabled || config.selector_enabled || config.embedding_enabled;
 	return [
 		"Agent Experience setup help:",
 		"Use arrow keys to move. Press Space or Enter to toggle checkbox rows or open action rows. Choose Done to exit.",
@@ -958,7 +969,9 @@ function setupHelpMessage(config: { enabled: boolean; capture_enabled: boolean; 
 			: `Use approved habits before replies: lets Pi add only human-approved habits as reminders before future replies. Current mode may call ${config.selector_model} with bounded redacted selector payloads.`,
 		"Automatic schedule: Phase 2 / off in this release. Setup will not install, enable, or start a timer.",
 		"Review suggested habits: opens the list of proposed habits for you to approve or reject. Nothing is auto-approved.",
-		"Review approved habits: opens actual active/disabled approved habits so you can inspect, disable, or re-enable one without typing ids or checksums.",
+		"Resolve duplicate habits: opens semantically similar habits for merge/supersede/keep-separate/archive choices inside setup, without typing ids or checksums.",
+		"Review approved habits: opens actual active/disabled approved habits so you can inspect, disable, re-enable, or archive/hide one without typing ids or checksums.",
+		"Prevent duplicate habits: embeds only normalized condition plus behavior after explicit opt-in; it never sends raw examples, source refs, evidence summaries, residual JSON, checksums, or audit text.",
 		anythingEnabled
 			? "Turn all experience features off: stops capture and all runtime gates. Existing local records are preserved."
 			: "When a setting is on, a Turn all experience features off row appears here to stop all runtime gates.",
@@ -1004,6 +1017,55 @@ async function handleSetupConsolidation(ctx: ExtensionCommandContext) {
 	if (choice === "Allow Analyze saved examples now") return handleConsolidation("on", ctx);
 	if (choice === "Do not allow Analyze saved examples now") return handleConsolidation("off", ctx);
 	return notify(ctx, "Analyze saved examples setup cancelled. No config changed.", "info");
+}
+
+async function handleSetupEmbedding(ctx: ExtensionCommandContext) {
+	const paths = getAgentExperiencePaths();
+	const { config } = await readAgentExperienceConfig(paths);
+	let choice: string | undefined;
+	if (config.embedding_enabled) {
+		choice = await chooseSetup(ctx, "Prevent duplicate habits", ["Keep semantic duplicate prevention ON", "Turn semantic duplicate prevention OFF", "Scan for duplicate habits now", "Back/cancel (no changes)"], false);
+		if (!choice || choice === "Back/cancel (no changes)" || choice === "Keep semantic duplicate prevention ON") return;
+		if (choice === "Turn semantic duplicate prevention OFF") {
+			const { path } = await setAgentExperienceEmbeddingEnabledAfterScan(false, paths);
+			return notify(ctx, [`Prevent duplicate habits: OFF`, `Config file: ${path}`].join("\n"), "info");
+		}
+	}
+	choice = choice || await chooseSetup(ctx, "Prevent duplicate habits", [
+		"Explain semantic duplicate prevention (no changes)",
+		"Enable and scan for duplicate habits",
+		"Scan for duplicate habits now",
+		"Back/cancel (no changes)",
+	], false);
+	if (!choice || choice === "Back/cancel (no changes)") return notify(ctx, "Duplicate-prevention setup cancelled. No config changed.", "info");
+	if (choice === "Explain semantic duplicate prevention (no changes)") return notify(ctx, [
+		"Semantic duplicate prevention compares approved/suggested habit meanings before they can become separate active habits.",
+		"Embedding payload is only normalized When/Do text: condition plus behavior.",
+		"It does not embed raw examples, source refs, evidence summaries, residual JSON, checksums, prompts, or audit text.",
+		"OpenAI-compatible embeddings require explicit opt-in and an API key in the environment. Local providers can use the same adapter later.",
+	].join("\n"), "info");
+	try {
+		const current = await readAgentExperienceConfig(paths);
+		if (current.config.embedding_provider === "openai-compatible" && !current.config.embedding_openai_compatible_opt_in) {
+			const optIn = await chooseSetup(ctx, "OpenAI-compatible embedding opt-in", [
+				"I understand: send only normalized When/Do habit text for embeddings",
+				"Back/cancel (no changes)",
+			], false);
+			if (optIn !== "I understand: send only normalized When/Do habit text for embeddings") return notify(ctx, "Semantic duplicate prevention was not enabled. Remote embedding opt-in was not confirmed.", "warn");
+			await setAgentExperienceEmbeddingOptIn(true, paths);
+		}
+		const afterOptIn = await readAgentExperienceConfig(paths);
+		const provider = createEmbeddingAdapterFromConfig(afterOptIn.config);
+		if (!provider) throw new Error("No semantic embedding provider is available. For openai-compatible, set OPENAI_API_KEY or AX_OPENAI_EMBEDDING_API_KEY, or configure a local provider later.");
+		const policy = semanticPolicyFromConfig(afterOptIn.config, { enabled: true });
+		const scan = await withReviewStorage(async (storage) => scanAndBackfillSemanticDuplicates(storage.db, { userId: storage.userId, policy, provider, now: new Date().toISOString() }));
+		if (choice === "Enable and scan for duplicate habits") await setAgentExperienceEmbeddingEnabledAfterScan(true, paths);
+		const reconciliation = (scan as any).threshold_reconciliation || { dismissed: [], refreshed: [] };
+		notify(ctx, [`Semantic duplicate scan complete: ${plural(scan.checked, "habit")} checked, ${plural(scan.relations.length, "possible duplicate")} found.`, `${plural(reconciliation.dismissed?.length || 0, "pending duplicate")} dismissed by current threshold; ${plural(reconciliation.refreshed?.length || 0, "pending duplicate")} refreshed.`, choice === "Enable and scan for duplicate habits" ? "Prevent duplicate habits: ON" : `Prevent duplicate habits: ${config.embedding_enabled ? "ON" : "OFF"}`, "Next: choose Resolve duplicate habits if any were found."].join("\n"), "info");
+	} catch (error) {
+		if (choice === "Enable and scan for duplicate habits") await setAgentExperienceEmbeddingEnabledAfterScan(false, paths).catch(() => undefined);
+		notify(ctx, `Semantic duplicate prevention was not enabled. ${formatReviewReadError(error)}`, "warn");
+	}
 }
 
 async function handleSetupSelector(ctx: ExtensionCommandContext) {
@@ -1199,7 +1261,7 @@ async function runAnalyzeNowJob(ctx: ExtensionCommandContext, preflight: { lock:
 		return notify(ctx, newSuggestionCount > 0 ? [
 			`Analyze saved examples finished: ${plural(batch.length, "saved example")} checked.`,
 			`New suggested habits created: ${newSuggestionCount}`,
-			candidateIds.length ? `Review ids: ${candidateIds.join(", ")}` : pendingId ? `Review item: ${pendingId}` : "Review list updated.",
+			candidateIds.length || pendingId ? "Review list updated." : "Review list updated.",
 			"Next: open /experience setup and choose Review suggested habits.",
 		].filter(Boolean).join("\n") : modelProposalCount > 0 ? [
 			`Analyze saved examples finished: ${plural(batch.length, "saved example")} checked.`,
@@ -1292,6 +1354,8 @@ function formatReviewItemForHuman(details: any): string {
 
 function formatReviewActionForHuman(action: "Approve" | "Reject", result: any): string {
 	const data = result?.habit || result?.item || result || {};
+	if (action === "Approve" && data.semantic?.reason === "semantic_duplicate") return "This suggestion looks like an existing approved habit, so it was not activated. Open /experience setup → Resolve duplicate habits to merge, supersede, keep separate, or archive/hide it.";
+	if (action === "Approve" && data.semantic?.reason === "semantic_unavailable") return "Semantic duplicate checking is enabled but unavailable, so the suggestion was not activated. Fix the embedding provider or turn duplicate prevention off in /experience setup.";
 	if (action === "Approve" && data.status === "candidate") {
 		return "Approved suggestion. It will not be used before replies yet; it needs more supporting examples before activation.";
 	}
@@ -1355,17 +1419,20 @@ function formatApprovedHabitForHuman(habit: any): string {
 	if (evidence !== undefined) lines.push(`Evidence examples: ${evidence}`);
 	if (habit?.created_at) lines.push(`Created: ${redactText(String(habit.created_at)).slice(0, 80)}`);
 	if (habit?.updated_at) lines.push(`Updated: ${redactText(String(habit.updated_at)).slice(0, 80)}`);
-	lines.push("", status === "active" ? "Choose Disable habit to stop using this approved habit before replies." : "Choose Re-enable habit to use this approved habit before replies again.");
+	lines.push("", status === "active" ? "Choose Disable habit to stop using this approved habit before replies, or Archive/hide to remove it from normal habit lists." : "Choose Re-enable habit to use this approved habit before replies again, or Archive/hide to remove it from normal habit lists.");
 	return lines.join("\n");
 }
 
 function setupHabitActions(habit: any): SetupHabitAction[] {
-	return [habit?.status === "disabled" ? "Re-enable habit" : "Disable habit", "Back to habit list"];
+	return [habit?.status === "disabled" ? "Re-enable habit" : "Disable habit", "Archive/hide habit", "Back to habit list"];
 }
 
-function formatSetupHabitActionForHuman(action: SetupHabitAction): string {
+function formatSetupHabitActionForHuman(action: SetupHabitAction, result?: any): string {
 	if (action === "Disable habit") return "Habit disabled. It stays in history but will not be used before replies.";
+	if (action === "Re-enable habit" && result?.enabled === false && result?.semantic?.reason === "semantic_duplicate") return "Habit was not re-enabled because it looks like another approved habit. Open /experience setup → Resolve duplicate habits to decide what to keep.";
+	if (action === "Re-enable habit" && result?.enabled === false && result?.semantic?.reason === "semantic_unavailable") return "Habit was not re-enabled because semantic duplicate checking is enabled but unavailable. Fix the embedding provider or turn duplicate prevention off in /experience setup.";
 	if (action === "Re-enable habit") return "Habit re-enabled. It can be used before replies when approved-habit reminders are on.";
+	if (action === "Archive/hide habit") return "Habit archived/hidden. It stays in audit history but is hidden from normal approved-habit lists and will not be used before replies.";
 	return "Back to approved habits.";
 }
 
@@ -1390,6 +1457,77 @@ async function chooseApprovedHabitActionInPanel(ctx: ExtensionCommandContext, ti
 	}
 	notify(ctx, details, "info");
 	return chooseSetup(ctx, "What do you want to do with this approved habit?", actions, false) as Promise<SetupHabitAction | undefined>;
+}
+
+function duplicateLabel(item: any, index: number): string {
+	const score = `${Math.round(Number(item.similarity_bp || 0) / 100)}%`;
+	return `${index + 1}. Possible duplicate (${score})`;
+}
+
+function formatDuplicateForHuman(item: any, habits: any[]): string {
+	const byId = new Map(habits.map((habit) => [habit.id, habit]));
+	const left = byId.get(item.habit_a) || {};
+	const right = byId.get(item.habit_b) || {};
+	const lines = [
+		"Possible duplicate habits",
+		`Similarity: ${Number(item.similarity_bp || 0)}bp (threshold ${Number(item.threshold_bp || 0)}bp)`,
+		"",
+		"Habit A:",
+		`Status: ${left.status || "unknown"}`,
+		`When: ${redactText(String(left.condition || "")).slice(0, 600)}`,
+		`Do: ${redactText(String(left.behavior || "")).slice(0, 1000)}`,
+		"",
+		"Habit B:",
+		`Status: ${right.status || "unknown"}`,
+		`When: ${redactText(String(right.condition || "")).slice(0, 600)}`,
+		`Do: ${redactText(String(right.behavior || "")).slice(0, 1000)}`,
+		"",
+		"Choose Merge evidence if they mean the same thing, Supersede if the newer wording should replace the older one, Keep separate if both are intentionally distinct, or Archive/hide duplicate to remove the duplicate from normal use.",
+	];
+	return lines.join("\n");
+}
+
+async function handleDuplicateResolutionSetup(ctx: ExtensionCommandContext) {
+	const paths = getAgentExperiencePaths();
+	if (!(await fileExists(resolvePrivatePath(paths.root, "ledger.sqlite")))) return notify(ctx, "No habit ledger yet. Choose Analyze saved examples now after saving examples.", "info");
+	while (true) {
+		const data = await withExistingReviewStorage(async (storage) => {
+			const duplicates = listHabitDuplicates(storage.db, { userId: storage.userId, decision: "pending" });
+			const ids = [...new Set(duplicates.flatMap((row: any) => [row.habit_a, row.habit_b]))];
+			const habits = ids.length ? storage.db.prepare(`SELECT id, status, condition, behavior, checksum FROM habits WHERE user_id = ? AND id IN (${ids.map(() => "?").join(",")}) ORDER BY id`).all(storage.userId, ...ids) : [];
+			return { duplicates, habits };
+		});
+		if (!data.duplicates.length) return notify(ctx, "No duplicate habits are waiting for resolution.", "info");
+		const labels = data.duplicates.map((item: any, index: number) => duplicateLabel(item, index));
+		const choice = await chooseSetup(ctx, `Resolve duplicate habits — ${plural(data.duplicates.length, "item")}`, [...labels, "Back to setup"], false);
+		if (!choice || choice === "Back to setup") return;
+		const item = data.duplicates[labels.indexOf(choice)];
+		if (!item) continue;
+		const action = await chooseActionInPanel(ctx, "Resolve duplicate habits", formatDuplicateForHuman(item, data.habits), ["Merge evidence", "Supersede old habit", "Keep separate", "Archive/hide duplicate", "Back to duplicate list"]);
+		if (!action || action === "Back to duplicate list") continue;
+		try {
+			let reason = "setup";
+			if (action === "Keep separate") {
+				const typedReason = await inputSetup(ctx, "Reason to keep these habits separate", "short reason, e.g. different context or scope");
+				reason = typedReason ? redactText(typedReason).slice(0, 300) : "user chose keep separate in setup";
+			}
+			const result = await withReviewStorage(async (storage) => {
+				const current = listHabitDuplicates(storage.db, { userId: storage.userId, decision: "pending" }).find((row: any) => row.id === item.id);
+				if (!current || current.checksum !== item.checksum) throw new Error("Duplicate item changed; refresh required");
+				const map: Record<string, "merge" | "supersede" | "keep_separate" | "archive_duplicate"> = {
+					"Merge evidence": "merge",
+					"Supersede old habit": "supersede",
+					"Keep separate": "keep_separate",
+					"Archive/hide duplicate": "archive_duplicate",
+				};
+				const resolutionAction = map[action]!;
+				return resolveHabitDuplicate(storage.db, { userId: storage.userId, duplicateId: item.id, checksum: item.checksum, action: resolutionAction, reason, ...(resolutionAction === "supersede" ? { law: await readConfiguredLawForRoot(storage.root) } : {}), now: new Date().toISOString() });
+			});
+			notify(ctx, `Duplicate resolved: ${result.decision.replace(/_/g, " ")}.`, "info");
+		} catch (error) {
+			notify(ctx, `${formatReviewReadError(error)}\nReopening duplicate list with current data.`, "warn");
+		}
+	}
 }
 
 async function handleApprovedHabitsSetup(ctx: ExtensionCommandContext) {
@@ -1417,13 +1555,15 @@ async function handleApprovedHabitsSetup(ctx: ExtensionCommandContext) {
 		try {
 			const now = new Date().toISOString();
 			if (action === "Re-enable habit" && !(await ensureLawFileForSetup(ctx))) continue;
-			await withReviewStorage(async (storage) => {
+			const result = await withReviewStorage(async (storage) => {
 				const current = listApprovedHabitsForSetup(storage.db, { userId: storage.userId }).find((row: any) => row.id === refreshed.id);
 				if (!current) throw new Error("Approved habit changed or disappeared");
+				if (current.checksum !== refreshed.checksum || current.status !== refreshed.status) throw new Error("Approved habit changed; refresh required");
 				if (action === "Disable habit") return disableHabit(storage.db, { userId: storage.userId, habitId: refreshed.id, checksum: refreshed.checksum, now });
-				return enableHabit(storage.db, { userId: storage.userId, habitId: refreshed.id, checksum: refreshed.checksum, law: await readConfiguredLawForRoot(storage.root), now });
+				if (action === "Archive/hide habit") return archiveHideHabit(storage.db, { userId: storage.userId, habitId: refreshed.id, checksum: refreshed.checksum, now });
+				return enableHabit(storage.db, { userId: storage.userId, habitId: refreshed.id, checksum: refreshed.checksum, law: await readConfiguredLawForRoot(storage.root), now, semantic: await semanticRuntimeForConfig() });
 			});
-			notify(ctx, formatSetupHabitActionForHuman(action), "info");
+			notify(ctx, formatSetupHabitActionForHuman(action, result), result?.enabled === false ? "warn" : "info");
 		} catch (error: any) {
 			const raw = String(error?.message || error);
 			notify(ctx, `Approved-habit action failed safely: ${redactText(raw).slice(0, 500)}`, "warn");
@@ -1458,7 +1598,7 @@ async function handleReviewSetup(ctx: ExtensionCommandContext) {
 				const shown = showPendingReviewItem(storage.db, { userId: storage.userId, id: item.id });
 				if (shown.item.type === "candidate") {
 					return action === "Approve"
-						? acceptCandidateHabit(storage.db, { userId: storage.userId, habitId: item.id, checksum: item.checksum, law: await readConfiguredLawForRoot(storage.root), now })
+						? acceptCandidateHabit(storage.db, { userId: storage.userId, habitId: item.id, checksum: item.checksum, law: await readConfiguredLawForRoot(storage.root), now, semantic: await semanticRuntimeForConfig() })
 						: rejectCandidateHabit(storage.db, { userId: storage.userId, habitId: item.id, checksum: item.checksum, now });
 				}
 				return action === "Approve"
@@ -1654,7 +1794,9 @@ async function handleSetup(ctx: ExtensionCommandContext, args: string[] = []) {
 			if (!choice || choice === "Done") return notify(ctx, "Agent Experience setup closed.", "info");
 			if (choice === "Show current settings") await handleStatusSetup(ctx);
 			else if (choice === "Review suggested habits") await handleReviewSetup(ctx);
+			else if (choice === "Resolve duplicate habits") await handleDuplicateResolutionSetup(ctx);
 			else if (choice === "Review approved habits") await handleApprovedHabitsSetup(ctx);
+			else if (choice.endsWith("Prevent duplicate habits")) await handleSetupEmbedding(ctx);
 			else if (choice === "Explain these settings") await handleHelpSetup(ctx, config);
 			else if (choice === "Turn all experience features off") await handleOff(ctx);
 			else if (choice.startsWith("Choose model for habit learning")) await handleSetupModel(ctx);
@@ -1677,7 +1819,9 @@ async function handleSetup(ctx: ExtensionCommandContext, args: string[] = []) {
 		} else if (action === "model") await handleSetupModel(ctx);
 		else if (action === "analyze") { await handleAnalyzeNow(ctx); return; }
 		else if (action === "review") await handleReviewSetup(ctx);
+		else if (action === "duplicates") await handleDuplicateResolutionSetup(ctx);
 		else if (action === "habits") await handleApprovedHabitsSetup(ctx);
+		else if (action === "embedding") await handleSetupEmbedding(ctx);
 		else if (action === "use") await handleSetupUseHabitsToggle(ctx, !config.selector_enabled);
 		else if (action === "schedule") await handleSetupTimer(ctx);
 		else if (action === "status") await handleStatusSetup(ctx);
@@ -1783,6 +1927,17 @@ async function readConfiguredLawForRoot(root: string) {
 	return readConfiguredLawSnapshot(root, config);
 }
 
+async function semanticRuntimeForConfig() {
+	const { config } = await readAgentExperienceConfig(getAgentExperiencePaths());
+	const policy = semanticPolicyFromConfig(config);
+	if (!policy.enabled) return { policy, provider: undefined };
+	try {
+		return { policy, provider: createEmbeddingAdapterFromConfig(config) };
+	} catch {
+		return { policy, provider: undefined };
+	}
+}
+
 async function withReviewStorage<T>(fn: (storage: Awaited<ReturnType<typeof initExperienceStorage>>) => Promise<T> | T): Promise<T> {
 	const paths = getAgentExperiencePaths();
 	const storage = await initExperienceStorage(paths.root, { allowInit: true, userId: getConfiguredUserId() });
@@ -1847,7 +2002,7 @@ async function handleReview(args: string[], ctx: ExtensionCommandContext) {
 			const shown = showPendingReviewItem(storage.db, { userId: storage.userId, id });
 			if (shown.item.type === "candidate") {
 				return action === "accept"
-					? acceptCandidateHabit(storage.db, { userId: storage.userId, habitId: id, checksum, law: await readConfiguredLawForRoot(storage.root), now })
+					? acceptCandidateHabit(storage.db, { userId: storage.userId, habitId: id, checksum, law: await readConfiguredLawForRoot(storage.root), now, semantic: await semanticRuntimeForConfig() })
 					: rejectCandidateHabit(storage.db, { userId: storage.userId, habitId: id, checksum, now });
 			}
 			return action === "accept"
@@ -1886,10 +2041,10 @@ async function handleHabit(args: string[], ctx: ExtensionCommandContext) {
 	const result = await withReviewStorage(async (storage) => {
 		switch (action) {
 			case "explain": if (!id) throw new Error("Usage: /experience habit explain <id>"); return explainHabit(storage.db, { userId: storage.userId, habitId: id });
-			case "accept": if (!id || !checksum) throw new Error("Usage: /experience habit accept <id> --checksum <checksum>"); return acceptCandidateHabit(storage.db, { userId: storage.userId, habitId: id, checksum, law: await readConfiguredLawForRoot(storage.root), now });
+			case "accept": if (!id || !checksum) throw new Error("Usage: /experience habit accept <id> --checksum <checksum>"); return acceptCandidateHabit(storage.db, { userId: storage.userId, habitId: id, checksum, law: await readConfiguredLawForRoot(storage.root), now, semantic: await semanticRuntimeForConfig() });
 			case "reject": if (!id || !checksum) throw new Error("Usage: /experience habit reject <id> --checksum <checksum>"); return rejectCandidateHabit(storage.db, { userId: storage.userId, habitId: id, checksum, now });
 			case "disable": if (!id || !checksum) throw new Error("Usage: /experience habit disable <id> --checksum <checksum>"); return disableHabit(storage.db, { userId: storage.userId, habitId: id, checksum, now });
-			case "enable": if (!id || !checksum) throw new Error("Usage: /experience habit enable <id> --checksum <checksum>"); return enableHabit(storage.db, { userId: storage.userId, habitId: id, checksum, law: await readConfiguredLawForRoot(storage.root), now });
+			case "enable": if (!id || !checksum) throw new Error("Usage: /experience habit enable <id> --checksum <checksum>"); return enableHabit(storage.db, { userId: storage.userId, habitId: id, checksum, law: await readConfiguredLawForRoot(storage.root), now, semantic: await semanticRuntimeForConfig() });
 			default: throw new Error("Usage: /experience habit explain|accept|reject|disable|enable ...");
 		}
 	});

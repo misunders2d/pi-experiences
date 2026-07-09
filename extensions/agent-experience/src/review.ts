@@ -5,6 +5,9 @@ import { canonicalJson, checksumJson, sha256Hex } from "./storage/checksum.ts";
 import { normalizeUserId, resolvePrivatePath, ensurePrivateRoot } from "./storage/private-root.ts";
 import { redactJson, containsUnredactedSensitiveText } from "./storage/redaction.ts";
 import { buildTypedStorageRow } from "./storage/sqlite.ts";
+import { checkSemanticActivationGate } from "./semantic/service.ts";
+import { insertHabitDuplicateAudit, listHabitDuplicates, restoreCandidateDuplicateResolution, updateHabitDuplicateDecision } from "./semantic/storage.ts";
+import type { EmbeddingAdapter, SemanticDedupePolicy } from "./semantic/types.ts";
 
 export const LAW_CHECKER_VERSION = "agent_experience_law_check_v1";
 const REPORT_NAME = "habits-report.md";
@@ -119,7 +122,7 @@ export function listPendingReviewItems(db: any, input: { userId: string }) {
 		.map((row: any) => ({ type: "pending_review", ...row, payload: parseJson(row.payload_json) }));
 	const candidates = db.prepare("SELECT id, user_id, record_kind, status, condition, behavior, polarity, confidence_bp, data_json, checksum, created_at, updated_at FROM habits WHERE user_id = ? AND status = 'candidate' ORDER BY updated_at, id").all(userId)
 		.map((row: any) => ({ type: "candidate", ...row, payload: parseJson(row.data_json) }))
-		.filter((row: any) => row.payload?.review_status !== "approved_pending_eligibility");
+		.filter((row: any) => row.payload?.review_status !== "approved_pending_eligibility" && row.payload?.review_status !== "duplicate_resolution");
 	const items = [...pending, ...candidates];
 	const groups: Record<string, string[]> = {};
 	let groupNumber = 1;
@@ -158,6 +161,18 @@ function uniqueRefs(data: any): string[] {
 function uniqueDates(data: any): string[] {
 	const dates = Array.isArray(data?.source_dates) ? data.source_dates : [];
 	return [...new Set(dates.map((date: any) => new Date(String(date)).toISOString().slice(0, 10)).filter((date: string) => /^\d{4}-\d{2}-\d{2}$/.test(date)))];
+}
+
+function uniqueArrayByCanonical(values: unknown[]): unknown[] {
+	const seen = new Set<string>();
+	const out: unknown[] = [];
+	for (const value of values) {
+		const key = canonicalJson(value);
+		if (seen.has(key)) continue;
+		seen.add(key);
+		out.push(value);
+	}
+	return out;
 }
 
 export function activationEligibilityFromHabit(row: any) {
@@ -285,8 +300,12 @@ function activationDecision(db: any, input: { userId: string; row: any; law: Law
 	return { eligible: eligibility.eligible && law.pass && conflict.pass, eligibility, law, conflict };
 }
 
-export function acceptCandidateHabit(db: any, input: { userId: string; habitId: string; checksum: string; law: LawSnapshot; now: string }) {
+export async function acceptCandidateHabit(db: any, input: { userId: string; habitId: string; checksum: string; law: LawSnapshot; now: string; semantic?: { policy?: Partial<SemanticDedupePolicy>; provider?: EmbeddingAdapter; signal?: AbortSignal } }) {
 	const userId = normalizeUserId(input.userId);
+	const preflight = getHabit(db, userId, input.habitId);
+	if (preflight.status !== "candidate" || preflight.checksum !== input.checksum) throw new Error("Stale candidate state");
+	const semantic = await checkSemanticActivationGate(db, { userId, targetHabitId: input.habitId, policy: input.semantic?.policy, provider: input.semantic?.provider, now: input.now, signal: input.semantic?.signal, targetKind: "accept_candidate" });
+	if (!semantic.pass) return { status: "candidate", habit_id: input.habitId, activated: false, semantic, checksum: preflight.checksum };
 	let result: any;
 	db.exec("BEGIN IMMEDIATE");
 	try {
@@ -295,11 +314,11 @@ export function acceptCandidateHabit(db: any, input: { userId: string; habitId: 
 		const data = { ...parseJson(before.data_json), condition: before.condition, behavior: before.behavior, polarity: before.polarity, confidence_bp: before.confidence_bp, record_kind: before.record_kind, schema_version: before.schema_version };
 		const decision = activationDecision(db, { userId, row: before, law: input.law });
 		const nextStatus = decision.eligible ? "active" : "candidate";
-		const nextData = { ...data, review_status: decision.eligible ? "accepted_active" : "approved_pending_eligibility", active: decision.eligible, injectable: false, law_hash: input.law.hash, activation_decision: decision };
+		const nextData = { ...data, review_status: decision.eligible ? "accepted_active" : "approved_pending_eligibility", active: decision.eligible, injectable: false, law_hash: input.law.hash, activation_decision: { ...decision, semantic } };
 		const updated = updateHabitRow(db, { userId, id: before.id, expectedStatus: "candidate", expectedChecksum: input.checksum, data: nextData, status: nextStatus, now: input.now });
 		const after = getHabit(db, userId, before.id);
-		const audit = insertReviewAudit(db, { userId, targetKind: "habit", targetId: before.id, action: decision.eligible ? "accept_activate" : "accept_pending_eligibility", before, after, data: decision, createdAt: input.now });
-		result = { status: nextStatus, habit_id: before.id, activated: decision.eligible, eligibility: decision.eligibility, law: decision.law, conflict: decision.conflict, checksum: updated.checksum, audit_id: audit.id };
+		const audit = insertReviewAudit(db, { userId, targetKind: "habit", targetId: before.id, action: decision.eligible ? "accept_activate" : "accept_pending_eligibility", before, after, data: { ...decision, semantic }, createdAt: input.now });
+		result = { status: nextStatus, habit_id: before.id, activated: decision.eligible, eligibility: decision.eligibility, law: decision.law, conflict: decision.conflict, semantic, checksum: updated.checksum, audit_id: audit.id };
 		db.exec("COMMIT");
 	} catch (error) {
 		try { db.exec("ROLLBACK"); } catch {}
@@ -383,8 +402,12 @@ export function disableHabit(db: any, input: { userId: string; habitId: string; 
 	return result;
 }
 
-export function enableHabit(db: any, input: { userId: string; habitId: string; checksum: string; law: LawSnapshot; now: string }) {
+export async function enableHabit(db: any, input: { userId: string; habitId: string; checksum: string; law: LawSnapshot; now: string; semantic?: { policy?: Partial<SemanticDedupePolicy>; provider?: EmbeddingAdapter; signal?: AbortSignal } }) {
 	const userId = normalizeUserId(input.userId);
+	const preflight = getHabit(db, userId, input.habitId);
+	if (preflight.status !== "disabled" || preflight.checksum !== input.checksum) throw new Error("Only disabled habits can be enabled");
+	const semantic = await checkSemanticActivationGate(db, { userId, targetHabitId: input.habitId, policy: input.semantic?.policy, provider: input.semantic?.provider, now: input.now, signal: input.semantic?.signal, targetKind: "enable_habit" });
+	if (!semantic.pass) return { status: "disabled", habit_id: input.habitId, enabled: false, semantic, checksum: preflight.checksum };
 	let result: any;
 	db.exec("BEGIN IMMEDIATE");
 	try {
@@ -396,8 +419,127 @@ export function enableHabit(db: any, input: { userId: string; habitId: string; c
 		const data = { ...parseJson(before.data_json), condition: before.condition, behavior: before.behavior, polarity: before.polarity, confidence_bp: before.confidence_bp, record_kind: before.record_kind, schema_version: before.schema_version, active: true, injectable: false, law_hash: input.law.hash, enabled_at: input.now };
 		const updated = updateHabitRow(db, { userId, id: before.id, expectedStatus: "disabled", expectedChecksum: input.checksum, data, status: "active", now: input.now });
 		const after = getHabit(db, userId, before.id);
-		const audit = insertReviewAudit(db, { userId, targetKind: "habit", targetId: before.id, action: "enable_habit", before, after, data: { law, conflict }, createdAt: input.now });
-		result = { status: "active", habit_id: before.id, checksum: updated.checksum, audit_id: audit.id };
+		const audit = insertReviewAudit(db, { userId, targetKind: "habit", targetId: before.id, action: "enable_habit", before, after, data: { law, conflict, semantic }, createdAt: input.now });
+		result = { status: "active", habit_id: before.id, enabled: true, checksum: updated.checksum, audit_id: audit.id, semantic };
+		db.exec("COMMIT");
+	} catch (error) {
+		try { db.exec("ROLLBACK"); } catch {}
+		throw error;
+	}
+	return result;
+}
+
+export function resolveHabitDuplicate(db: any, input: { userId: string; duplicateId: string; checksum: string; action: "merge" | "supersede" | "keep_separate" | "archive_duplicate"; reason?: string; law?: LawSnapshot; now: string }) {
+	const userId = normalizeUserId(input.userId);
+	let result: any;
+	db.exec("BEGIN IMMEDIATE");
+	try {
+		const before = db.prepare("SELECT * FROM habit_duplicates WHERE user_id = ? AND id = ?").get(userId, input.duplicateId);
+		if (!before || before.checksum !== input.checksum || before.decision !== "pending") throw new Error("Duplicate item changed; refresh required");
+		let canonicalId = input.action === "supersede" ? before.duplicate_habit_id : before.canonical_habit_id;
+		let duplicateId = input.action === "supersede" ? before.canonical_habit_id : before.duplicate_habit_id;
+		let duplicateHabit: any = null;
+		let canonicalHabit: any = null;
+		if (canonicalId) canonicalHabit = getHabit(db, userId, canonicalId);
+		if (duplicateId) duplicateHabit = getHabit(db, userId, duplicateId);
+		if (input.action === "merge" && canonicalHabit?.status === "candidate" && (duplicateHabit?.status === "active" || duplicateHabit?.status === "disabled")) {
+			const oldCanonical = canonicalHabit;
+			canonicalHabit = duplicateHabit;
+			duplicateHabit = oldCanonical;
+			canonicalId = canonicalHabit.id;
+			duplicateId = duplicateHabit.id;
+		}
+		if ((input.action === "merge" || input.action === "supersede") && canonicalHabit && duplicateHabit) {
+			const canonicalData = { ...parseJson(canonicalHabit.data_json), condition: canonicalHabit.condition, behavior: canonicalHabit.behavior, polarity: canonicalHabit.polarity, confidence_bp: canonicalHabit.confidence_bp, record_kind: canonicalHabit.record_kind, schema_version: canonicalHabit.schema_version };
+			const duplicateData = parseJson(duplicateHabit.data_json);
+			const mergedData = {
+				...canonicalData,
+				source_refs: uniqueArrayByCanonical([...(Array.isArray(canonicalData.source_refs) ? canonicalData.source_refs : []), ...(Array.isArray(duplicateData.source_refs) ? duplicateData.source_refs : [])]),
+				source_dates: uniqueArrayByCanonical([...(Array.isArray(canonicalData.source_dates) ? canonicalData.source_dates : []), ...(Array.isArray(duplicateData.source_dates) ? duplicateData.source_dates : [])]).sort(),
+				semantic_duplicate_resolution: { action: input.action, duplicate_id: before.id, resolved_at: input.now },
+			};
+			updateHabitRow(db, { userId, id: canonicalHabit.id, expectedStatus: canonicalHabit.status, expectedChecksum: canonicalHabit.checksum, data: mergedData, status: canonicalHabit.status, now: input.now });
+			const canonicalAfterMerge = getHabit(db, userId, canonicalHabit.id);
+			insertReviewAudit(db, { userId, targetKind: "habit", targetId: canonicalHabit.id, action: `resolve_duplicate_${input.action}_canonical`, before: canonicalHabit, after: canonicalAfterMerge, data: { duplicate_id: before.id, source_habit_id: duplicateHabit.id }, createdAt: input.now });
+			canonicalHabit = canonicalAfterMerge;
+			const evidenceRows = db.prepare("SELECT * FROM evidence WHERE user_id = ? AND habit_id = ? ORDER BY id").all(userId, duplicateHabit.id);
+			for (const evidence of evidenceRows) {
+				const evidenceData = { ...parseJson(evidence.data_json), record_kind: evidence.record_kind, schema_version: evidence.schema_version, status: evidence.status, habit_id: canonicalHabit.id, condition: evidence.condition, behavior: evidence.behavior, polarity: evidence.polarity, confidence_bp: evidence.confidence_bp, activation: evidence.activation, staleness: evidence.staleness };
+				const row = buildTypedStorageRow("evidence", { id: evidence.id, userId, data: evidenceData, createdAt: evidence.created_at, updatedAt: input.now });
+				db.prepare("UPDATE evidence SET record_kind=?, schema_version=?, status=?, habit_id=?, condition=?, behavior=?, polarity=?, confidence_bp=?, activation=?, staleness=?, data_json=?, checksum=?, updated_at=? WHERE user_id=? AND id=? AND checksum=?")
+					.run(row.record_kind, row.schema_version, row.status, row.habit_id, row.condition, row.behavior, row.polarity, row.confidence_bp, row.activation, row.staleness, row.data_json, row.checksum, row.updated_at, userId, evidence.id, evidence.checksum);
+			}
+		}
+		if (input.action === "keep_separate") {
+			for (const habit of [canonicalHabit, duplicateHabit].filter(Boolean)) {
+				if (habit.status !== "candidate") continue;
+				const habitData = { ...parseJson(habit.data_json), condition: habit.condition, behavior: habit.behavior, polarity: habit.polarity, confidence_bp: habit.confidence_bp, record_kind: habit.record_kind, schema_version: habit.schema_version };
+				if (habitData.review_status !== "duplicate_resolution") continue;
+				const visibleData = { ...habitData, review_status: "kept_separate", semantic_duplicate_resolution: { action: "keep_separate", duplicate_id: before.id, resolved_at: input.now, reason: input.reason || "setup" } };
+				updateHabitRow(db, { userId, id: habit.id, expectedStatus: "candidate", expectedChecksum: habit.checksum, data: visibleData, status: "candidate", now: input.now });
+				const visibleAfter = getHabit(db, userId, habit.id);
+				insertReviewAudit(db, { userId, targetKind: "habit", targetId: habit.id, action: "resolve_duplicate_keep_separate_unhide", before: habit, after: visibleAfter, data: { duplicate_id: before.id, reason: input.reason || "setup" }, createdAt: input.now });
+			}
+		}
+		if (input.action === "supersede" && canonicalHabit?.status === "candidate" && (duplicateHabit?.status === "active" || duplicateHabit?.status === "disabled")) {
+			if (!input.law) throw new Error("Supersede requires law check before replacing an approved habit");
+			const law = checkHabitLaw({ condition: canonicalHabit.condition, behavior: canonicalHabit.behavior, law: input.law });
+			if (!law.pass) throw new Error("Supersede replacement blocked by law check");
+			const conflict = checkHabitConflict(db, { userId, habitId: canonicalHabit.id, condition: canonicalHabit.condition, behavior: canonicalHabit.behavior, polarity: Number(canonicalHabit.polarity) });
+			const blockingConflicts = conflict.conflicts.filter((item: any) => item.id !== duplicateHabit.id);
+			if (blockingConflicts.length) throw new Error("Supersede replacement blocked by conflict check");
+			const replacementData = { ...parseJson(canonicalHabit.data_json), condition: canonicalHabit.condition, behavior: canonicalHabit.behavior, polarity: canonicalHabit.polarity, confidence_bp: canonicalHabit.confidence_bp, record_kind: canonicalHabit.record_kind, schema_version: canonicalHabit.schema_version, review_status: duplicateHabit.status === "active" ? "supersede_active" : "supersede_disabled", active: duplicateHabit.status === "active", injectable: false, law_hash: input.law.hash, superseded_habit_id: duplicateHabit.id, superseded_at: input.now, supersede_conflict_check: { ...conflict, conflicts: blockingConflicts } };
+			const replacementBefore = canonicalHabit;
+			updateHabitRow(db, { userId, id: canonicalHabit.id, expectedStatus: canonicalHabit.status, expectedChecksum: canonicalHabit.checksum, data: replacementData, status: duplicateHabit.status, now: input.now });
+			canonicalHabit = getHabit(db, userId, canonicalHabit.id);
+			insertReviewAudit(db, { userId, targetKind: "habit", targetId: canonicalHabit.id, action: "supersede_promote_replacement", before: replacementBefore, after: canonicalHabit, data: { duplicate_id: before.id, replaced_habit_id: duplicateHabit.id, law, conflict: { ...conflict, conflicts: blockingConflicts } }, createdAt: input.now });
+		}
+		if ((input.action === "merge" || input.action === "supersede" || input.action === "archive_duplicate") && duplicateHabit && duplicateHabit.status !== "archived") {
+			const duplicateData = { ...parseJson(duplicateHabit.data_json), condition: duplicateHabit.condition, behavior: duplicateHabit.behavior, polarity: duplicateHabit.polarity, confidence_bp: duplicateHabit.confidence_bp, record_kind: duplicateHabit.record_kind, schema_version: duplicateHabit.schema_version, active: false, injectable: false, archived_at: input.now, hidden_at: input.now, merged_into: input.action === "merge" ? canonicalId : undefined, superseded_by: input.action === "supersede" ? canonicalId : undefined, archive_reason: input.action };
+			updateHabitRow(db, { userId, id: duplicateHabit.id, expectedStatus: duplicateHabit.status, expectedChecksum: duplicateHabit.checksum, data: duplicateData, status: "archived", now: input.now });
+			const duplicateAfterArchive = getHabit(db, userId, duplicateHabit.id);
+			insertReviewAudit(db, { userId, targetKind: "habit", targetId: duplicateHabit.id, action: `resolve_duplicate_${input.action}_archive`, before: duplicateHabit, after: duplicateAfterArchive, data: { duplicate_id: before.id, canonical_habit_id: canonicalId }, createdAt: input.now });
+		}
+		const decision = input.action === "keep_separate" ? "kept_separate" : input.action === "archive_duplicate" ? "archived_duplicate" : input.action === "supersede" ? "superseded" : "merged";
+		const data = { ...parseJson(before.data_json), resolution: { action: input.action, reason: input.reason || "setup", resolved_at: input.now, canonical_habit_id: canonicalId, duplicate_habit_id: duplicateId } };
+		const dataJson = boundedJson(data);
+		const afterBase = { user_id: before.user_id, pair_key: before.pair_key, habit_a: before.habit_a, habit_b: before.habit_b, canonical_habit_id: canonicalId, duplicate_habit_id: duplicateId, similarity_bp: Number(before.similarity_bp), threshold_bp: Number(before.threshold_bp), method: before.method, provider: before.provider, model: before.model, dimensions: before.dimensions === null ? null : Number(before.dimensions), decision, data_json: dataJson, created_at: before.created_at, updated_at: input.now, decided_at: input.now };
+		const checksum = checksumJson({ table: "habit_duplicates", row: afterBase });
+		db.prepare("UPDATE habit_duplicates SET canonical_habit_id=?, duplicate_habit_id=?, decision=?, data_json=?, checksum=?, updated_at=?, decided_at=? WHERE user_id=? AND id=? AND checksum=?")
+			.run(canonicalId, duplicateId, decision, dataJson, checksum, input.now, input.now, userId, before.id, input.checksum);
+		const after = db.prepare("SELECT * FROM habit_duplicates WHERE user_id = ? AND id = ?").get(userId, before.id);
+		const audit = insertHabitDuplicateAudit(db, { userId, duplicateId: before.id, targetKind: "habit_duplicate", targetId: before.id, action: `resolve_${decision}`, before, after, data, now: input.now });
+		result = { duplicate_id: before.id, decision, audit_id: audit.id };
+		db.exec("COMMIT");
+	} catch (error) {
+		try { db.exec("ROLLBACK"); } catch {}
+		throw error;
+	}
+	return result;
+}
+
+export function archiveHideHabit(db: any, input: { userId: string; habitId: string; checksum: string; now: string }) {
+	const userId = normalizeUserId(input.userId);
+	let result: any;
+	db.exec("BEGIN IMMEDIATE");
+	try {
+		const before = getHabit(db, userId, input.habitId);
+		if ((before.status !== "active" && before.status !== "disabled") || before.checksum !== input.checksum) throw new Error("Only current approved habits can be archived/hidden");
+		const data = { ...parseJson(before.data_json), condition: before.condition, behavior: before.behavior, polarity: before.polarity, confidence_bp: before.confidence_bp, record_kind: before.record_kind, schema_version: before.schema_version, active: false, injectable: false, archived_at: input.now, hidden_at: input.now, archive_reason: "user_hidden_from_setup" };
+		const updated = updateHabitRow(db, { userId, id: before.id, expectedStatus: before.status, expectedChecksum: input.checksum, data, status: "archived", now: input.now });
+		const after = getHabit(db, userId, before.id);
+		const audit = insertReviewAudit(db, { userId, targetKind: "habit", targetId: before.id, action: "archive_hide_habit", before, after, createdAt: input.now });
+		const openDuplicates = listHabitDuplicates(db, { userId, decision: "pending" }).filter((row: any) => row.habit_a === before.id || row.habit_b === before.id);
+		const duplicate_audit_ids: string[] = [];
+		for (const duplicate of openDuplicates) {
+			const relationData = { ...parseJson(duplicate.data_json), resolution: { action: "archive_hide_habit", reason: "archived_hidden", resolved_at: input.now, archived_habit_id: before.id } };
+			const changed = updateHabitDuplicateDecision(db, { userId, duplicateId: duplicate.id, decision: "archived_duplicate", data: relationData, now: input.now });
+			restoreCandidateDuplicateResolution(db, { userId, habitId: duplicate.habit_a, relationId: duplicate.id, reviewStatus: "duplicate_source_archived", data: { reason: "archive_hide_habit", archived_habit_id: before.id }, now: input.now });
+			restoreCandidateDuplicateResolution(db, { userId, habitId: duplicate.habit_b, relationId: duplicate.id, reviewStatus: "duplicate_source_archived", data: { reason: "archive_hide_habit", archived_habit_id: before.id }, now: input.now });
+			const relationAudit = insertHabitDuplicateAudit(db, { userId, duplicateId: duplicate.id, targetKind: "habit", targetId: before.id, action: "archive_hide_habit_relation_resolve", before: changed.before, after: changed.after, data: { resolution_reason: "archived_hidden" }, now: input.now });
+			duplicate_audit_ids.push(relationAudit.id);
+		}
+		result = { status: "archived", habit_id: before.id, checksum: updated.checksum, audit_id: audit.id, duplicate_audit_ids };
 		db.exec("COMMIT");
 	} catch (error) {
 		try { db.exec("ROLLBACK"); } catch {}

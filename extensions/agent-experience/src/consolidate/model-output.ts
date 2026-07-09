@@ -319,7 +319,7 @@ function findCandidateKeyConflict(output: ValidatedModelOutputBatch): { candidat
 	return null;
 }
 
-export function processValidatedModelOutput(input: { db: any; userId: string; output: ValidatedModelOutputBatch; observations: ValidatedObservationRecord[]; expectedRange?: { file_generation: string; seq_start: number; seq_end: number; read_checksum: string } }): ConsolidationResult | { user_id: string; file_generation: string; candidate_ids: []; evidence_ids: []; watermark_after: null; read_watermark_after?: unknown; pending_review_id?: string; inserted: { read_watermark?: 0 | 1; pending_review?: 0 | 1 } } {
+export async function processValidatedModelOutput(input: { db: any; userId: string; output: ValidatedModelOutputBatch; observations: ValidatedObservationRecord[]; expectedRange?: { file_generation: string; seq_start: number; seq_end: number; read_checksum: string }; semantic?: Parameters<typeof consolidateProposalBatch>[0]["semantic"] }): Promise<ConsolidationResult | { user_id: string; file_generation: string; candidate_ids: []; evidence_ids: []; watermark_after: null; read_watermark_after?: unknown; pending_review_id?: string; inserted: { read_watermark?: 0 | 1; pending_review?: 0 | 1 } }> {
 	const userId = normalizeUserId(input.userId);
 	if (input.output.user_id !== userId) throw new Error("Model output user mismatch");
 	validateModelOutputSourceRefs(input.output, input.observations);
@@ -345,5 +345,5 @@ export function processValidatedModelOutput(input: { db: any; userId: string; ou
 		const zero = recordZeroProposalReadCoverage({ db: input.db, userId, fileGeneration: input.output.file_generation, seqStart: input.output.seq_start, last: sourceLast, createdAt: input.output.created_at });
 		return { user_id: userId, file_generation: input.output.file_generation, candidate_ids: [], evidence_ids: [], watermark_after: null, read_watermark_after: zero.watermark_after, inserted: zero.inserted };
 	}
-	return consolidateProposalBatch({ db: input.db, userId, proposalBatch: modelOutputToProposalBatch(input.output), observations: input.observations, readCoverage: { seq_start: input.output.seq_start, last: sourceLast } });
+	return consolidateProposalBatch({ db: input.db, userId, proposalBatch: modelOutputToProposalBatch(input.output), observations: input.observations, readCoverage: { seq_start: input.output.seq_start, last: sourceLast }, semantic: input.semantic });
 }

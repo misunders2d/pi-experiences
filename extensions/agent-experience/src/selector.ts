@@ -3,6 +3,8 @@ import { normalizeUserId } from "./storage/private-root.ts";
 import { containsUnredactedSensitiveText, redactJson, redactText } from "./storage/redaction.ts";
 import { buildTypedStorageRow } from "./storage/sqlite.ts";
 import { activationEligibilityFromHabit, checkHabitConflict, checkHabitLaw, type LawSnapshot } from "./review.ts";
+import { checkSemanticActivationGate } from "./semantic/service.ts";
+import type { EmbeddingAdapter, SemanticDedupePolicy } from "./semantic/types.ts";
 import type { AgentExperienceConfig } from "./config.ts";
 
 export interface SelectorModelAdapter {
@@ -282,7 +284,8 @@ export async function measureSelectorLatency(input: { adapter: SelectorModelAdap
 	return { samples, p95_ms: p95, compatible_with_1500ms: p95 <= 1500, compatible_with_configured_threshold: p95 <= input.timeoutMs };
 }
 
-export function promoteApprovedPendingCandidates(db: any, input: { userId: string; law: LawSnapshot; now: string }) {
+export async function promoteApprovedPendingCandidates(db: any, input: { userId: string; law: LawSnapshot; now: string; semantic: { policy: Partial<SemanticDedupePolicy>; provider?: EmbeddingAdapter; signal?: AbortSignal } }) {
+	if (!input.semantic?.policy) throw new Error("Background promotion requires an explicit semantic dedupe policy");
 	const userId = normalizeUserId(input.userId);
 	let result: any;
 	db.exec("BEGIN IMMEDIATE");
@@ -296,7 +299,13 @@ export function promoteApprovedPendingCandidates(db: any, input: { userId: strin
 			const law = checkHabitLaw({ condition: row.condition, behavior: row.behavior, law: input.law });
 			const conflict = checkHabitConflict(db, { userId, habitId: row.id, condition: row.condition, behavior: row.behavior, polarity: Number(row.polarity) });
 			const data = { ...parseJson(row.data_json), condition: row.condition, behavior: row.behavior, polarity: row.polarity, confidence_bp: row.confidence_bp, record_kind: row.record_kind, schema_version: row.schema_version, law_hash: input.law.hash, promotion_decision: { eligibility, law, conflict } };
+			let semantic: any = { pass: true, reason: "disabled" };
 			if (law.pass && conflict.pass) {
+				db.exec("COMMIT");
+				semantic = await checkSemanticActivationGate(db, { userId, targetHabitId: row.id, policy: input.semantic.policy, provider: input.semantic.provider, now: input.now, signal: input.semantic.signal, targetKind: "promote_pending_candidate" });
+				db.exec("BEGIN IMMEDIATE");
+			}
+			if (law.pass && conflict.pass && semantic.pass) {
 				const updated = buildTypedStorageRow("habits", { id: row.id, userId, data: { ...data, status: "active", review_status: "promoted_active", active: true, injectable: false, promoted_at: input.now }, createdAt: row.created_at, updatedAt: input.now });
 				const changes = db.prepare("UPDATE habits SET record_kind=?, schema_version=?, status=?, habit_id=?, condition=?, behavior=?, polarity=?, confidence_bp=?, activation=?, staleness=?, data_json=?, checksum=?, updated_at=? WHERE user_id=? AND id=? AND status='candidate' AND checksum=?")
 					.run(updated.record_kind, updated.schema_version, updated.status, updated.habit_id, updated.condition, updated.behavior, updated.polarity, updated.confidence_bp, updated.activation, updated.staleness, updated.data_json, updated.checksum, updated.updated_at, userId, row.id, row.checksum).changes;
@@ -304,6 +313,11 @@ export function promoteApprovedPendingCandidates(db: any, input: { userId: strin
 				promoted.push(row.id);
 				db.prepare("INSERT INTO experience_review_audit (id, user_id, target_kind, target_id, action, before_json, after_json, data_json, checksum, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
 					.run(stableId("review-audit", { row: row.id, action: "promote_approved_candidate", now: input.now }), userId, "habit", row.id, "promote_approved_candidate", boundedJson(row), boundedJson({ ...row, status: "active", checksum: updated.checksum }), boundedJson({ eligibility, law, conflict }), checksumJson({ table: "experience_review_audit", row: { user_id: userId, target_kind: "habit", target_id: row.id, action: "promote_approved_candidate", before_json: boundedJson(row), after_json: boundedJson({ ...row, status: "active", checksum: updated.checksum }), data_json: boundedJson({ eligibility, law, conflict }), created_at: input.now } }), input.now);
+			} else if (law.pass && conflict.pass && !semantic.pass) {
+				const after = db.prepare("SELECT * FROM habits WHERE user_id = ? AND id = ?").get(userId, row.id) || row;
+				blocked.push({ id: row.id, reason: semantic.reason === "semantic_unavailable" ? "semantic_unavailable" : "semantic_duplicate" });
+				db.prepare("INSERT INTO experience_review_audit (id, user_id, target_kind, target_id, action, before_json, after_json, data_json, checksum, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+					.run(stableId("review-audit", { row: row.id, action: "promotion_semantic_blocked", now: input.now }), userId, "habit", row.id, "promotion_semantic_blocked", boundedJson(row), boundedJson(after), boundedJson({ eligibility, law, conflict, semantic }), checksumJson({ table: "experience_review_audit", row: { user_id: userId, target_kind: "habit", target_id: row.id, action: "promotion_semantic_blocked", before_json: boundedJson(row), after_json: boundedJson(after), data_json: boundedJson({ eligibility, law, conflict, semantic }), created_at: input.now } }), input.now);
 			} else {
 				const status = law.pass ? "candidate" : "suppressed_by_law";
 				const updated = buildTypedStorageRow("habits", { id: row.id, userId, data: { ...data, status, review_status: law.pass ? "approved_pending_conflict" : "approved_pending_law_blocked", active: false, injectable: false }, createdAt: row.created_at, updatedAt: input.now });

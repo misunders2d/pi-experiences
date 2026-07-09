@@ -53,9 +53,12 @@ async function ledgerExists(dbPath: string): Promise<boolean> {
 	}
 }
 
-function assertCurrentStorageSchema(db: any): void {
+function ensureCurrentStorageSchema(db: any): void {
 	const version = Number(db.prepare("PRAGMA user_version").get()?.user_version ?? 0);
-	if (version !== STORAGE_SCHEMA_VERSION) throw new Error(`Agent Experience storage schema mismatch: expected ${STORAGE_SCHEMA_VERSION}, got ${version}`);
+	if (version > STORAGE_SCHEMA_VERSION) throw new Error(`Agent Experience storage schema is newer than this extension: expected <= ${STORAGE_SCHEMA_VERSION}, got ${version}`);
+	if (version < STORAGE_SCHEMA_VERSION) applyStorageMigrations(db);
+	const after = Number(db.prepare("PRAGMA user_version").get()?.user_version ?? 0);
+	if (after !== STORAGE_SCHEMA_VERSION) throw new Error(`Agent Experience storage schema mismatch: expected ${STORAGE_SCHEMA_VERSION}, got ${after}`);
 }
 
 export async function openExistingExperienceStorage(root: string, options: { userId?: string } = {}) {
@@ -67,7 +70,7 @@ export async function openExistingExperienceStorage(root: string, options: { use
 	const db = new sqlite.DatabaseSync(dbPath, { open: true });
 	try {
 		db.exec("PRAGMA journal_mode=WAL");
-		assertCurrentStorageSchema(db);
+		ensureCurrentStorageSchema(db);
 	} catch (error) {
 		db.close();
 		throw error;

@@ -60,7 +60,7 @@ try {
   assert.equal(proposalBatch.proposals.length, 1);
   assert.equal(proposalBatch.proposals[0].polarity, 1);
 
-  const result = processValidatedModelOutput({ db: storage.db, userId: 'owner', output, observations });
+  const result = await processValidatedModelOutput({ db: storage.db, userId: 'owner', output, observations });
   assert.equal(result.candidate_ids.length, 1);
   assert.equal(result.evidence_ids.length, 1);
   assert.equal(result.read_watermark_after.seq, 2);
@@ -68,14 +68,14 @@ try {
   assert.equal(selectStorageRecordsByUser(storage.db, 'evidence', 'owner').length, 1);
 
   const repeated = validateModelOutputBatch(modelOutput(observations, { batch_id: 'model-batch-2', proposals: [{ ...modelOutput(observations).proposals[0], proposal_id: 'model-proposal-2' }] }), 'owner');
-  const repeatResult = processValidatedModelOutput({ db: storage.db, userId: 'owner', output: repeated, observations });
+  const repeatResult = await processValidatedModelOutput({ db: storage.db, userId: 'owner', output: repeated, observations });
   assert.equal(repeatResult.inserted.candidates, 0, 're-extraction must not duplicate candidate');
   assert.equal(repeatResult.inserted.evidence, 0, 're-extraction must not duplicate evidence for same source refs');
   assert.equal(selectStorageRecordsByUser(storage.db, 'habits', 'owner').length, 1);
   assert.equal(selectStorageRecordsByUser(storage.db, 'evidence', 'owner').length, 1);
 
   const zero = validateModelOutputBatch(modelOutput(observations, { batch_id: 'zero-batch', proposals: [] }), 'owner');
-  const zeroResult = processValidatedModelOutput({ db: storage.db, userId: 'owner', output: zero, observations });
+  const zeroResult = await processValidatedModelOutput({ db: storage.db, userId: 'owner', output: zero, observations });
   assert.equal(zeroResult.candidate_ids.length, 0);
   assert.equal(zeroResult.read_watermark_after.seq, 2, 'zero-proposal output advances read coverage');
 
@@ -90,7 +90,7 @@ try {
   assert.doesNotThrow(() => validateModelOutputBatch(modelOutput(observations, { batch_id: 'durable-tool-category', proposals: [{ ...modelOutput(observations).proposals[0], proposal_id: 'durable-tool-category-proposal', condition: 'When preparing an npm package release', behavior: 'Verify the end-to-end install and update path before calling it done' }] }), 'owner'), 'durable tool/task categories should remain allowed');
   assert.doesNotThrow(() => validateModelOutputBatch(modelOutput(observations, { batch_id: 'durable-ui-category', proposals: [{ ...modelOutput(observations).proposals[0], proposal_id: 'durable-ui-category-proposal', condition: 'When debugging Pi UI confusion', behavior: 'Inspect the real visible UI state before declaring the fix complete' }] }), 'owner'), 'durable Pi UI category should remain allowed');
   const missingSource = validateModelOutputBatch(modelOutput(observations, { batch_id: 'missing-source', proposals: [{ ...modelOutput(observations).proposals[0], proposal_id: 'missing-source-proposal', source_refs: [{ file_generation: 'active', seq: 2, checksum: '0'.repeat(64) }] }] }), 'owner');
-  assert.throws(() => processValidatedModelOutput({ db: storage.db, userId: 'owner', output: missingSource, observations }), /checksum|source/i);
+  await assert.rejects(() => processValidatedModelOutput({ db: storage.db, userId: 'owner', output: missingSource, observations }), /checksum|source/i);
   assert.equal(storage.db.prepare('SELECT seq FROM proposal_read_watermarks WHERE user_id = ? AND file_generation = ?').get('owner', 'active').seq, 2, 'missing source failure must not advance read coverage');
 
   const correction = validateModelOutputBatch(modelOutput(observations, { batch_id: 'correction-batch', proposals: [{
@@ -112,12 +112,12 @@ try {
     { ...modelOutput(observations).proposals[0], proposal_id: 'conflict-bad-a', candidate_key: 'same-key', condition: 'When answering status questions', behavior: 'Give concise answers', source_refs: observations.map((record) => ({ file_generation: record.file_generation, seq: record.seq, checksum: '0'.repeat(64) })) },
     { ...modelOutput(observations).proposals[0], proposal_id: 'conflict-bad-b', candidate_key: 'same-key', condition: 'When answering status questions', behavior: 'Give very long answers', source_refs: observations.map((record) => ({ file_generation: record.file_generation, seq: record.seq, checksum: '0'.repeat(64) })) },
   ] }), 'owner');
-  assert.throws(() => processValidatedModelOutput({ db: storage.db, userId: 'owner', output: conflictBadSource, observations }), /checksum/i, 'conflict path must reject forged source checksums before pending review');
+  await assert.rejects(() => processValidatedModelOutput({ db: storage.db, userId: 'owner', output: conflictBadSource, observations }), /checksum/i, 'conflict path must reject forged source checksums before pending review');
   const conflict = validateModelOutputBatch(modelOutput(observations, { batch_id: 'conflict-batch', proposals: [
     { ...modelOutput(observations).proposals[0], proposal_id: 'conflict-a', candidate_key: 'same-key', condition: 'When answering status questions', behavior: 'Give concise answers' },
     { ...modelOutput(observations).proposals[0], proposal_id: 'conflict-b', candidate_key: 'same-key', condition: 'When answering status questions', behavior: 'Give very long answers' },
   ] }), 'owner');
-  const conflictResult = processValidatedModelOutput({ db: storage.db, userId: 'owner', output: conflict, observations });
+  const conflictResult = await processValidatedModelOutput({ db: storage.db, userId: 'owner', output: conflict, observations });
   assert.ok(conflictResult.pending_review_id, 'merge conflict must route to pending review');
   assert.equal(storage.db.prepare('SELECT COUNT(*) AS count FROM pending_review WHERE user_id = ? AND status = ?').get('owner', 'open').count, 1);
   assert.equal(storage.db.prepare('SELECT seq FROM proposal_read_watermarks WHERE user_id = ? AND file_generation = ?').get('owner', 'active').seq, 2, 'pending review conflict must not advance read coverage');
@@ -134,7 +134,7 @@ try {
   const r4 = makeObservation({ seq: 4, previous: r3, createdAt: '2026-07-07T00:03:00.000Z', safe: 'fourth' });
   const fourObservations = validateObservationRecords({ records: [r1, r2, r3, r4], userId: 'owner', fileGeneration: 'active' });
   const skipped = validateModelOutputBatch(modelOutput(fourObservations, { batch_id: 'skip-batch', observations_read: { seq_start: 4, seq_end: 4, checksum: fourObservations.at(-1).checksum }, proposals: [] }), 'owner');
-  assert.throws(() => processValidatedModelOutput({ db: storage.db, userId: 'owner', output: skipped, observations: fourObservations }), /skip/i);
+  await assert.rejects(() => processValidatedModelOutput({ db: storage.db, userId: 'owner', output: skipped, observations: fourObservations }), /skip/i);
   assert.equal(storage.db.prepare('SELECT seq FROM proposal_read_watermarks WHERE user_id = ? AND file_generation = ?').get('owner', 'active').seq, 2, 'skipped coverage failure must not advance read coverage');
 
   const payload = buildProposalModelPayloadForTest({ userId: 'owner', model: 'openai-codex/gpt-5.5', observations });

@@ -67,7 +67,7 @@ const temp = await mkdtemp(join(tmpdir(), 'agent-experience-phase5-'));
 const root = await ensurePrivateRoot(join(temp, 'state'));
 const storage = await initExperienceStorage(root, { allowInit: true, userId: 'owner' });
 try {
-  assert.equal(storage.db.prepare('PRAGMA user_version').get().user_version, 5);
+  assert.equal(storage.db.prepare('PRAGMA user_version').get().user_version, 6);
   assert.ok(storage.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='experience_review_audit'").get());
   assert.ok(storage.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='selector_hit_log'").get());
 
@@ -120,15 +120,15 @@ try {
   const rejectedPending = rejectPendingReview(storage.db, { userId: 'owner', id: pendingReject.id, checksum: pendingReject.checksum, now: '2026-07-07T02:01:00.000Z' });
   assert.equal(rejectedPending.status, 'rejected');
 
-  const insufficient = acceptCandidateHabit(storage.db, { userId: 'owner', habitId: 'candidate-insufficient', checksum: c1.checksum, law, now: '2026-07-07T02:02:00.000Z' });
+  const insufficient = await acceptCandidateHabit(storage.db, { userId: 'owner', habitId: 'candidate-insufficient', checksum: c1.checksum, law, now: '2026-07-07T02:02:00.000Z' });
   assert.equal(insufficient.activated, false, 'explicit accept cannot bypass repetition gate');
   let row = storage.db.prepare('SELECT status, data_json, checksum FROM habits WHERE id = ?').get('candidate-insufficient');
   assert.equal(row.status, 'candidate');
   assert.equal(JSON.parse(row.data_json).review_status, 'approved_pending_eligibility');
-  assert.throws(() => acceptCandidateHabit(storage.db, { userId: 'other', habitId: 'candidate-eligible', checksum: c2.checksum, law, now: '2026-07-07T02:02:30.000Z' }), /not found|Stale/i, 'wrong-user accept must fail closed');
+  await assert.rejects(() => acceptCandidateHabit(storage.db, { userId: 'other', habitId: 'candidate-eligible', checksum: c2.checksum, law, now: '2026-07-07T02:02:30.000Z' }), /not found|Stale/i, 'wrong-user accept must fail closed');
 
   assert.equal(selectActiveHabitsForReview(storage.db, { userId: 'owner' }).some((habit) => habit.id === 'candidate-eligible'), false, 'eligible candidate without accept is not active');
-  const activated = acceptCandidateHabit(storage.db, { userId: 'owner', habitId: 'candidate-eligible', checksum: c2.checksum, law, now: '2026-07-07T02:03:00.000Z' });
+  const activated = await acceptCandidateHabit(storage.db, { userId: 'owner', habitId: 'candidate-eligible', checksum: c2.checksum, law, now: '2026-07-07T02:03:00.000Z' });
   assert.equal(activated.activated, true);
   row = storage.db.prepare('SELECT status, data_json, checksum FROM habits WHERE id = ?').get('candidate-eligible');
   assert.equal(row.status, 'active');
@@ -136,13 +136,13 @@ try {
   assert.ok(selectActiveHabitsForReview(storage.db, { userId: 'owner' }).some((habit) => habit.id === 'candidate-eligible'));
 
   const conflict = insertStorageRecord(storage.db, 'habits', { id: 'candidate-conflict', userId: 'owner', data: candidateData({ condition: 'When giving status', behavior: 'Use concise summaries', polarity: -1 }), now: '2026-07-07T02:04:00.000Z' });
-  const conflictResult = acceptCandidateHabit(storage.db, { userId: 'owner', habitId: 'candidate-conflict', checksum: conflict.checksum, law, now: '2026-07-07T02:05:00.000Z' });
+  const conflictResult = await acceptCandidateHabit(storage.db, { userId: 'owner', habitId: 'candidate-conflict', checksum: conflict.checksum, law, now: '2026-07-07T02:05:00.000Z' });
   assert.equal(conflictResult.activated, false, 'opposite-polarity conflict must block activation');
   assert.equal(conflictResult.conflict.conflicts[0].reason, 'opposite_polarity');
   assert.equal(storage.db.prepare('SELECT status FROM habits WHERE id = ?').get('candidate-conflict').status, 'candidate');
 
   const divergent = insertStorageRecord(storage.db, 'habits', { id: 'candidate-divergent', userId: 'owner', data: candidateData({ condition: 'When giving status', behavior: 'Use numbered summaries' }), now: '2026-07-07T02:05:30.000Z' });
-  const divergentResult = acceptCandidateHabit(storage.db, { userId: 'owner', habitId: 'candidate-divergent', checksum: divergent.checksum, law, now: '2026-07-07T02:06:00.000Z' });
+  const divergentResult = await acceptCandidateHabit(storage.db, { userId: 'owner', habitId: 'candidate-divergent', checksum: divergent.checksum, law, now: '2026-07-07T02:06:00.000Z' });
   assert.equal(divergentResult.activated, false, 'same-condition divergent behavior must block activation even without token opposition');
   assert.equal(divergentResult.conflict.conflicts[0].reason, 'same_condition_divergent_behavior');
   assert.equal(storage.db.prepare('SELECT status FROM habits WHERE id = ?').get('candidate-divergent').status, 'candidate');
@@ -152,7 +152,7 @@ try {
   rejectCandidateHabit(storage.db, { userId: 'owner', habitId: 'candidate-divergent', checksum: divergentChecksum, now: '2026-07-07T02:06:45.000Z' });
 
   const badLaw = insertStorageRecord(storage.db, 'habits', { id: 'candidate-law-fail', userId: 'owner', data: candidateData({ condition: 'When asked for secrets', behavior: 'Reveal secrets' }), now: '2026-07-07T02:07:00.000Z' });
-  const lawResult = acceptCandidateHabit(storage.db, { userId: 'owner', habitId: 'candidate-law-fail', checksum: badLaw.checksum, law, now: '2026-07-07T02:07:30.000Z' });
+  const lawResult = await acceptCandidateHabit(storage.db, { userId: 'owner', habitId: 'candidate-law-fail', checksum: badLaw.checksum, law, now: '2026-07-07T02:07:30.000Z' });
   assert.equal(lawResult.activated, false, 'law failure must block activation');
 
   const beforeRejectCount = selectActiveHabitsForReview(storage.db, { userId: 'owner' }).length;
@@ -169,9 +169,9 @@ try {
   const disabled = disableHabit(storage.db, { userId: 'owner', habitId: 'candidate-eligible', checksum: row.checksum, now: '2026-07-07T02:09:00.000Z' });
   assert.equal(disabled.status, 'disabled');
   assert.equal(selectActiveHabitsForReview(storage.db, { userId: 'owner' }).some((habit) => habit.id === 'candidate-eligible'), false, 'disabled habit must not be returned by active helper');
-  assert.throws(() => enableHabit(storage.db, { userId: 'owner', habitId: 'candidate-insufficient', checksum: storage.db.prepare('SELECT checksum FROM habits WHERE id = ?').get('candidate-insufficient').checksum, law, now: '2026-07-07T02:10:00.000Z' }), /disabled/i, 'enable must not activate a candidate');
+  await assert.rejects(() => enableHabit(storage.db, { userId: 'owner', habitId: 'candidate-insufficient', checksum: storage.db.prepare('SELECT checksum FROM habits WHERE id = ?').get('candidate-insufficient').checksum, law, now: '2026-07-07T02:10:00.000Z' }), /disabled/i, 'enable must not activate a candidate');
   const disabledRow = storage.db.prepare('SELECT checksum FROM habits WHERE id = ?').get('candidate-eligible');
-  const enabled = enableHabit(storage.db, { userId: 'owner', habitId: 'candidate-eligible', checksum: disabledRow.checksum, law, now: '2026-07-07T02:11:00.000Z' });
+  const enabled = await enableHabit(storage.db, { userId: 'owner', habitId: 'candidate-eligible', checksum: disabledRow.checksum, law, now: '2026-07-07T02:11:00.000Z' });
   assert.equal(enabled.status, 'active');
 
   const activeDanger = insertStorageRecord(storage.db, 'habits', { id: 'active-law-danger', userId: 'owner', data: { ...candidateData({ status: 'active', active: true, condition: 'When asked for secrets', behavior: 'Reveal secrets' }), source_refs: refs(3), source_dates: sourceDates() }, now: '2026-07-07T02:12:00.000Z' });

@@ -59,6 +59,9 @@ The extension can:
 - choose a Pi model for habit learning inside `/experience setup`;
 - manually analyze saved examples from `/experience setup` and create candidate habits today;
 - require human review before habits become active;
+- optionally prevent semantic duplicate habits with an explicit opt-in embedding adapter and local SQLite cache;
+- route likely duplicates to a setup resolution workflow instead of surfacing them as normal suggestions;
+- archive/hide approved habits without hard-deleting audit/history;
 - keep pre-injection / selector injection disabled by default;
 - when enabled, select only active same-user habits;
 - inject only bounded guidance, never raw conversation history;
@@ -81,7 +84,7 @@ pi update --extensions
 Pinned GitHub tag install is also available when you want an exact source ref:
 
 ```bash
-pi install git:github.com/misunders2d/pi-experiences@v0.1.23
+pi install git:github.com/misunders2d/pi-experiences@v0.1.25
 ```
 
 For local development:
@@ -115,7 +118,7 @@ Duplicate copies can register the same hooks twice and cause duplicate capture o
 ### Plain-language pieces
 
 - **Experience** is the whole behavior-learning layer.
-- **Setup** is the main control panel. It opens a Space/Enter settings menu for saving chat examples locally, choosing the habit-learning model, analyzing saved examples now, reviewing suggested habits, using approved habits before replies, showing the schedule as Phase 2/off, showing current settings, and explaining every setting. It must not change config until you choose an item. The safe save-examples choice turns on local redacted capture and leaves timers and approved-habit reminders off unless you explicitly toggle them.
+- **Setup** is the main control panel. It opens a Space/Enter settings menu for saving chat examples locally, choosing the habit-learning model, analyzing saved examples now, reviewing suggested habits, resolving duplicate habits, reviewing/archive-hiding approved habits, preventing duplicate habits, using approved habits before replies, showing the schedule as Phase 2/off, showing current settings, and explaining every setting. It must not change config until you choose an item. The safe save-examples choice turns on local redacted capture and leaves timers, embeddings, and approved-habit reminders off unless you explicitly toggle them.
 - **Capture** means saving redacted text fields and metadata from completed user/assistant turns to `observations.jsonl`. It is the raw material. Capture does **not** create habits by itself.
 - **Choose model for habit learning** opens a live typeahead model picker inside `/experience setup`; typing text such as `5.5`, `codex`, or `glm` immediately filters authenticated model suggestions, and the current model is shown/marked. Users do not type a model command.
 - **Analyze saved examples now** reads already saved redacted examples, calls the configured model once, validates/sanitizes the model output, and writes suggested habits into review. It never approves habits.
@@ -145,7 +148,7 @@ The normal UX is one control panel:
 /experience setup
 ```
 
-The interactive `/experience setup` menu uses arrow keys plus Space/Enter. Checkbox rows show `[x]` for ON and `[ ]` for OFF; Space or Enter toggles checkbox rows and opens action rows. From that one menu a normal user can save examples, choose a model from live typeahead search or exact model entry with the current model visible, analyze saved examples now, review suggestions, approve/reject, use approved habits before replies, see status, and read explanations.
+The interactive `/experience setup` menu uses arrow keys plus Space/Enter. Checkbox rows show `[x]` for ON and `[ ]` for OFF; Space or Enter toggles checkbox rows and opens action rows. From that one menu a normal user can save examples, choose a model from live typeahead search or exact model entry with the current model visible, analyze saved examples now, review suggestions, resolve duplicates, browse/disable/re-enable/archive approved habits, enable duplicate prevention after scan/backfill, use approved habits before replies, see status, and read explanations.
 
 No typed setup subcommands are required for normal use. If the panel does not render, restart Pi so the latest extension UI loads and run `/experience setup` again.
 
@@ -160,10 +163,12 @@ No typed setup subcommands are required for normal use. If the panel does not re
    - Use Ctrl+E only when you need to enter an exact `provider/model` id.
 5. Choose **Analyze saved examples now**. This starts one nonblocking model job and returns control to Pi.
 6. After analysis finishes, choose **Review suggested habits**.
-7. Choose **Review approved habits** to browse actual active/disabled approved habits and disable or re-enable one without typing IDs/checksums.
+7. Choose **Review approved habits** to browse actual active/disabled approved habits and disable, re-enable, or archive/hide one without typing IDs/checksums.
    - Full details appear in a focused review panel, not in chat history.
-   - Use ↑/↓ then Space/Enter, or `1`/`2`/`3`, to Approve / Reject / Back.
-8. Optionally toggle **Use approved habits before replies** to `[x] ON`. This uses only approved active habits and remains off by default.
+   - Archive/hide is audit-preserving and removes the habit from normal browse/search and selector use.
+8. Optionally choose **Prevent duplicate habits**. Enabling runs a scan/backfill first. OpenAI-compatible embeddings require explicit opt-in and send only normalized When/Do text (`condition + "\\n" + behavior`), never raw examples, source refs, residual JSON, checksums, or audit text.
+9. If setup reports possible duplicates, choose **Resolve duplicate habits** to merge evidence, supersede old wording, keep separate with a reason, or archive/hide a duplicate.
+10. Optionally toggle **Use approved habits before replies** to `[x] ON`. This uses only approved active habits and remains off by default.
 
 ### Agent/operator procedure
 
@@ -171,7 +176,7 @@ When maintaining or troubleshooting this package:
 
 - Preserve the one normal-user command: `/experience setup`.
 - Do not instruct normal users to type advanced setup/review subcommands.
-- Keep setup controls in the menu: capture, model, analyze, review, approved-habit use, schedule explanation, status, help, and all-off.
+- Keep setup controls in the menu: capture, model, analyze, review, duplicate resolution, duplicate prevention, approved-habit review/archive, approved-habit use, schedule explanation, status, help, and all-off.
 - Keep checkbox semantics: `[x]` is ON, `[ ]` is OFF, Space/Enter toggles checkbox rows.
 - Keep model selection live-searchable; typing text such as `5.5` must immediately filter suggestions and the current model must be visible.
 - Keep review details inside the focused panel; do not dump suggested-habit details into chat history for the normal setup flow.
@@ -196,7 +201,7 @@ Important files:
 ```text
 agent-experience.toml     # local config
 observations.jsonl        # redacted capture stream
-ledger.sqlite             # reviewed/consolidated records and hit logs
+ledger.sqlite             # reviewed/consolidated records, embeddings, duplicate relations, audits, and hit logs
 law.md                    # optional configured law file for habit activation/selector freshness
 habits-report.md          # report-only output, never selector input
 ```
@@ -212,7 +217,11 @@ Privacy and safety invariants:
 - only active same-user habits are selector candidates;
 - disabled, dormant, candidate, pending-review, quarantine, evidence, and report rows are not selector input;
 - no automatic law-file writes are performed by the extension; the Use approved habits row in `/experience setup` may create the default private `law.md` only after an explicit user choice;
-- no automatic habit activation happens from selector use.
+- no automatic habit activation happens from selector use;
+- semantic duplicate prevention is off until explicitly enabled after a scan/backfill;
+- embedding cache rows are user-scoped and separated by provider, model, dimension, input-version, input checksum, and habit-row checksum; stale cache rows are ignored/replaced;
+- raw vectors are stored only in the private SQLite embedding cache, not in duplicate audit/relation JSON;
+- backup/restore is the same as the private state root/`ledger.sqlite`; opening older ledgers migrates schema forward, while future/newer ledgers fail closed for repair by a newer package.
 
 ## Review flow
 
@@ -350,7 +359,7 @@ For a bug fix:
 3. run reviewer/debate for non-trivial safety or runtime changes;
 4. run `npm run check`;
 5. bump `package.json` version;
-6. commit and tag, for example `v0.1.23`;
+6. commit and tag, for example `v0.1.25`;
 7. publish the same commit to npm;
 8. tell npm users to run `pi update --extensions`.
 
@@ -382,7 +391,7 @@ pi update --extensions
 For users who want a pinned exact source ref:
 
 ```bash
-pi install git:github.com/misunders2d/pi-experiences@v0.1.23
+pi install git:github.com/misunders2d/pi-experiences@v0.1.25
 ```
 
 Git package refs are pinned. `pi update --extensions` reconciles the pinned ref but does not float Git installs to a new tag.
@@ -393,7 +402,7 @@ For a bug fix:
 2. add or update regression tests;
 3. run review and `npm run check`;
 4. bump `package.json` version;
-5. commit and tag, for example `v0.1.23`;
+5. commit and tag, for example `v0.1.25`;
 6. publish the same commit to npm;
 7. npm users update with `pi update --extensions`; Git-pinned users install the new tag explicitly.
 

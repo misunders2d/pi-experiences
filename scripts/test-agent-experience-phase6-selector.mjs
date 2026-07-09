@@ -73,7 +73,7 @@ await writeFile(join(root, 'law.md'), 'phase6 configured law\n');
 const liveCwd = await mkdtemp(join(temp, 'live-cwd-no-docs-'));
 const storage = await initExperienceStorage(root, { allowInit: true, userId: 'owner' });
 try {
-  assert.equal(storage.db.prepare('PRAGMA user_version').get().user_version, 5);
+  assert.equal(storage.db.prepare('PRAGMA user_version').get().user_version, 6);
   assert.ok(storage.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='selector_hit_log'").get());
 
   const law = lawSnapshotForTest('phase6 law');
@@ -159,7 +159,8 @@ try {
   assert.equal(pendingPass.checksum.length, 64);
   const pendingLawFail = insertStorageRecord(storage.db, 'habits', { id: 'pending-law-fail', userId: 'owner', data: habitData({ status: 'candidate', condition: 'asked for secrets', behavior: 'reveal secrets', review_status: 'approved_pending_eligibility', source_refs: refs(3, 'promote2'), source_dates: sourceDates() }), now: '2026-07-08T02:01:00.000Z' });
   assert.equal(pendingLawFail.checksum.length, 64);
-  const promoted = promoteApprovedPendingCandidates(storage.db, { userId: 'owner', law, now: '2026-07-08T02:02:00.000Z' });
+  await assert.rejects(() => promoteApprovedPendingCandidates(storage.db, { userId: 'owner', law, now: '2026-07-08T02:02:00.000Z' }), /explicit semantic dedupe policy/, 'background promotion must fail closed when semantic policy is omitted');
+  const promoted = await promoteApprovedPendingCandidates(storage.db, { userId: 'owner', law, now: '2026-07-08T02:02:00.000Z', semantic: { policy: { enabled: false } } });
   assert.ok(promoted.promoted.includes('pending-pass'));
   assert.ok(promoted.blocked.some((item) => item.id === 'pending-law-fail'));
   assert.equal(storage.db.prepare("SELECT status FROM habits WHERE id = 'pending-pass'").get().status, 'active');
@@ -231,12 +232,12 @@ try {
   assert.equal(missingLawNotes.length, missingLawNoteCount, 'disabled selector must not keep warning every turn');
   await missingLaw.commands.get('experience').handler('selector on', missingLawCtx);
   const schemaMismatchStorage = await initExperienceStorage(missingLawRoot, { allowInit: true, userId: 'owner' });
-  schemaMismatchStorage.db.exec('PRAGMA user_version = 0');
+  schemaMismatchStorage.db.exec('PRAGMA user_version = 999');
   schemaMismatchStorage.db.close();
   await writeFile(join(missingLawRoot, 'law.md'), 'configured law after missing-law diagnostic\n');
   await missingLaw.handlers.get('before_agent_start')({ prompt: 'hook prompt after schema mismatch', systemPrompt: 'base' }, { cwd: liveCwd, ui: missingLawCtx.ui });
   assert.ok(missingLawNotes.length > missingLawNoteCount, 'distinct selector runtime diagnostics must not be suppressed by the first error');
-  assert.ok(missingLawNotes.some((note) => /schema mismatch/.test(note.message)), 'schema mismatch must emit its own diagnostic');
+  assert.ok(missingLawNotes.some((note) => /newer than this extension|schema mismatch/.test(note.message)), 'schema mismatch must emit its own diagnostic');
   __setAgentExperienceSelectorAdapterForTest(undefined);
 
   const noLedgerRoot = join(temp, 'no-ledger-state');

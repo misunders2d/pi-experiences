@@ -109,8 +109,8 @@ assert.throws(() => validateProposalBatch({ ...batch, proposals: [{ ...batch.pro
 
 const storage = await initExperienceStorage(root, { allowInit: true, userId: 'owner' });
 try {
-  assert.equal(storage.db.prepare('PRAGMA user_version').get().user_version, 5);
-  const result = consolidateProposalBatch({ db: storage.db, userId: 'owner', proposalBatch: batch, observations });
+  assert.equal(storage.db.prepare('PRAGMA user_version').get().user_version, 6);
+  const result = await consolidateProposalBatch({ db: storage.db, userId: 'owner', proposalBatch: batch, observations });
   assert.equal(result.watermark_after.file_generation, 'active');
   assert.equal(result.watermark_after.seq, 3);
   assert.equal(result.watermark_after.checksum, r3.checksum);
@@ -141,7 +141,7 @@ try {
   const dbText = canonicalJson([...habits, ...evidence, ...storage.db.prepare('SELECT data_json FROM consolidation_audit').all()]);
   assert.equal(dbText.includes('phase4a@example.invalid'), false, 'raw observation text must not be stored in consolidation rows');
 
-  const rerun = consolidateProposalBatch({ db: storage.db, userId: 'owner', proposalBatch: batch, observations });
+  const rerun = await consolidateProposalBatch({ db: storage.db, userId: 'owner', proposalBatch: batch, observations });
   assert.equal(rerun.inserted.candidates, 0);
   assert.equal(rerun.inserted.evidence, 0);
   assert.equal(rerun.inserted.audit, 0);
@@ -152,10 +152,10 @@ try {
   assert.equal(mergedReviewedData.review_status, 'approved_pending_eligibility', 'candidate consolidation merge must preserve review marker');
   assert.equal(mergedReviewedData.law_hash, 'accepted-law-hash', 'candidate consolidation merge must preserve accept-time law metadata until promotion recheck');
 
-  assert.throws(() => consolidateProposalBatch({ db: storage.db, userId: 'owner', proposalBatch: { ...batch, proposals: [{ ...batch.proposals[0], source_refs: [{ file_generation: 'rotated-fixture', seq: 1, checksum: r1.checksum }] }] }, observations }), /generation|Observation set mismatch|not found/i);
+  await assert.rejects(() => consolidateProposalBatch({ db: storage.db, userId: 'owner', proposalBatch: { ...batch, proposals: [{ ...batch.proposals[0], source_refs: [{ file_generation: 'rotated-fixture', seq: 1, checksum: r1.checksum }] }] }, observations }), /generation|Observation set mismatch|not found/i);
   const beforeWatermark = storage.db.prepare('SELECT seq, checksum FROM consolidation_watermarks WHERE user_id = ? AND file_generation = ?').get('owner', 'active');
   assert.equal(beforeWatermark.seq, 3);
-  assert.throws(() => consolidateProposalBatch({ db: storage.db, userId: 'owner', proposalBatch: { ...batch, batch_id: 'bad-batch', proposals: [{ ...batch.proposals[0], proposal_id: 'bad-proposal', source_refs: [{ file_generation: 'active', seq: 2, checksum: '0'.repeat(64) }] }] }, observations }), /checksum/i);
+  await assert.rejects(() => consolidateProposalBatch({ db: storage.db, userId: 'owner', proposalBatch: { ...batch, batch_id: 'bad-batch', proposals: [{ ...batch.proposals[0], proposal_id: 'bad-proposal', source_refs: [{ file_generation: 'active', seq: 2, checksum: '0'.repeat(64) }] }] }, observations }), /checksum/i);
   const afterFailed = storage.db.prepare('SELECT seq, checksum FROM consolidation_watermarks WHERE user_id = ? AND file_generation = ?').get('owner', 'active');
   assert.deepEqual(afterFailed, beforeWatermark, 'failed proposal must not advance watermark');
 } finally {
@@ -171,8 +171,8 @@ const activeRecords = await readValidatedObservationGeneration(rotatedRoot, { fi
 const rotatedRecords = await readValidatedObservationGeneration(rotatedRoot, { file_generation: 'rotated-fixture', path: 'rotated-fixture.jsonl' }, 'owner');
 const rotatedStorage = await initExperienceStorage(rotatedRoot, { allowInit: true, userId: 'owner' });
 try {
-  consolidateProposalBatch({ db: rotatedStorage.db, userId: 'owner', proposalBatch: validBatch(activeRecords, { batch_id: 'active-batch' }), observations: activeRecords });
-  consolidateProposalBatch({ db: rotatedStorage.db, userId: 'owner', proposalBatch: validBatch(rotatedRecords, { batch_id: 'rotated-batch', proposals: [{ ...validBatch(rotatedRecords).proposals[0], proposal_id: 'rotated-proposal', candidate_key: 'rotated-key', source_refs: rotatedRecords.map((record) => ({ file_generation: 'rotated-fixture', seq: record.seq, checksum: record.checksum })) }] }), observations: rotatedRecords });
+  await consolidateProposalBatch({ db: rotatedStorage.db, userId: 'owner', proposalBatch: validBatch(activeRecords, { batch_id: 'active-batch' }), observations: activeRecords });
+  await consolidateProposalBatch({ db: rotatedStorage.db, userId: 'owner', proposalBatch: validBatch(rotatedRecords, { batch_id: 'rotated-batch', proposals: [{ ...validBatch(rotatedRecords).proposals[0], proposal_id: 'rotated-proposal', candidate_key: 'rotated-key', source_refs: rotatedRecords.map((record) => ({ file_generation: 'rotated-fixture', seq: record.seq, checksum: record.checksum })) }] }), observations: rotatedRecords });
   const watermarks = rotatedStorage.db.prepare('SELECT file_generation, seq, checksum FROM consolidation_watermarks WHERE user_id = ? ORDER BY file_generation').all('owner');
   assert.deepEqual(watermarks.map((row) => [row.file_generation, row.seq]), [['active', 1], ['rotated-fixture', 1]]);
   assert.notEqual(watermarks[0].checksum, watermarks[1].checksum, 'same seq in different generations must be distinct by checksum/generation');
@@ -215,7 +215,7 @@ const migrated = await initExperienceStorage(migrationRoot, { allowInit: true, u
 try {
   insertStorageRecord(migrated.db, 'habits', { id: 'legacy-compatible', userId: 'owner', data: { safe: true }, now: '2026-07-07T00:00:00.000Z' });
   assert.equal(selectStorageRecordsByUser(migrated.db, 'habits', 'owner').map((row) => row.id).includes('legacy-compatible'), true);
-  assert.equal(migrated.db.prepare('PRAGMA user_version').get().user_version, 5);
+  assert.equal(migrated.db.prepare('PRAGMA user_version').get().user_version, 6);
   assert.ok(migrated.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='consolidation_watermarks'").get());
 } finally {
   migrated.db.close();

@@ -3,6 +3,9 @@ import { join } from "node:path";
 import { canonicalJson, sha256Hex } from "../storage/checksum.ts";
 import { ensurePrivateRoot, normalizeUserId, resolvePrivatePath } from "../storage/private-root.ts";
 import type { AgentExperienceConfig } from "../config.ts";
+import { createEmbeddingAdapterFromConfig, semanticPolicyFromConfig } from "../semantic/config.ts";
+import { sanitizePolicy } from "../semantic/service.ts";
+import type { EmbeddingAdapter, SemanticDedupePolicy } from "../semantic/types.ts";
 import type { ValidatedObservationRecord } from "./observations.ts";
 import { validateModelOutputBatch, validateModelOutputSourceRefs, modelOutputToProposalBatch, insertModelOutputQuarantine, processValidatedModelOutput, type ValidatedModelOutputBatch } from "./model-output.ts";
 
@@ -80,7 +83,7 @@ function tableCounts(db: any): Record<string, number> {
 	return Object.fromEntries(tables.map((table) => [table, Number(db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get().count)]));
 }
 
-export async function runConsolidationOnce(input: { root: string; db: any; userId: string; observations: ValidatedObservationRecord[]; modelOutput: unknown; model: string; config?: AgentExperienceConfig; dryRun?: boolean; breakIn?: boolean; acceptBreakIn?: boolean; now?: string }) {
+export async function runConsolidationOnce(input: { root: string; db: any; userId: string; observations: ValidatedObservationRecord[]; modelOutput: unknown; model: string; config?: AgentExperienceConfig; semantic?: { policy?: Partial<SemanticDedupePolicy>; provider?: EmbeddingAdapter; signal?: AbortSignal }; dryRun?: boolean; breakIn?: boolean; acceptBreakIn?: boolean; now?: string }) {
 	const userId = normalizeUserId(input.userId);
 	const createdAt = input.now || new Date().toISOString();
 	const lock = await acquireConsolidationLock(input.root, { owner: "experience-consolidate", createdAt });
@@ -105,7 +108,19 @@ export async function runConsolidationOnce(input: { root: string; db: any; userI
 		if (input.dryRun || breakInReviewOnly) {
 			return { ok: true, dry_run: true, break_in_review_only: breakInReviewOnly, expected, diff, before, after: tableCounts(input.db) };
 		}
-		const result = processValidatedModelOutput({ db: input.db, userId, output, observations: input.observations, expectedRange: expected });
+		const semanticPolicy = input.semantic?.policy ? sanitizePolicy(input.semantic.policy) : input.config ? semanticPolicyFromConfig(input.config) : undefined;
+		let semantic: Parameters<typeof processValidatedModelOutput>[0]["semantic"] | undefined;
+		if (semanticPolicy?.enabled) {
+			let provider = input.semantic?.provider;
+			try {
+				provider = provider || createEmbeddingAdapterFromConfig(input.config!);
+			} catch (error: any) {
+				return { ok: false, dry_run: false, reason: "semantic_embedding_provider_unavailable", detail: String(error?.message || error).slice(0, 300), expected, diff, before, after: tableCounts(input.db) };
+			}
+			if (!provider) return { ok: false, dry_run: false, reason: "semantic_embedding_provider_unavailable", expected, diff, before, after: tableCounts(input.db) };
+			semantic = { policy: semanticPolicy, provider, signal: input.semantic?.signal };
+		}
+		const result = await processValidatedModelOutput({ db: input.db, userId, output, observations: input.observations, expectedRange: expected, semantic });
 		return { ok: true, dry_run: false, expected, diff, result, before, after: tableCounts(input.db) };
 	} finally {
 		await lock.release();
