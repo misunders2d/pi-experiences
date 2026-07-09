@@ -115,9 +115,9 @@ Duplicate copies can register the same hooks twice and cause duplicate capture o
 ### Plain-language pieces
 
 - **Experience** is the whole behavior-learning layer.
-- **Setup** is the main control panel. It opens a Enter-driven settings menu for saving chat examples locally, choosing the habit-learning model, analyzing saved examples now, reviewing suggested habits, using approved habits before replies, showing the schedule as Phase 2/off, showing current settings, and explaining every setting. It must not change config until you choose an item. The safe save-examples choice turns on local redacted capture and leaves timers and approved-habit reminders off unless you explicitly toggle them.
+- **Setup** is the main control panel. It opens an Enter-driven settings menu for saving chat examples locally, choosing the habit-learning model, analyzing saved examples now, reviewing suggested habits, using approved habits before replies, showing the schedule as Phase 2/off, showing current settings, and explaining every setting. It must not change config until you choose an item. The safe save-examples choice turns on local redacted capture and leaves timers and approved-habit reminders off unless you explicitly toggle them.
 - **Capture** means saving redacted text fields and metadata from completed user/assistant turns to `observations.jsonl`. It is the raw material. Capture does **not** create habits by itself.
-- **Choose model for habit learning** opens a model picker inside `/experience setup`; users do not type a model command.
+- **Choose model for habit learning** opens a live typeahead model picker inside `/experience setup`; typing text such as `5.5`, `codex`, or `glm` immediately filters authenticated model suggestions. Users do not type a model command.
 - **Analyze saved examples now** reads already saved redacted examples, calls the configured model once, validates/sanitizes the model output, and writes suggested habits into review. It never approves habits.
 - **Pending review** means proposed habits are waiting for you to approve or reject them. Pending items are not used for injection.
 - **Active habits** are reviewed habits. The setup menu does not use them before replies unless you explicitly enable approved-habit reminders.
@@ -145,7 +145,7 @@ The normal UX is one control panel:
 /experience setup
 ```
 
-The interactive `/experience setup` menu uses arrow keys plus Enter. Rows say ON/OFF and the Enter action directly, for example `Save chat examples locally: OFF — Enter to turn on`. From that one menu a normal user can save examples, choose a model from recommendations, search, or exact model entry, analyze saved examples now, review suggestions, approve/reject, use approved habits before replies, see status, and read explanations.
+The interactive `/experience setup` menu uses arrow keys plus Enter. Rows say ON/OFF and the Enter action directly, for example `Save chat examples locally: OFF — Enter to turn on`. From that one menu a normal user can save examples, choose a model from live typeahead search or exact model entry, analyze saved examples now, review suggestions, approve/reject, use approved habits before replies, see status, and read explanations.
 
 No typed setup subcommands are required for normal use. If the panel does not render, restart Pi so the latest extension UI loads and run `/experience setup` again.
 
@@ -192,7 +192,7 @@ The extension is designed around human review.
 capture redacted pairs -> analyze saved examples now -> proposed suggestions -> human review -> active habits -> optional approved-habit reminders
 ```
 
-In 0.1.11, the **Analyze saved examples now** row inside `/experience setup` can create suggestions from already saved examples using the configured Pi model. Then use **Review suggested habits** inside the same setup menu to inspect, approve, or reject them. Normal users do not need typed review commands.
+In 0.1.11, the **Analyze saved examples now** row inside `/experience setup` can create suggestions from already saved examples using the configured Pi model. Then use **Review suggested habits** inside the same setup menu to inspect them in a focused review panel, then approve or reject them. Normal users do not need typed review commands.
 
 Checksums are still used internally so stale review actions fail closed. Advanced/backcompat review commands exist for maintainers, but they are not the normal path.
 

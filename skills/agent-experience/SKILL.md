@@ -23,9 +23,9 @@ experience = reviewed behavioral habits inferred from repeated interaction
 ## Plain-language pieces
 
 - **Experience** is the whole behavior-learning layer.
-- **Setup** is the main control panel. It opens a Enter-driven settings menu for saving chat examples locally, choosing the habit-learning model, analyzing saved examples now, reviewing suggested habits, using approved habits before replies, showing the schedule as Phase 2/off, showing current settings, and explaining every setting. It must not change config until you choose an item. After each action it returns to the panel until Done. The safe save-examples toggle turns on local redacted capture and leaves timers and approved-habit reminders off unless explicitly toggled.
+- **Setup** is the main control panel. It opens an Enter-driven settings menu for saving chat examples locally, choosing the habit-learning model, analyzing saved examples now, reviewing suggested habits, using approved habits before replies, showing the schedule as Phase 2/off, showing current settings, and explaining every setting. It must not change config until you choose an item. After each action it returns to the panel until Done. The safe save-examples toggle turns on local redacted capture and leaves timers and approved-habit reminders off unless explicitly toggled.
 - **Capture** saves redacted text fields and metadata from completed turns to `observations.jsonl`. It creates raw material only, not habits.
-- **Choose model for habit learning** opens a model picker inside `/experience setup`; users do not type a model command.
+- **Choose model for habit learning** opens a live typeahead model picker inside `/experience setup`; typing text such as `5.5`, `codex`, or `glm` immediately filters authenticated model suggestions. Users do not type a model command.
 - **Analyze saved examples now** reads already saved redacted examples, calls the configured model once, validates/sanitizes model output, and writes suggested habits into review. It never approves habits.
 - **Pending review** means proposed habits await approval/rejection and are not injectable yet.
 - **Active habits** are reviewed habits. The setup menu does not use them before replies unless you explicitly enable approved-habit reminders.
@@ -66,7 +66,7 @@ Normal users review from the setup menu:
 /experience setup
 ```
 
-Then choose **Review suggested habits**, inspect a suggestion in plain English, and choose Approve or Reject. Checksums protect stale review actions internally. No review path auto-approves habits.
+Then choose **Review suggested habits**, inspect a suggestion in a focused review panel, and choose Approve or Reject. Review details are not dumped into chat history. Checksums protect stale review actions internally. No review path auto-approves habits.
 
 ## Advanced/backcompat commands
 

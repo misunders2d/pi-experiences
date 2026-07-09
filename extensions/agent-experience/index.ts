@@ -3,6 +3,7 @@ import { readFile, rm, stat } from "node:fs/promises";
 import { completeSimple } from "@earendil-works/pi-ai/compat";
 import type { AssistantMessage, Model } from "@earendil-works/pi-ai/compat";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { decodeKittyPrintable, fuzzyFilter, Input, Key, matchesKey, truncateToWidth, wrapTextWithAnsi, type Component, type Focusable } from "@earendil-works/pi-tui";
 import {
 	getAgentExperiencePaths,
 	readAgentExperienceConfig,
@@ -61,6 +62,172 @@ interface ConsolidationModelAdapter {
 
 let consolidationModelAdapter: ConsolidationModelAdapter | undefined;
 const analyzeJobs = new Map<string, Promise<void>>();
+
+type SetupReviewAction = "Approve" | "Reject" | "Back to review list";
+
+type LiveModelSearchResult = { model?: string; exact?: true };
+
+function truncateLine(value: string, width: number): string {
+	return truncateToWidth(value, Math.max(1, width));
+}
+
+function wrapPanelText(value: string, width: number): string[] {
+	const safeWidth = Math.max(20, width);
+	return value.split("\n").flatMap((line) => {
+		if (!line.trim()) return [""];
+		const wrapped = wrapTextWithAnsi(line, safeWidth);
+		return wrapped.length ? wrapped : [truncateLine(line, safeWidth)];
+	});
+}
+
+function modelSearchMatches(models: string[], query: string, limit = 25): string[] {
+	const clean = query.trim().toLowerCase();
+	if (!clean) return models.slice(0, limit);
+	const terms = clean.split(/\s+/).filter(Boolean);
+	const direct = models.filter((model) => {
+		const lower = model.toLowerCase();
+		return terms.every((term) => lower.includes(term));
+	});
+	const seen = new Set(direct);
+	const fuzzy = fuzzyFilter(models.filter((model) => !seen.has(model)), clean, (model) => model);
+	return [...direct, ...fuzzy].slice(0, limit);
+}
+
+class LiveModelSearchComponent implements Component, Focusable {
+	private input = new Input();
+	private selectedIndex = 0;
+	private matches: string[];
+	private readonly allModels: string[];
+	private readonly initialModels: string[];
+	private readonly done: (result: LiveModelSearchResult | undefined) => void;
+	private focusedValue = false;
+
+	constructor(models: string[], initialModels: string[], done: (result: LiveModelSearchResult | undefined) => void) {
+		this.allModels = models;
+		this.initialModels = initialModels;
+		this.done = done;
+		this.matches = initialModels.length ? initialModels : modelSearchMatches(models, "", 25);
+	}
+
+	get focused(): boolean { return this.focusedValue; }
+	set focused(value: boolean) {
+		this.focusedValue = value;
+		this.input.focused = value;
+	}
+
+	private refresh() {
+		const query = this.input.getValue();
+		this.matches = query.trim() ? modelSearchMatches(this.allModels, query, 25) : this.initialModels;
+		this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.matches.length - 1));
+	}
+
+	render(width: number): string[] {
+		const w = Math.max(40, width);
+		const query = this.input.getValue().trim();
+		const lines = [
+			truncateLine("Choose model for habit learning", w),
+			truncateLine("Type to filter live. Example: 5.5, codex, glm. Enter selects. Ctrl+E exact id. Esc cancels.", w),
+			"",
+			truncateLine("Search:", w),
+			...this.input.render(w),
+			"",
+		];
+		if (!this.matches.length) {
+			lines.push(truncateLine(query ? `No models match “${redactText(query).slice(0, 40)}”. Ctrl+E to enter exact id.` : "Start typing to search authenticated models.", w));
+		} else {
+			lines.push(truncateLine(query ? `${this.matches.length} matching authenticated model(s):` : "Recommended authenticated models:", w));
+			for (let i = 0; i < Math.min(this.matches.length, 15); i++) {
+				const prefix = i === this.selectedIndex ? "→ " : "  ";
+				lines.push(truncateLine(`${prefix}${this.matches[i]}`, w));
+			}
+			if (this.matches.length > 15) lines.push(truncateLine(`  … ${this.matches.length - 15} more. Keep typing to narrow.`, w));
+		}
+		lines.push("", truncateLine("↑/↓ move · Enter select · Ctrl+E exact id · Esc cancel", w));
+		return lines;
+	}
+
+	handleInput(data: string): void {
+		if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c"))) return this.done(undefined);
+		if (matchesKey(data, Key.ctrl("e"))) return this.done({ exact: true });
+		if (matchesKey(data, Key.enter)) {
+			const model = this.matches[this.selectedIndex];
+			if (model) return this.done({ model });
+			return;
+		}
+		if (matchesKey(data, Key.up)) {
+			if (this.matches.length) this.selectedIndex = this.selectedIndex === 0 ? this.matches.length - 1 : this.selectedIndex - 1;
+			return;
+		}
+		if (matchesKey(data, Key.down)) {
+			if (this.matches.length) this.selectedIndex = this.selectedIndex === this.matches.length - 1 ? 0 : this.selectedIndex + 1;
+			return;
+		}
+		this.input.handleInput(data);
+		this.refresh();
+	}
+
+	invalidate(): void { this.input.invalidate(); }
+}
+
+class ReviewDecisionComponent implements Component {
+	private selectedIndex = 0;
+	private scroll = 0;
+	private readonly actions: SetupReviewAction[] = ["Approve", "Reject", "Back to review list"];
+	private readonly done: (result: SetupReviewAction | undefined) => void;
+	private readonly title: string;
+	private readonly details: string;
+
+	constructor(title: string, details: string, done: (result: SetupReviewAction | undefined) => void) {
+		this.title = title;
+		this.details = details;
+		this.done = done;
+	}
+
+	render(width: number): string[] {
+		const w = Math.max(50, width);
+		const detailLines = wrapPanelText(this.details, Math.max(30, w - 2));
+		const maxDetail = 18;
+		const start = Math.max(0, Math.min(this.scroll, Math.max(0, detailLines.length - maxDetail)));
+		const visible = detailLines.slice(start, start + maxDetail);
+		const lines = [truncateLine(this.title, w), truncateLine("Review details stay in this panel. Nothing is approved until you choose Approve.", w), ""];
+		for (const line of visible) lines.push(truncateLine(line, w));
+		if (detailLines.length > maxDetail) lines.push(truncateLine(`… lines ${start + 1}-${Math.min(start + maxDetail, detailLines.length)} of ${detailLines.length}; PgUp/PgDn scroll`, w));
+		lines.push("", "Action:");
+		for (let i = 0; i < this.actions.length; i++) {
+			const prefix = i === this.selectedIndex ? "→ " : "  ";
+			lines.push(truncateLine(`${prefix}${this.actions[i]}`, w));
+		}
+		lines.push("", truncateLine("↑/↓ choose action · Enter run · PgUp/PgDn scroll · A approve · R reject · Esc back", w));
+		return lines;
+	}
+
+	handleInput(data: string): void {
+		if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c"))) return this.done("Back to review list");
+		if (matchesKey(data, "a")) return this.done("Approve");
+		if (matchesKey(data, "r")) return this.done("Reject");
+		if (matchesKey(data, Key.enter)) return this.done(this.actions[this.selectedIndex]);
+		if (matchesKey(data, Key.up)) {
+			this.selectedIndex = this.selectedIndex === 0 ? this.actions.length - 1 : this.selectedIndex - 1;
+			return;
+		}
+		if (matchesKey(data, Key.down)) {
+			this.selectedIndex = this.selectedIndex === this.actions.length - 1 ? 0 : this.selectedIndex + 1;
+			return;
+		}
+		if (matchesKey(data, Key.pageUp)) {
+			this.scroll = Math.max(0, this.scroll - 8);
+			return;
+		}
+		if (matchesKey(data, Key.pageDown)) {
+			this.scroll = Math.min(this.scroll + 8, 10_000);
+			return;
+		}
+		const printable = data.length === 1 ? data : decodeKittyPrintable(data);
+		if (printable?.toLowerCase() === "b") return this.done("Back to review list");
+	}
+
+	invalidate(): void {}
+}
 
 export function __setAgentExperienceSelectorAdapterForTest(adapter: SelectorModelAdapter | undefined) {
 	selectorModelAdapter = adapter;
@@ -542,8 +709,7 @@ async function inputSetup(ctx: ExtensionCommandContext, title: string, placehold
 async function chooseSearchedModel(ctx: ExtensionCommandContext, models: string[]): Promise<string | undefined> {
 	const query = await inputSetup(ctx, "Search habit-learning models", "type provider/model text, e.g. gpt-5, codex, gemini");
 	if (!query) return undefined;
-	const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
-	const matches = models.filter((model) => terms.every((term) => model.toLowerCase().includes(term))).slice(0, 25);
+	const matches = modelSearchMatches(models, query, 25);
 	if (!matches.length) {
 		notify(ctx, `No authenticated model matched: ${redactText(query).slice(0, 80)}`, "warn");
 		return undefined;
@@ -554,13 +720,16 @@ async function chooseSearchedModel(ctx: ExtensionCommandContext, models: string[
 	return choice;
 }
 
-async function handleSetupModel(ctx: ExtensionCommandContext) {
-	const models = availableTextModels(ctx);
-	if (models.length === 0) {
-		return notify(ctx, "No authenticated text models are available for habit learning. Configure a Pi model first, then return to /experience setup.", "warn");
+async function chooseLiveModel(ctx: ExtensionCommandContext, models: string[], recommended: string[]): Promise<string | undefined> {
+	const ui = (ctx as { hasUI?: boolean; ui?: { custom?: ExtensionCommandContext["ui"]["custom"] } })?.ui;
+	if ((ctx as { hasUI?: boolean }).hasUI !== false && typeof ui?.custom === "function") {
+		const result = await ui.custom<LiveModelSearchResult | undefined>((_tui, _theme, _keybindings, done) => new LiveModelSearchComponent(models, recommended, done), {
+			overlay: true,
+			overlayOptions: { width: "80%", minWidth: 60, maxHeight: "80%", anchor: "center", margin: 1 },
+		});
+		if (result?.exact) return inputSetup(ctx, "Enter exact habit-learning model id", "provider/model, e.g. openai-codex/gpt-5.5");
+		return result?.model;
 	}
-	const { config } = await readAgentExperienceConfig(getAgentExperiencePaths());
-	const recommended = recommendedTextModels(ctx, config.consolidation_model);
 	const options = [
 		...recommended,
 		"Search authenticated models",
@@ -570,6 +739,29 @@ async function handleSetupModel(ctx: ExtensionCommandContext) {
 	let choice = await chooseSetup(ctx, "Choose model for habit learning", options, false);
 	if (choice === "Search authenticated models") choice = await chooseSearchedModel(ctx, models);
 	if (choice === "Enter exact model id") choice = await inputSetup(ctx, "Enter exact habit-learning model id", "provider/model, e.g. openai-codex/gpt-5.5");
+	return choice;
+}
+
+async function chooseReviewActionInPanel(ctx: ExtensionCommandContext, title: string, details: string): Promise<SetupReviewAction | undefined> {
+	const ui = (ctx as { hasUI?: boolean; ui?: { custom?: ExtensionCommandContext["ui"]["custom"] } })?.ui;
+	if ((ctx as { hasUI?: boolean }).hasUI !== false && typeof ui?.custom === "function") {
+		return ui.custom<SetupReviewAction | undefined>((_tui, _theme, _keybindings, done) => new ReviewDecisionComponent(title, details, done), {
+			overlay: true,
+			overlayOptions: { width: "85%", minWidth: 70, maxHeight: "90%", anchor: "center", margin: 1 },
+		});
+	}
+	notify(ctx, details, "info");
+	return chooseSetup(ctx, "What do you want to do with this suggestion?", ["Approve", "Reject", "Back to review list"], false) as Promise<SetupReviewAction | undefined>;
+}
+
+async function handleSetupModel(ctx: ExtensionCommandContext) {
+	const models = availableTextModels(ctx);
+	if (models.length === 0) {
+		return notify(ctx, "No authenticated text models are available for habit learning. Configure a Pi model first, then return to /experience setup.", "warn");
+	}
+	const { config } = await readAgentExperienceConfig(getAgentExperiencePaths());
+	const recommended = recommendedTextModels(ctx, config.consolidation_model);
+	const choice = await chooseLiveModel(ctx, models, recommended);
 	if (!choice || choice === "Back/cancel (no changes)") return notify(ctx, "Habit-learning model unchanged.", "info");
 	if (!models.includes(choice) && !configuredModelAvailable(ctx, choice)) return notify(ctx, `Model is not available/authenticated: ${redactText(choice)}`, "warn");
 	const { path } = await setAgentExperienceConsolidationModel(choice);
@@ -717,13 +909,11 @@ function formatReviewItemForHuman(details: any): string {
 
 function formatReviewActionForHuman(action: "Approve" | "Reject", result: any): string {
 	const data = result?.habit || result?.item || result || {};
-	const condition = data.condition ? `\nWhen: ${redactText(String(data.condition)).slice(0, 300)}` : "";
-	const behavior = data.behavior ? `\nDo: ${redactText(String(data.behavior)).slice(0, 300)}` : "";
 	if (action === "Approve" && data.status === "candidate") {
-		return `Approved suggestion. It will not be used before replies yet; it needs more supporting examples before activation.${condition}${behavior}`;
+		return "Approved suggestion. It will not be used before replies yet; it needs more supporting examples before activation.";
 	}
 	const status = data.status ? `\nStatus: ${redactText(String(data.status)).slice(0, 120)}` : "";
-	return `${action === "Approve" ? "Approved" : "Rejected"} suggestion.${condition}${behavior}${status}`;
+	return `${action === "Approve" ? "Approved" : "Rejected"} suggestion.${status}`;
 }
 
 function formatReviewListForHuman(list: any): string {
@@ -749,16 +939,14 @@ async function handleReviewSetup(ctx: ExtensionCommandContext) {
 			return notify(ctx, formatReviewReadError(error), "warn");
 		}
 		if (!list.items.length) return notify(ctx, "No suggested habits are waiting for review.", "info");
-		notify(ctx, formatReviewListForHuman(list), "info");
 		const labels = list.items.map((item: any, index: number) => reviewItemLabel(item, index));
-		const choice = await chooseSetup(ctx, "Review suggested habits", [...labels, "Back to setup"], false);
+		const choice = await chooseSetup(ctx, `Review suggested habits — ${plural(list.items.length, "suggestion")} waiting`, [...labels, "Back to setup"], false);
 		if (!choice || choice === "Back to setup") return;
 		const index = labels.indexOf(choice);
 		const item = list.items[index];
 		if (!item) continue;
 		const details = await withExistingReviewStorage(async (storage) => showPendingReviewItem(storage.db, { userId: storage.userId, id: item.id }));
-		notify(ctx, formatReviewItemForHuman(details), "info");
-		const action = await chooseSetup(ctx, "What do you want to do with this suggestion?", ["Approve", "Reject", "Back to review list"], false);
+		const action = await chooseReviewActionInPanel(ctx, reviewItemLabel(item, index), formatReviewItemForHuman(details));
 		if (!action || action === "Back to review list") continue;
 		try {
 			const now = new Date().toISOString();
