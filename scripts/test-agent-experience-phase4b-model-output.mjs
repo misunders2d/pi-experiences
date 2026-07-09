@@ -84,6 +84,11 @@ try {
   assert.throws(() => validateModelOutputBatch({ ...modelOutput(observations), proposals: [{ ...modelOutput(observations).proposals[0], ambiguous: true }] }, 'owner'), /Ambiguous/i);
   assert.throws(() => validateModelOutputBatch({ ...modelOutput(observations), proposals: [{ ...modelOutput(observations).proposals[0], source_refs: [] }] }, 'owner'), /source_refs/i);
   assert.throws(() => validateModelOutputBatch({ ...modelOutput(observations), proposals: [{ ...modelOutput(observations).proposals[0], condition: 'phase4b@example.invalid' }] }, 'owner'), /sensitive/i);
+  assert.throws(() => validateModelOutputBatch(modelOutput(observations, { proposals: [{ ...modelOutput(observations).proposals[0], condition: 'When working on Agent Experience setup' }] }), 'owner'), /overfit/i, 'project-specific habit conditions must fail closed');
+  assert.throws(() => validateModelOutputBatch(modelOutput(observations, { proposals: [{ ...modelOutput(observations).proposals[0], behavior: 'Remember screenshot b0ec176d640243aa for version 0.1.19' }] }), 'owner'), /overfit/i, 'version/hash/screenshot-specific habit behavior must fail closed');
+  assert.throws(() => validateModelOutputBatch(modelOutput(observations, { proposals: [{ ...modelOutput(observations).proposals[0], condition: 'When editing /tmp/pi-experiences/index.ts' }] }), 'owner'), /sensitive|overfit/i, 'path-specific habit conditions must fail closed');
+  assert.doesNotThrow(() => validateModelOutputBatch(modelOutput(observations, { batch_id: 'durable-tool-category', proposals: [{ ...modelOutput(observations).proposals[0], proposal_id: 'durable-tool-category-proposal', condition: 'When preparing an npm package release', behavior: 'Verify the end-to-end install and update path before calling it done' }] }), 'owner'), 'durable tool/task categories should remain allowed');
+  assert.doesNotThrow(() => validateModelOutputBatch(modelOutput(observations, { batch_id: 'durable-ui-category', proposals: [{ ...modelOutput(observations).proposals[0], proposal_id: 'durable-ui-category-proposal', condition: 'When debugging Pi UI confusion', behavior: 'Inspect the real visible UI state before declaring the fix complete' }] }), 'owner'), 'durable Pi UI category should remain allowed');
   const missingSource = validateModelOutputBatch(modelOutput(observations, { batch_id: 'missing-source', proposals: [{ ...modelOutput(observations).proposals[0], proposal_id: 'missing-source-proposal', source_refs: [{ file_generation: 'active', seq: 2, checksum: '0'.repeat(64) }] }] }), 'owner');
   assert.throws(() => processValidatedModelOutput({ db: storage.db, userId: 'owner', output: missingSource, observations }), /checksum|source/i);
   assert.equal(storage.db.prepare('SELECT seq FROM proposal_read_watermarks WHERE user_id = ? AND file_generation = ?').get('owner', 'active').seq, 2, 'missing source failure must not advance read coverage');
@@ -129,6 +134,10 @@ try {
 
   const payload = buildProposalModelPayloadForTest({ userId: 'owner', model: 'openai-codex/gpt-5.5', observations });
   assert.equal(canonicalJson(payload).includes('phase4b@example.invalid'), false, 'model payload must use redacted/safe observations only');
+  assert.ok(payload.instructions.some((line) => /reusable behavioral essence/.test(line)), 'model prompt must require generalized habits, not project-specific summaries');
+  assert.ok(payload.instructions.some((line) => /Do not overfit/.test(line)), 'model prompt must forbid overfitting to project/package/tool names');
+  assert.ok(payload.instructions.some((line) => /When preparing a release/.test(line)), 'model prompt must show generalized condition example');
+  assert.ok(payload.instructions.some((line) => /no proposal/.test(line)), 'model prompt must suppress project-specific-only patterns');
   let seenPayload;
   const proposed = await proposeFromObservations({ userId: 'owner', model: 'openai-codex/gpt-5.5', observations, callModel: (request) => { seenPayload = request.payload; return modelOutput(observations, { batch_id: 'adapter-batch' }); } });
   assert.equal(proposed.batch_id, 'adapter-batch');

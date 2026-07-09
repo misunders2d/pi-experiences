@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import agentExperienceExtension, { __normalizeAgentExperienceConsolidationModelOutputForTest, __setAgentExperienceConsolidationAdapterForTest } from '../extensions/agent-experience/index.ts';
+import agentExperienceExtension, { __buildAgentExperienceConsolidationSystemPromptForTest, __normalizeAgentExperienceConsolidationModelOutputForTest, __setAgentExperienceConsolidationAdapterForTest } from '../extensions/agent-experience/index.ts';
 import { getAgentExperiencePaths, readAgentExperienceConfig, setAgentExperienceCaptureActive, setAgentExperienceConsolidationEnabled, setAgentExperienceConsolidationModel } from '../extensions/agent-experience/src/paths.ts';
 import { canonicalJson } from '../extensions/agent-experience/src/storage/checksum.ts';
 import { ensurePrivateRoot, resolvePrivatePath } from '../extensions/agent-experience/src/storage/private-root.ts';
@@ -156,6 +156,8 @@ ctx.ui.custom = async (factory) => {
     resolved = true;
     return value;
   }
+  assert.match(initial, /Current model: openai-codex\/gpt-5\.5/, 'live model picker must show the currently selected model');
+  assert.match(initial, /openai-codex\/gpt-5\.5\s+\(current\)/, 'live model picker must mark the current model in the list');
   assert.match(initial, /Recommended authenticated models/, 'live model picker should start with recommendations');
   assert.doesNotMatch(initial, /bulk-39/, 'live model picker must not dump all models before typing');
   for (const ch of '5.5') component.handleInput(ch);
@@ -209,6 +211,10 @@ const strictRawOutput = {
     ambiguous: false,
   }],
 };
+const liveSystemPrompt = __buildAgentExperienceConsolidationSystemPromptForTest();
+assert.match(liveSystemPrompt, /reusable behavioral essence/, 'live setup analyzer prompt must require generalized habits');
+assert.match(liveSystemPrompt, /one-off names such as Agent Experience/, 'live setup analyzer prompt must reject one-project habit labels');
+assert.match(liveSystemPrompt, /return no proposal/, 'live setup analyzer prompt must suppress project-specific-only patterns');
 assert.equal(__normalizeAgentExperienceConsolidationModelOutputForTest(strictRawOutput, strictNormalizeInput).proposals.length, 1);
 const weakOneOff = __normalizeAgentExperienceConsolidationModelOutputForTest({ ...strictRawOutput, proposals: [{ ...strictRawOutput.proposals[0], source_refs: [{ seq: 1 }] }] }, strictNormalizeInput);
 assert.equal(weakOneOff.proposals.length, 0, 'one-off model suggestions must not become review candidates');

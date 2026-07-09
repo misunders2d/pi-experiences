@@ -1,6 +1,7 @@
 import { containsUnredactedSensitiveText } from "../storage/redaction.ts";
 import type { ValidatedObservationRecord } from "./observations.ts";
 import { validateModelOutputBatch, type ValidatedModelOutputBatch } from "./model-output.ts";
+import { GENERALIZED_HABIT_INSTRUCTIONS } from "./prompt.ts";
 
 export interface ProposalModelRequest {
 	model: string;
@@ -35,6 +36,7 @@ function buildModelPayload(input: { userId: string; model: string; observations:
 		instructions: [
 			"Return strict JSON only.",
 			"Use only the provided redacted observations.",
+			...GENERALIZED_HABIT_INSTRUCTIONS,
 			"Do not include raw user or assistant text beyond redacted payload summaries.",
 			"Use schema_version=1 and exact fields documented by the contract.",
 		],

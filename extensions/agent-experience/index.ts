@@ -41,6 +41,7 @@ import { runSelectorRuntime, type SelectorModelAdapter } from "./src/selector.ts
 import { createPiSelectorModelAdapter } from "./src/selector-model.ts";
 import { collectAgentExperienceMetrics, formatAgentExperienceMetrics } from "./src/metrics.ts";
 import { defaultObservationManifest, readValidatedObservationGeneration, type ValidatedObservationRecord } from "./src/consolidate/observations.ts";
+import { GENERALIZED_HABIT_INSTRUCTIONS } from "./src/consolidate/prompt.ts";
 import { expectedRangeFromObservations, runConsolidationOnce } from "./src/consolidate/runner.ts";
 
 const captureBuffer = new CapturePairBuffer();
@@ -176,14 +177,18 @@ class LiveModelSearchComponent implements Component, Focusable {
 	private matches: string[];
 	private readonly allModels: string[];
 	private readonly initialModels: string[];
+	private readonly currentModel: string;
 	private readonly done: (result: LiveModelSearchResult | undefined) => void;
 	private focusedValue = false;
 
-	constructor(models: string[], initialModels: string[], done: (result: LiveModelSearchResult | undefined) => void) {
+	constructor(models: string[], initialModels: string[], currentModel: string, done: (result: LiveModelSearchResult | undefined) => void) {
 		this.allModels = models;
 		this.initialModels = initialModels;
+		this.currentModel = currentModel;
 		this.done = done;
 		this.matches = initialModels.length ? initialModels : modelSearchMatches(models, "", 25);
+		const currentIndex = this.matches.indexOf(currentModel);
+		if (currentIndex >= 0) this.selectedIndex = currentIndex;
 	}
 
 	get focused(): boolean { return this.focusedValue; }
@@ -203,6 +208,7 @@ class LiveModelSearchComponent implements Component, Focusable {
 		const query = this.input.getValue().trim();
 		const lines = [
 			truncateLine("Choose model for habit learning", w),
+			truncateLine(`Current model: ${this.currentModel}`, w),
 			truncateLine("Type to filter live. Example: 5.5, codex, glm. Enter selects. Ctrl+E exact id. Esc cancels.", w),
 			"",
 			truncateLine("Search:", w),
@@ -215,7 +221,8 @@ class LiveModelSearchComponent implements Component, Focusable {
 			lines.push(truncateLine(query ? `${this.matches.length} matching authenticated model(s):` : "Recommended authenticated models:", w));
 			for (let i = 0; i < Math.min(this.matches.length, 15); i++) {
 				const prefix = i === this.selectedIndex ? "→ " : "  ";
-				lines.push(truncateLine(`${prefix}${this.matches[i]}`, w));
+				const current = this.matches[i] === this.currentModel ? "  (current)" : "";
+				lines.push(truncateLine(`${prefix}${this.matches[i]}${current}`, w));
 			}
 			if (this.matches.length > 15) lines.push(truncateLine(`  … ${this.matches.length - 15} more. Keep typing to narrow.`, w));
 		}
@@ -467,6 +474,7 @@ function buildConsolidationSystemPrompt(): string {
 		"Prefer 1-6 concise candidate habits. Return zero proposals if evidence is weak.",
 		"Only propose repeated patterns: cite at least 3 supporting examples across at least 2 different days when available.",
 		"Similar meanings in different wording or languages may support the same habit; cite each matching example separately.",
+		...GENERALIZED_HABIT_INSTRUCTIONS,
 		"Every proposal must cite source_refs using only provided seq/checksum values.",
 		"Exact output schema:",
 		'{"schema_version":1,"user_id":"owner","file_generation":"active","batch_id":"manual-id","model":"provider/model","created_at":"ISO","observations_read":{"seq_start":1,"seq_end":3,"checksum":"last-read-checksum"},"proposals":[{"proposal_id":"p1","kind":"habit_candidate","candidate_key":"stable-kebab-key","condition":"When ...","behavior":"Do ...","polarity":1,"confidence_bp":8000,"source_refs":[{"file_generation":"active","seq":1,"checksum":"..."}],"evidence_summary":"short redacted summary","ambiguous":false}]}',
@@ -562,6 +570,10 @@ function normalizeConsolidationModelOutput(raw: any, input: ConsolidationModelAd
 
 export function __normalizeAgentExperienceConsolidationModelOutputForTest(raw: any, input: ConsolidationModelAdapterInput): unknown {
 	return normalizeConsolidationModelOutput(raw, input);
+}
+
+export function __buildAgentExperienceConsolidationSystemPromptForTest(): string {
+	return buildConsolidationSystemPrompt();
 }
 
 function createPiConsolidationModelAdapter(ctx: Pick<ExtensionContext, "modelRegistry" | "signal">): ConsolidationModelAdapter {
@@ -800,10 +812,10 @@ async function chooseSearchedModel(ctx: ExtensionCommandContext, models: string[
 	return choice;
 }
 
-async function chooseLiveModel(ctx: ExtensionCommandContext, models: string[], recommended: string[]): Promise<string | undefined> {
+async function chooseLiveModel(ctx: ExtensionCommandContext, models: string[], recommended: string[], currentModel: string): Promise<string | undefined> {
 	const ui = (ctx as { hasUI?: boolean; ui?: { custom?: ExtensionCommandContext["ui"]["custom"] } })?.ui;
 	if ((ctx as { hasUI?: boolean }).hasUI !== false && typeof ui?.custom === "function") {
-		const result = await ui.custom<LiveModelSearchResult | undefined>((_tui, _theme, _keybindings, done) => new LiveModelSearchComponent(models, recommended, done), {
+		const result = await ui.custom<LiveModelSearchResult | undefined>((_tui, _theme, _keybindings, done) => new LiveModelSearchComponent(models, recommended, currentModel, done), {
 			overlay: true,
 			overlayOptions: { width: "80%", minWidth: 60, maxHeight: "80%", anchor: "center", margin: 1 },
 		});
@@ -841,7 +853,7 @@ async function handleSetupModel(ctx: ExtensionCommandContext) {
 	}
 	const { config } = await readAgentExperienceConfig(getAgentExperiencePaths());
 	const recommended = recommendedTextModels(ctx, config.consolidation_model);
-	const choice = await chooseLiveModel(ctx, models, recommended);
+	const choice = await chooseLiveModel(ctx, models, recommended, config.consolidation_model);
 	if (!choice || choice === "Back/cancel (no changes)") return notify(ctx, "Habit-learning model unchanged.", "info");
 	if (!models.includes(choice) && !configuredModelAvailable(ctx, choice)) return notify(ctx, `Model is not available/authenticated: ${redactText(choice)}`, "warn");
 	const { path } = await setAgentExperienceConsolidationModel(choice);
@@ -875,10 +887,11 @@ async function acquireAnalyzeLock(root: string) {
 
 function formatAnalyzeFailure(error: unknown): string {
 	const raw = String((error as any)?.message || error);
-	if (/auth|api.?key|credential/i.test(raw)) return "Habit learning could not use the selected model. Choose another authenticated model in /experience setup.";
-	if (/invalid_json|truncated|format|schema|proposal|source_ref/i.test(raw)) return "The selected model returned output Pi could not verify. No suggestions were approved. Try Analyze again or choose another model.";
-	if (/timeout|abort/i.test(raw)) return "Habit learning took too long or was interrupted. No suggestions were approved. Try again later.";
-	return `Habit learning failed safely. No suggestions were approved. Detail: ${redactText(raw).slice(0, 300)}`;
+	const detail = redactText(raw).slice(0, 300);
+	if (/auth|api.?key|credential/i.test(raw)) return `Habit learning could not use the selected model. Choose another authenticated model in /experience setup. Detail: ${detail}`;
+	if (/invalid_json|truncated|format|schema|proposal|source_ref/i.test(raw)) return `The selected model returned output Pi could not verify. No suggestions were approved. Try Analyze again or choose another model. Detail: ${detail}`;
+	if (/timeout|abort/i.test(raw)) return `Habit learning took too long or was interrupted. No suggestions were approved. Try again later. Detail: ${detail}`;
+	return `Habit learning failed safely. No suggestions were approved. Detail: ${detail}`;
 }
 
 async function runAnalyzeNowJob(ctx: ExtensionCommandContext) {
@@ -943,7 +956,7 @@ async function handleAnalyzeNow(ctx: ExtensionCommandContext) {
 	if (analyzeJobs.has(jobKey)) return notify(ctx, "Analyze saved examples is already running. Pi remains usable; come back to /experience setup and choose Review suggested habits after it finishes.", "info");
 	const job = runAnalyzeNowJob(ctx).finally(() => analyzeJobs.delete(jobKey));
 	analyzeJobs.set(jobKey, job);
-	void job.catch(() => undefined);
+	void job.catch((error) => notify(ctx, formatAnalyzeFailure(error), "warn"));
 	return notify(ctx, "Analyze saved examples started. Pi remains usable while the model works. I’ll post a message here when suggestions are ready, then use /experience setup → Review suggested habits.", "info");
 }
 

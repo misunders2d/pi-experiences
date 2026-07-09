@@ -81,7 +81,7 @@ pi update --extensions
 Pinned GitHub tag install is also available when you want an exact source ref:
 
 ```bash
-pi install git:github.com/misunders2d/pi-experiences@v0.1.11
+pi install git:github.com/misunders2d/pi-experiences@v0.1.20
 ```
 
 For local development:
@@ -115,9 +115,9 @@ Duplicate copies can register the same hooks twice and cause duplicate capture o
 ### Plain-language pieces
 
 - **Experience** is the whole behavior-learning layer.
-- **Setup** is the main control panel. It opens an Enter-driven settings menu for saving chat examples locally, choosing the habit-learning model, analyzing saved examples now, reviewing suggested habits, using approved habits before replies, showing the schedule as Phase 2/off, showing current settings, and explaining every setting. It must not change config until you choose an item. The safe save-examples choice turns on local redacted capture and leaves timers and approved-habit reminders off unless you explicitly toggle them.
+- **Setup** is the main control panel. It opens a Space/Enter settings menu for saving chat examples locally, choosing the habit-learning model, analyzing saved examples now, reviewing suggested habits, using approved habits before replies, showing the schedule as Phase 2/off, showing current settings, and explaining every setting. It must not change config until you choose an item. The safe save-examples choice turns on local redacted capture and leaves timers and approved-habit reminders off unless you explicitly toggle them.
 - **Capture** means saving redacted text fields and metadata from completed user/assistant turns to `observations.jsonl`. It is the raw material. Capture does **not** create habits by itself.
-- **Choose model for habit learning** opens a live typeahead model picker inside `/experience setup`; typing text such as `5.5`, `codex`, or `glm` immediately filters authenticated model suggestions. Users do not type a model command.
+- **Choose model for habit learning** opens a live typeahead model picker inside `/experience setup`; typing text such as `5.5`, `codex`, or `glm` immediately filters authenticated model suggestions, and the current model is shown/marked. Users do not type a model command.
 - **Analyze saved examples now** reads already saved redacted examples, calls the configured model once, validates/sanitizes the model output, and writes suggested habits into review. It never approves habits.
 - **Pending review** means proposed habits are waiting for you to approve or reject them. Pending items are not used for injection.
 - **Active habits** are reviewed habits. The setup menu does not use them before replies unless you explicitly enable approved-habit reminders.
@@ -145,9 +145,38 @@ The normal UX is one control panel:
 /experience setup
 ```
 
-The interactive `/experience setup` menu uses arrow keys plus Space/Enter. Checkbox rows show `[x]` for ON and `[ ]` for OFF; Space or Enter toggles checkbox rows and opens action rows. From that one menu a normal user can save examples, choose a model from live typeahead search or exact model entry, analyze saved examples now, review suggestions, approve/reject, use approved habits before replies, see status, and read explanations.
+The interactive `/experience setup` menu uses arrow keys plus Space/Enter. Checkbox rows show `[x]` for ON and `[ ]` for OFF; Space or Enter toggles checkbox rows and opens action rows. From that one menu a normal user can save examples, choose a model from live typeahead search or exact model entry with the current model visible, analyze saved examples now, review suggestions, approve/reject, use approved habits before replies, see status, and read explanations.
 
 No typed setup subcommands are required for normal use. If the panel does not render, restart Pi so the latest extension UI loads and run `/experience setup` again.
+
+### Human setup procedure
+
+1. Run `/experience setup`.
+2. Toggle **Save chat examples locally** to `[x] ON` with Space or Enter.
+3. Use Pi normally for enough repeated examples to exist.
+4. Open `/experience setup` again and choose **Choose model for habit learning**.
+   - Type to filter live, for example `5.5`, `codex`, or `glm`.
+   - The currently configured model is shown at the top and marked `(current)` in the list when present.
+   - Use Ctrl+E only when you need to enter an exact `provider/model` id.
+5. Choose **Analyze saved examples now**. This starts one nonblocking model job and returns control to Pi.
+6. After analysis finishes, choose **Review suggested habits**.
+   - Full details appear in a focused review panel, not in chat history.
+   - Use ↑/↓ then Space/Enter, or `1`/`2`/`3`, to Approve / Reject / Back.
+7. Optionally toggle **Use approved habits before replies** to `[x] ON`. This uses only approved active habits and remains off by default.
+
+### Agent/operator procedure
+
+When maintaining or troubleshooting this package:
+
+- Preserve the one normal-user command: `/experience setup`.
+- Do not instruct normal users to type advanced setup/review subcommands.
+- Keep setup controls in the menu: capture, model, analyze, review, approved-habit use, schedule explanation, status, help, and all-off.
+- Keep checkbox semantics: `[x]` is ON, `[ ]` is OFF, Space/Enter toggles checkbox rows.
+- Keep model selection live-searchable; typing text such as `5.5` must immediately filter suggestions and the current model must be visible.
+- Keep review details inside the focused panel; do not dump suggested-habit details into chat history for the normal setup flow.
+- Do not auto-approve suggestions. Approval/rejection must remain explicit and checksum-protected.
+- Keep Analyze nonblocking. It may post completion status, but it must not freeze the foreground setup flow.
+- Keep schedule/timer Phase 2/off in normal UX.
 
 If observations are growing but there are no suggestions, choose **Analyze saved examples now** inside `/experience setup`. Candidate generation is manual, not scheduled.
 
@@ -192,9 +221,20 @@ The extension is designed around human review.
 capture redacted pairs -> analyze saved examples now -> proposed suggestions -> human review -> active habits -> optional approved-habit reminders
 ```
 
-In 0.1.11, the **Analyze saved examples now** row inside `/experience setup` can create suggestions from already saved examples using the configured Pi model. Then use **Review suggested habits** inside the same setup menu to inspect them in a focused review panel, then approve or reject them. Normal users do not need typed review commands.
+The **Analyze saved examples now** row inside `/experience setup` can create suggestions from already saved examples using the configured Pi model. Then use **Review suggested habits** inside the same setup menu to inspect them in a focused review panel, then approve or reject them. Normal users do not need typed review commands.
 
 Checksums are still used internally so stale review actions fail closed. Advanced/backcompat review commands exist for maintainers, but they are not the normal path.
+
+### Candidate quality and rejection semantics
+
+Candidate habits should be generalized behavioral guidance, not narrow project labels. Durable tool/task categories are allowed when they define the repeated situation, but one-off project/package names, versions, file paths, hashes, and screenshots are not. The analyzer prompt asks the model to extract the reusable essence across repeated examples:
+
+- good: `When preparing an npm package release, verify the real end-to-end install/update path before calling it done.`
+- bad: `When working on Agent Experience, do the 0.1.19 setup flow.`
+- good: `When the user reports UI confusion, inspect the real visible UI state before declaring the fix complete.`
+- bad: `When using the pi-experiences extension, remember screenshot b0ec...`
+
+Rejecting a candidate archives that exact candidate identity. The exact same normalized condition/behavior/polarity is preserved as rejected/archived on later merges. Rejection is not a permanent semantic ban on every related idea: a materially different or more generalized candidate can appear later if repeated evidence again passes the threshold. Repeated evidence currently means at least 3 cited examples across at least 2 different days.
 
 ## Configuration
 
@@ -309,7 +349,7 @@ For a bug fix:
 3. run reviewer/debate for non-trivial safety or runtime changes;
 4. run `npm run check`;
 5. bump `package.json` version;
-6. commit and tag, for example `v0.1.11`;
+6. commit and tag, for example `v0.1.20`;
 7. publish the same commit to npm;
 8. tell npm users to run `pi update --extensions`.
 
@@ -341,7 +381,7 @@ pi update --extensions
 For users who want a pinned exact source ref:
 
 ```bash
-pi install git:github.com/misunders2d/pi-experiences@v0.1.11
+pi install git:github.com/misunders2d/pi-experiences@v0.1.20
 ```
 
 Git package refs are pinned. `pi update --extensions` reconciles the pinned ref but does not float Git installs to a new tag.
@@ -352,7 +392,7 @@ For a bug fix:
 2. add or update regression tests;
 3. run review and `npm run check`;
 4. bump `package.json` version;
-5. commit and tag, for example `v0.1.11`;
+5. commit and tag, for example `v0.1.20`;
 6. publish the same commit to npm;
 7. npm users update with `pi update --extensions`; Git-pinned users install the new tag explicitly.
 

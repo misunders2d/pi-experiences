@@ -1181,6 +1181,12 @@ function assertSafeText(value, label, max = 1e3) {
   if (containsUnredactedSensitiveText(text)) throw new Error(`${label} contains unredacted sensitive text`);
   return text;
 }
+function assertGeneralizedHabitText(text, label) {
+  if (/\b(?:agent experience|pi-experiences|experience-consolidate)\b/i.test(text)) throw new Error(`${label} appears overfit to one project`);
+  if (/\bv?\d+\.\d+\.\d+(?:[-+][A-Za-z0-9._-]+)?\b/.test(text)) throw new Error(`${label} appears overfit to one version`);
+  if (/(^|[\s("'`])(?:~\/|\.\.?\/|\/[A-Za-z0-9._-])/.test(text)) throw new Error(`${label} appears overfit to one file path`);
+  if (/\b[a-f0-9]{12,}\b/i.test(text)) throw new Error(`${label} appears overfit to one hash or screenshot`);
+}
 function assertGeneration(value) {
   const generation = assertSafeToken2(value, "file_generation", 80);
   if (!/^[A-Za-z0-9._-]+$/.test(generation)) throw new Error("Invalid file_generation");
@@ -1234,12 +1240,20 @@ function validateProposal2(value, seenIds, generation, seqStart, seqEnd) {
   };
   if (kind === "habit_candidate") {
     if (proposal.polarity !== 1 && proposal.polarity !== -1) throw new Error("Invalid model polarity");
-    return { ...base, kind, condition: assertSafeText(proposal.condition, "condition"), behavior: assertSafeText(proposal.behavior, "behavior"), polarity: proposal.polarity };
+    const condition = assertSafeText(proposal.condition, "condition");
+    const behavior = assertSafeText(proposal.behavior, "behavior");
+    assertGeneralizedHabitText(condition, "condition");
+    assertGeneralizedHabitText(behavior, "behavior");
+    return { ...base, kind, condition, behavior, polarity: proposal.polarity };
   }
   const oldCondition = assertSafeText(proposal.old_condition, "old_condition");
   const oldBehavior = assertSafeText(proposal.old_behavior, "old_behavior");
   const newCondition = assertSafeText(proposal.new_condition, "new_condition");
   const newBehavior = assertSafeText(proposal.new_behavior, "new_behavior");
+  assertGeneralizedHabitText(oldCondition, "old_condition");
+  assertGeneralizedHabitText(oldBehavior, "old_behavior");
+  assertGeneralizedHabitText(newCondition, "new_condition");
+  assertGeneralizedHabitText(newBehavior, "new_behavior");
   if (oldCondition === newCondition && oldBehavior === newBehavior) throw new Error("Invalid correction_split replacement");
   return { ...base, kind, old_condition: oldCondition, old_behavior: oldBehavior, new_condition: newCondition, new_behavior: newBehavior };
 }

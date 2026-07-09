@@ -10,9 +10,25 @@ Use exactly one normal-user command:
 /experience setup
 ```
 
-`/experience setup` opens the normal-user control panel for saving chat examples locally, choosing the habit-learning model from live typeahead search or exact model entry, analyzing saved examples now, reviewing suggested habits, approving/rejecting, using approved habits before replies, showing current settings, and explaining schedule/privacy behavior. Checkbox rows show `[x]` for ON and `[ ]` for OFF. Space or Enter toggles checkbox rows or opens action rows, then returns to the menu until Done. It changes nothing until you choose.
+`/experience setup` opens the normal-user control panel for saving chat examples locally, choosing the habit-learning model from live typeahead search or exact model entry with the current model visible, analyzing saved examples now, reviewing suggested habits, approving/rejecting, using approved habits before replies, showing current settings, and explaining schedule/privacy behavior. Checkbox rows show `[x]` for ON and `[ ]` for OFF. Space or Enter toggles checkbox rows or opens action rows, then returns to the menu until Done. It changes nothing until you choose.
 
 No typed setup subcommands are required for normal use. If Pi does not render the interactive panel, restart Pi so the latest extension UI loads and run `/experience setup` again. Setup does **not** install timers, run background learning, enable embeddings, enable break-in mode, auto-approve suggestions, or use approved habits before replies unless explicitly enabled from the setup menu.
+
+Human setup procedure:
+
+1. Run `/experience setup`.
+2. Toggle **Save chat examples locally** to `[x] ON` with Space/Enter.
+3. Use Pi normally until repeated examples exist.
+4. Choose **Choose model for habit learning**. Type to filter live, e.g. `5.5`; the current model is visible and marked `(current)`.
+5. Choose **Analyze saved examples now**. It starts one nonblocking model job.
+6. Choose **Review suggested habits**. Inspect details in the focused panel, then Approve / Reject / Back.
+7. Optionally toggle **Use approved habits before replies** to `[x] ON`.
+
+Agent/operator setup rules:
+
+- Preserve `/experience setup` as the one normal-user command.
+- Do not tell normal users to type advanced setup/review subcommands.
+- Keep checkbox rows `[x]`/`[ ]`, Space/Enter toggles, live model typeahead, current-model marker, focused review panel, nonblocking Analyze, explicit approval, and Phase 2/off schedule behavior.
 
 ## Safety defaults
 
@@ -94,6 +110,10 @@ Normal users review from the same setup menu:
 
 Then choose **Review suggested habits**, inspect a suggestion in a focused review panel, and choose Approve or Reject. Review details are not dumped into chat history. Checksums protect stale review actions internally. Review never auto-approves habits.
 
+Candidate habits must generalize the reusable behavioral essence. Durable tool/task categories are allowed when they define the repeated situation, but one-off project/package names, versions, file paths, hashes, and screenshots are not. Prefer `When preparing an npm package release, verify the real end-to-end install/update path before calling it done` over `When working on Agent Experience, do the setup flow`.
+
+Rejecting a candidate archives that exact normalized condition/behavior/polarity. The exact same identity is preserved as rejected/archived on later merges. A materially different or more generalized candidate can still appear later if it again passes the repeated-evidence threshold.
+
 ## Analyze saved examples
 
 Normal users run habit learning from the setup menu:
@@ -121,7 +141,7 @@ Model-output safety:
 
 ## Systemd timer templates — disabled advanced templates
 
-Templates live in `extensions/agent-experience/units/`, but 0.1.11 does **not** provide a package-owned timer. `/experience setup` menu actions never install, enable, or start these units. Setup shows automatic scheduling as Phase 2/off.
+Templates live in `extensions/agent-experience/units/`, but the current package does **not** provide a package-owned timer. `/experience setup` menu actions never install, enable, or start these units. Setup shows automatic scheduling as Phase 2/off.
 
 The bundled service intentionally fails with an explicit message until a maintainer replaces `ExecStart` with an approved reviewed consolidation command. Do not copy/enable the timer as normal UX.
 
