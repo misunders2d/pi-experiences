@@ -395,19 +395,15 @@ async function handleStatus(ctx: ExtensionCommandContext) {
 	].join("\n"), config.enabled ? "info" : "warn");
 }
 
-function checkbox(value: boolean): "[x]" | "[ ]" {
-	return value ? "[x]" : "[ ]";
-}
-
 function buildSetupOptions(config: { enabled: boolean; capture_enabled: boolean; consolidation_enabled: boolean; selector_enabled: boolean }): string[] {
 	const captureActive = config.enabled && config.capture_enabled;
 	const anythingEnabled = config.enabled || config.capture_enabled || config.consolidation_enabled || config.selector_enabled;
 	return [
-		captureActive ? "[x] Save chat examples locally" : "[ ] Save chat examples locally — turn on first",
+		captureActive ? "Save chat examples locally: ON — Enter to turn off" : "Save chat examples locally: OFF — Enter to turn on",
 		"Choose model for habit learning",
 		"Analyze saved examples now",
 		"Review suggested habits",
-		`${checkbox(config.selector_enabled)} Use approved habits before replies`,
+		config.selector_enabled ? "Use approved habits before replies: ON — Enter to turn off" : "Use approved habits before replies: OFF — Enter to turn on",
 		"Automatic schedule: Phase 2 / off (explain)",
 		"Show current settings",
 		"Explain these settings",
@@ -419,7 +415,7 @@ function buildSetupOptions(config: { enabled: boolean; capture_enabled: boolean;
 function setupControlsMessage(): string {
 	return [
 		"Agent Experience setup controls — no config changed yet.",
-		"Menu items change with Space/Enter and the menu returns after each action.",
+		"Use arrow keys to move. Press Enter to run the highlighted row. Space is not used by this menu.",
 		"Run /experience setup in the Pi TUI. Everything is done from that one menu.",
 		"If no menu appears, restart Pi so the latest extension UI loads, then run /experience setup again.",
 		"No typed setup subcommands are required for normal use.",
@@ -434,7 +430,7 @@ function setupHelpMessage(config: { enabled: boolean; capture_enabled: boolean; 
 	const anythingEnabled = config.enabled || config.capture_enabled || config.consolidation_enabled || config.selector_enabled;
 	return [
 		"Agent Experience setup help:",
-		"Press Space or Enter on a row to change it or run that action; choose Done to exit.",
+		"Use arrow keys to move. Press Enter to run the highlighted row. Space is not used by this menu. Choose Done to exit.",
 		"Save chat examples locally: turn this on first to start saving examples. It stores redacted completed user/assistant pairs under ~/.agents/experience. It does not store raw full prompts or injected text.",
 		"Choose model for habit learning: opens a model picker inside setup. You do not type a model command.",
 		"Analyze saved examples now: runs from this setup menu, reads saved redacted examples, calls the chosen model once, and creates suggested habits for review.",
@@ -536,6 +532,28 @@ async function handleSetupTimer(ctx: ExtensionCommandContext) {
 	].join("\n"), "info");
 }
 
+async function inputSetup(ctx: ExtensionCommandContext, title: string, placeholder: string): Promise<string | undefined> {
+	const ui = (ctx as { hasUI?: boolean; ui?: { input?: (title: string, placeholder?: string) => Promise<string | undefined> | string | undefined } })?.ui;
+	if ((ctx as { hasUI?: boolean }).hasUI === false || typeof ui?.input !== "function") return undefined;
+	const value = await ui.input(title, placeholder);
+	return typeof value === "string" ? value.trim() : undefined;
+}
+
+async function chooseSearchedModel(ctx: ExtensionCommandContext, models: string[]): Promise<string | undefined> {
+	const query = await inputSetup(ctx, "Search habit-learning models", "type provider/model text, e.g. gpt-5, codex, gemini");
+	if (!query) return undefined;
+	const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+	const matches = models.filter((model) => terms.every((term) => model.toLowerCase().includes(term))).slice(0, 25);
+	if (!matches.length) {
+		notify(ctx, `No authenticated model matched: ${redactText(query).slice(0, 80)}`, "warn");
+		return undefined;
+	}
+	const choice = await chooseSetup(ctx, `Search results for “${redactText(query).slice(0, 40)}”`, [...matches, "Search again", "Back/cancel (no changes)"], false);
+	if (choice === "Search again") return chooseSearchedModel(ctx, models);
+	if (!choice || choice === "Back/cancel (no changes)") return undefined;
+	return choice;
+}
+
 async function handleSetupModel(ctx: ExtensionCommandContext) {
 	const models = availableTextModels(ctx);
 	if (models.length === 0) {
@@ -545,13 +563,13 @@ async function handleSetupModel(ctx: ExtensionCommandContext) {
 	const recommended = recommendedTextModels(ctx, config.consolidation_model);
 	const options = [
 		...recommended,
-		...(models.length > recommended.length ? [`Show all authenticated models (${models.length})`] : []),
+		"Search authenticated models",
+		"Enter exact model id",
 		"Back/cancel (no changes)",
 	];
 	let choice = await chooseSetup(ctx, "Choose model for habit learning", options, false);
-	if (choice?.startsWith("Show all authenticated models")) {
-		choice = await chooseSetup(ctx, "Choose model for habit learning — all models", [...models, "Back/cancel (no changes)"], false);
-	}
+	if (choice === "Search authenticated models") choice = await chooseSearchedModel(ctx, models);
+	if (choice === "Enter exact model id") choice = await inputSetup(ctx, "Enter exact habit-learning model id", "provider/model, e.g. openai-codex/gpt-5.5");
 	if (!choice || choice === "Back/cancel (no changes)") return notify(ctx, "Habit-learning model unchanged.", "info");
 	if (!models.includes(choice) && !configuredModelAvailable(ctx, choice)) return notify(ctx, `Model is not available/authenticated: ${redactText(choice)}`, "warn");
 	const { path } = await setAgentExperienceConsolidationModel(choice);
@@ -941,8 +959,8 @@ async function handleSetup(ctx: ExtensionCommandContext, args: string[] = []) {
 			else if (choice === "Choose model for habit learning") await handleSetupModel(ctx);
 			else if (choice === "Analyze saved examples now") await handleAnalyzeNow(ctx);
 			else if (choice.startsWith("Automatic schedule")) await handleSetupTimer(ctx);
-			else if (choice.endsWith("Use approved habits before replies")) await handleSetupUseHabitsToggle(ctx, !config.selector_enabled);
-			else if (choice.includes("Save chat examples locally")) {
+			else if (choice.startsWith("Use approved habits before replies:")) await handleSetupUseHabitsToggle(ctx, !config.selector_enabled);
+			else if (choice.startsWith("Save chat examples locally:")) {
 				if (config.enabled && config.capture_enabled) captureBuffer.clearAll();
 				const { config: updated, path } = await setAgentExperienceCaptureActive(!(config.enabled && config.capture_enabled));
 				notify(ctx, [`Save chat examples locally: ${updated.enabled && updated.capture_enabled ? "ON" : "OFF"}`, `Config file: ${path}`].join("\n"), "info");
@@ -1252,7 +1270,7 @@ function usage(topic = "") {
 			"Agent Experience setup:",
 			"/experience setup                         # the one normal-user setup panel",
 			"Inside that menu: save examples, choose model, analyze saved examples, review suggestions, approve/reject, and use approved habits.",
-			"Use Space/Enter on menu rows. No typed setup subcommands are required for normal use.",
+			"Use arrow keys and Enter on menu rows. No typed setup subcommands are required for normal use.",
 			"Automatic schedule is Phase 2/off. Analyze saved examples from the setup menu when you want suggestions.",
 		].join("\n");
 	}

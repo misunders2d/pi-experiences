@@ -10,7 +10,7 @@ Use exactly one normal-user command:
 /experience setup
 ```
 
-`/experience setup` opens the normal-user control panel for saving chat examples locally, choosing the habit-learning model from a picker, analyzing saved examples now, reviewing suggested habits, approving/rejecting, using approved habits before replies, showing current settings, and explaining schedule/privacy behavior. `[x]` means ON and `[ ]` means OFF where a row is a toggle; Space/Enter runs the highlighted row and returns to the panel until Done. It changes nothing until you choose.
+`/experience setup` opens the normal-user control panel for saving chat examples locally, choosing the habit-learning model from recommendations, search, or exact model entry, analyzing saved examples now, reviewing suggested habits, approving/rejecting, using approved habits before replies, showing current settings, and explaining schedule/privacy behavior. Rows say ON/OFF and the Enter action directly; Enter runs the highlighted row and returns to the menu until Done. Space is not used by this menu. It changes nothing until you choose.
 
 No typed setup subcommands are required for normal use. If Pi does not render the interactive panel, restart Pi so the latest extension UI loads and run `/experience setup` again. Setup does **not** install timers, run background learning, enable embeddings, enable break-in mode, auto-approve suggestions, or use approved habits before replies unless explicitly enabled from the setup menu.
 

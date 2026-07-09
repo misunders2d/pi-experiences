@@ -23,7 +23,7 @@ experience = reviewed behavioral habits inferred from repeated interaction
 ## Plain-language pieces
 
 - **Experience** is the whole behavior-learning layer.
-- **Setup** is the main control panel. It opens a Space/Enter settings panel for saving chat examples locally, choosing the habit-learning model, analyzing saved examples now, reviewing suggested habits, using approved habits before replies, showing the schedule as Phase 2/off, showing current settings, and explaining every setting. It must not change config until you choose an item. After each action it returns to the panel until Done. The safe save-examples toggle turns on local redacted capture and leaves timers and approved-habit reminders off unless explicitly toggled.
+- **Setup** is the main control panel. It opens a Enter-driven settings menu for saving chat examples locally, choosing the habit-learning model, analyzing saved examples now, reviewing suggested habits, using approved habits before replies, showing the schedule as Phase 2/off, showing current settings, and explaining every setting. It must not change config until you choose an item. After each action it returns to the panel until Done. The safe save-examples toggle turns on local redacted capture and leaves timers and approved-habit reminders off unless explicitly toggled.
 - **Capture** saves redacted text fields and metadata from completed turns to `observations.jsonl`. It creates raw material only, not habits.
 - **Choose model for habit learning** opens a model picker inside `/experience setup`; users do not type a model command.
 - **Analyze saved examples now** reads already saved redacted examples, calls the configured model once, validates/sanitizes model output, and writes suggested habits into review. It never approves habits.
@@ -39,7 +39,7 @@ Canonical UX is one control panel:
 /experience setup
 ```
 
-The interactive setup panel shows `[x]` for ON and `[ ]` for OFF where a row is a toggle. Press Space/Enter to run the row; model, analyze, review, status, and help are action rows; Done exits. From this one menu a normal user can save examples, choose a model, analyze saved examples, review suggestions, approve/reject, and enable approved-habit reminders.
+The interactive setup menu uses arrow keys plus Enter. Rows say ON/OFF and the Enter action directly; model, analyze, review, status, and help are action rows; Done exits. From this one menu a normal user can save examples, choose a model, analyze saved examples, review suggestions, approve/reject, and enable approved-habit reminders.
 
 Do not instruct normal users to type setup subcommands. If Pi does not render the interactive menu, tell the user to restart Pi so the latest extension UI loads, then run `/experience setup` again.
 

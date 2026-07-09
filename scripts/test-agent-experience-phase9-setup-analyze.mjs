@@ -67,6 +67,7 @@ const paths = getAgentExperiencePaths();
 const { commands, handlers } = makePi();
 const notes = [];
 let setupChoices = [];
+let setupInputs = [];
 const availableModel = { provider: 'openai-codex', id: 'gpt-5.5', name: 'GPT 5.5', input: ['text'] };
 const slashModel = { provider: 'openrouter', id: 'openai/gpt-5', name: 'OpenRouter GPT 5', input: ['text'] };
 const unavailableModel = { provider: 'example', id: 'unauth', name: 'Unauthenticated', input: ['text'] };
@@ -93,16 +94,17 @@ const ctx = {
       if (/Choose model/.test(title)) {
         assert.ok(options.includes('openai-codex/gpt-5.5'), 'authenticated model should be listed');
         assert.ok(!options.includes('example/unauth'), 'unauthenticated model must not be listed');
-        if (!/all models/.test(title)) {
-          assert.ok(options.some((option) => /^Show all authenticated models/.test(option)), 'large model sets must be behind Show all');
-          assert.ok(options.length <= 10, 'default model picker must stay short and usable');
-        }
-        if (setupChoices[0] === 'Show all authenticated models') {
-          setupChoices.shift();
-          return options.find((option) => /^Show all authenticated models/.test(option));
-        }
-        if (setupChoices[0]?.startsWith('openrouter/')) return setupChoices.shift();
+        assert.ok(options.includes('Search authenticated models'), 'model picker must offer search instead of giant all-model list');
+        assert.ok(options.includes('Enter exact model id'), 'model picker must allow exact model id entry');
+        assert.ok(!options.some((option) => /^Show all authenticated models/.test(option)), 'model picker must not dump all models');
+        assert.ok(options.length <= 11, 'default model picker must stay short and usable');
+        if (setupChoices[0] === 'Search authenticated models') return setupChoices.shift();
+        if (setupChoices[0] === 'Enter exact model id') return setupChoices.shift();
         return 'openai-codex/gpt-5.5';
+      }
+      if (/Search results/.test(title)) {
+        assert.ok(options.length <= 27, 'search results must be capped and navigable');
+        return setupChoices.shift() ?? options[0];
       }
       if (/Review suggested habits/.test(title)) return setupChoices.shift() ?? options[0];
       if (/What do you want/.test(title)) return 'Approve';
@@ -110,11 +112,12 @@ const ctx = {
       if (next !== undefined) return next;
       return undefined;
     },
+    input(title, placeholder) { notes.push({ title, placeholder, level: 'input' }); return setupInputs.shift(); },
     notify(message, level) { notes.push({ message, level }); },
   },
 };
 
-setupChoices = ['[ ] Save chat examples locally — turn on first', 'Choose model for habit learning', 'Done'];
+setupChoices = ['Save chat examples locally: OFF — Enter to turn on', 'Choose model for habit learning', 'Done'];
 await commands.get('experience').handler('setup', ctx);
 let configResult = await readAgentExperienceConfig(paths);
 assert.equal(configResult.config.enabled, true);
@@ -123,11 +126,23 @@ assert.equal(configResult.config.consolidation_model, 'openai-codex/gpt-5.5');
 assert.equal(configResult.config.consolidation_enabled, true);
 assert.equal(configResult.config.timer_enabled, false);
 
-setupChoices = ['Choose model for habit learning', 'Show all authenticated models', 'openrouter/openai/gpt-5', 'Choose model for habit learning', 'openai-codex/gpt-5.5', 'Done'];
+setupChoices = ['Choose model for habit learning', 'Search authenticated models', 'openrouter/openai/gpt-5', 'Choose model for habit learning', 'openai-codex/gpt-5.5', 'Done'];
+setupInputs = ['gpt-5'];
 await commands.get('experience').handler('setup', ctx);
 configResult = await readAgentExperienceConfig(paths);
-assert.equal(configResult.config.consolidation_model, 'openai-codex/gpt-5.5', 'model ids containing slash can be selected, then normal model can be restored');
-assert.ok(notes.some((note) => /Habit-learning model: openrouter\/openai\/gpt-5/.test(note.message || '')), 'OpenRouter slash model id should save successfully from setup picker');
+assert.equal(configResult.config.consolidation_model, 'openai-codex/gpt-5.5', 'model ids containing slash can be selected by search, then normal model can be restored');
+assert.ok(notes.some((note) => /Habit-learning model: openrouter\/openai\/gpt-5/.test(note.message || '')), 'OpenRouter slash model id should save successfully from searchable picker');
+setupChoices = ['Choose model for habit learning', 'Enter exact model id', 'Done'];
+setupInputs = ['openrouter/openai/gpt-5'];
+await commands.get('experience').handler('setup', ctx);
+configResult = await readAgentExperienceConfig(paths);
+assert.equal(configResult.config.consolidation_model, 'openrouter/openai/gpt-5', 'exact model entry must support provider/model ids containing slash');
+setupChoices = ['Choose model for habit learning', 'Enter exact model id', 'Done'];
+setupInputs = ['example/unauth'];
+await commands.get('experience').handler('setup', ctx);
+configResult = await readAgentExperienceConfig(paths);
+assert.equal(configResult.config.consolidation_model, 'openrouter/openai/gpt-5', 'unauthenticated exact model entry must be rejected without changing config');
+await setAgentExperienceConsolidationModel('openai-codex/gpt-5.5', paths);
 await setAgentExperienceConsolidationEnabled(false, paths);
 setupChoices = ['Analyze saved examples now', 'Done'];
 await commands.get('experience').handler('setup', ctx);
@@ -217,7 +232,7 @@ await commands.get('experience').handler('setup', ctx);
 assert.ok(notes.some((note) => /Approved suggestion/.test(note.message || '')), 'setup review must approve suggestion from setup flow');
 assert.ok(notes.some((note) => /safety file/i.test(note.title || '') || /Safety file/i.test(note.message || '')), 'first-run approval must repair missing safety file inside setup');
 
-setupChoices = ['[ ] Use approved habits before replies', 'Done'];
+setupChoices = ['Use approved habits before replies: OFF — Enter to turn on', 'Done'];
 await commands.get('experience').handler('setup', ctx);
 configResult = await readAgentExperienceConfig(paths);
 assert.equal(configResult.config.selector_enabled, true);

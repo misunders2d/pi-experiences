@@ -115,7 +115,7 @@ Duplicate copies can register the same hooks twice and cause duplicate capture o
 ### Plain-language pieces
 
 - **Experience** is the whole behavior-learning layer.
-- **Setup** is the main control panel. It opens a Space/Enter settings panel for saving chat examples locally, choosing the habit-learning model, analyzing saved examples now, reviewing suggested habits, using approved habits before replies, showing the schedule as Phase 2/off, showing current settings, and explaining every setting. It must not change config until you choose an item. The safe save-examples choice turns on local redacted capture and leaves timers and approved-habit reminders off unless you explicitly toggle them.
+- **Setup** is the main control panel. It opens a Enter-driven settings menu for saving chat examples locally, choosing the habit-learning model, analyzing saved examples now, reviewing suggested habits, using approved habits before replies, showing the schedule as Phase 2/off, showing current settings, and explaining every setting. It must not change config until you choose an item. The safe save-examples choice turns on local redacted capture and leaves timers and approved-habit reminders off unless you explicitly toggle them.
 - **Capture** means saving redacted text fields and metadata from completed user/assistant turns to `observations.jsonl`. It is the raw material. Capture does **not** create habits by itself.
 - **Choose model for habit learning** opens a model picker inside `/experience setup`; users do not type a model command.
 - **Analyze saved examples now** reads already saved redacted examples, calls the configured model once, validates/sanitizes the model output, and writes suggested habits into review. It never approves habits.
@@ -145,7 +145,7 @@ The normal UX is one control panel:
 /experience setup
 ```
 
-The interactive `/experience setup` panel uses rows that run on Space/Enter. `[x]` means ON and `[ ]` means OFF where a row is a toggle. From that one menu a normal user can save examples, choose a model from a picker, analyze saved examples now, review suggestions, approve/reject, use approved habits before replies, see status, and read explanations.
+The interactive `/experience setup` menu uses arrow keys plus Enter. Rows say ON/OFF and the Enter action directly, for example `Save chat examples locally: OFF — Enter to turn on`. From that one menu a normal user can save examples, choose a model from recommendations, search, or exact model entry, analyze saved examples now, review suggestions, approve/reject, use approved habits before replies, see status, and read explanations.
 
 No typed setup subcommands are required for normal use. If the panel does not render, restart Pi so the latest extension UI loads and run `/experience setup` again.
 

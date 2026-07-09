@@ -130,11 +130,11 @@ await commands.get('experience').handler('setup', ctx);
 assert.equal(existsSync(paths.root), false, 'escaped setup menu must not create state root');
 assert.match(notes.at(-1).message, /closed/);
 assert.deepEqual(notes.find((note) => note.level === 'select').options, [
-  '[ ] Save chat examples locally — turn on first',
+  'Save chat examples locally: OFF — Enter to turn on',
   'Choose model for habit learning',
   'Analyze saved examples now',
   'Review suggested habits',
-  '[ ] Use approved habits before replies',
+  'Use approved habits before replies: OFF — Enter to turn on',
   'Automatic schedule: Phase 2 / off (explain)',
   'Show current settings',
   'Explain these settings',
@@ -161,7 +161,7 @@ assert.equal(existsSync(paths.root), false, 'setup help subcommand must not crea
 assert.match(notes.at(-1).message, /Agent Experience setup help/);
 assert.match(notes.at(-1).message, /Automatic schedule: Phase 2/);
 assert.match(notes.at(-1).message, /turn this on first to start/);
-setupChoices = ['[ ] Save chat examples locally — turn on first', undefined];
+setupChoices = ['Save chat examples locally: OFF — Enter to turn on', undefined];
 await commands.get('experience').handler('setup', ctx);
 assert.doesNotMatch(notes.at(-1).message, plainSetupLeakPattern, 'save-examples setup confirmation must not expose internal flag names');
 assert.equal(existsSync(paths.root), true, 'setup menu choice may create state root');
@@ -211,13 +211,13 @@ await commands.get('experience').handler('setup consolidation off', ctx);
 readResult = await readAgentExperienceConfig(paths);
 assert.equal(readResult.config.consolidation_enabled, false, 'advanced/backcompat setup subcommand can disable manual consolidation flag');
 
-setupChoices = ['[ ] Use approved habits before replies', 'Create default safety file and continue', undefined];
+setupChoices = ['Use approved habits before replies: OFF — Enter to turn on', 'Create default safety file and continue', undefined];
 await commands.get('experience').handler('setup', ctx);
 assert.doesNotMatch(notes.at(-1).message, plainSetupLeakPattern, 'use-habits setup confirmation must not expose internal flag names');
 readResult = await readAgentExperienceConfig(paths);
 assert.equal(readResult.config.selector_enabled, true, 'setup toggle can enable approved-habit reminders after safety file choice');
 assert.equal(existsSync(join(paths.root, 'law.md')), true, 'setup can create default safety file for approved-habit reminders');
-setupChoices = ['[x] Use approved habits before replies', undefined];
+setupChoices = ['Use approved habits before replies: ON — Enter to turn off', undefined];
 await commands.get('experience').handler('setup', ctx);
 readResult = await readAgentExperienceConfig(paths);
 assert.equal(readResult.config.selector_enabled, false, 'setup toggle can disable guidance');
@@ -290,14 +290,14 @@ readResult = await readAgentExperienceConfig(paths);
 assert.equal(readResult.config.capture_enabled, false, 'capture off disables capture only');
 assert.equal(readResult.config.consolidation_enabled, true, 'capture off must not silently disable consolidation');
 assert.equal(readResult.config.selector_enabled, true, 'capture off must not silently disable selector');
-setupChoices = ['[ ] Save chat examples locally — turn on first', undefined];
+setupChoices = ['Save chat examples locally: OFF — Enter to turn on', undefined];
 await commands.get('experience').handler('setup', ctx);
 readResult = await readAgentExperienceConfig(paths);
 assert.equal(readResult.config.enabled, true, 'capture toggle on enables master switch');
 assert.equal(readResult.config.capture_enabled, true, 'capture toggle on enables capture');
 assert.equal(readResult.config.consolidation_enabled, true, 'capture toggle on must preserve consolidation');
 assert.equal(readResult.config.selector_enabled, true, 'capture toggle on must preserve selector');
-setupChoices = ['[x] Save chat examples locally', undefined];
+setupChoices = ['Save chat examples locally: ON — Enter to turn off', undefined];
 await commands.get('experience').handler('setup', ctx);
 readResult = await readAgentExperienceConfig(paths);
 assert.equal(readResult.config.capture_enabled, false, 'capture toggle off disables capture only');
@@ -334,7 +334,7 @@ await setAgentExperienceSelectorEnabled(true, paths);
 readResult = await readAgentExperienceConfig(paths);
 assert.equal(readResult.config.enabled, false, 'stale selector test starts with master disabled');
 assert.equal(readResult.config.selector_enabled, true, 'stale selector flag can exist while master is disabled');
-setupChoices = ['[ ] Save chat examples locally — turn on first', undefined];
+setupChoices = ['Save chat examples locally: OFF — Enter to turn on', undefined];
 await commands.get('experience').handler('setup', ctx);
 readResult = await readAgentExperienceConfig(paths);
 assert.equal(readResult.config.enabled, true, 'capture toggle can enable master switch');
