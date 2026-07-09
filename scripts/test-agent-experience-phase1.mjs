@@ -80,12 +80,10 @@ await commands.get('experience').handler('setup', notifyOnlyCtx);
 assert.equal(existsSync(paths.root), false, 'setup with no select UI must not create state root');
 const fallbackNote = notes.find((note) => /setup controls/.test(note.message));
 assert.ok(fallbackNote, 'no-select setup must show fallback setup controls text');
-assert.match(fallbackNote.message, /setup save on\|off/);
-assert.match(fallbackNote.message, /setup model/);
-assert.match(fallbackNote.message, /setup analyze-now/);
-assert.match(fallbackNote.message, /setup review/);
-assert.match(fallbackNote.message, /setup use-habits on\|off/);
-assert.doesNotMatch(fallbackNote.message, /setup consolidation on\|off|setup guidance on\|off|setup timer off/);
+assert.match(fallbackNote.message, /\/experience setup/);
+assert.match(fallbackNote.message, /Everything is done from that one menu/);
+assert.match(fallbackNote.message, /No typed setup subcommands are required/);
+assert.doesNotMatch(fallbackNote.message, /setup save on\|off|setup model|setup analyze-now|setup review|setup use-habits on\|off|setup consolidation on\|off|setup guidance on\|off|setup timer off/);
 assert.ok(notes.some((note) => /no config changed/i.test(note.message)), 'no-select setup must say no config changed');
 const headlessCtx = {
   cwd: process.cwd(),
@@ -134,7 +132,7 @@ assert.deepEqual(notes.find((note) => note.level === 'select').options, [
   'Analyze saved examples now',
   'Review suggested habits',
   '[ ] Use approved habits before replies',
-  'Run habit learning automatically: Phase 2 / off (explain)',
+  'Automatic schedule: Phase 2 / off (explain)',
   'Show current settings',
   'Explain these settings',
   'Done',
@@ -158,7 +156,7 @@ assert.ok(notes.some((note) => /Use approved habits before replies/.test(note.me
 await commands.get('experience').handler('setup help', ctx);
 assert.equal(existsSync(paths.root), false, 'setup help subcommand must not create state root');
 assert.match(notes.at(-1).message, /Agent Experience setup help/);
-assert.match(notes.at(-1).message, /Run habit learning automatically: Phase 2/);
+assert.match(notes.at(-1).message, /Automatic schedule: Phase 2/);
 assert.match(notes.at(-1).message, /turn this on first to start/);
 setupChoices = ['[ ] Save chat examples locally — turn on first', undefined];
 await commands.get('experience').handler('setup', ctx);
@@ -253,7 +251,7 @@ readResult = await readAgentExperienceConfig(paths);
 assert.equal(readResult.config.selector_enabled, false, 'advanced/backcompat setup subcommand can disable guidance');
 
 await commands.get('experience').handler('setup suggest on', ctx);
-setupChoices = ['Run habit learning automatically: Phase 2 / off (explain)', 'Keep automatic schedule Phase 2/off', undefined];
+setupChoices = ['Automatic schedule: Phase 2 / off (explain)', 'Keep automatic schedule Phase 2/off', undefined];
 await commands.get('experience').handler('setup', ctx);
 readResult = await readAgentExperienceConfig(paths);
 assert.equal(readResult.config.consolidation_enabled, true, 'timer setup must not disable manual consolidation flag');
@@ -261,7 +259,7 @@ assert.equal(readResult.config.timer_enabled, false, 'timer setup keeps timer di
 assert.equal(readResult.config.break_in_enabled, false, 'timer setup keeps break-in disabled');
 
 await commands.get('experience').handler('review', ctx);
-assert.match(notes.at(-1).message, /No review ledger yet/);
+assert.match(notes.at(-1).message, /No review list yet/);
 assert.equal(existsSync(join(paths.root, 'ledger.sqlite')), false, 'review empty-state must not initialize ledger');
 await writeFile(join(paths.root, 'ledger.sqlite'), 'not sqlite', 'utf8');
 await commands.get('experience').handler('status', ctx);

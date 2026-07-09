@@ -358,7 +358,7 @@ async function handleStatus(ctx: ExtensionCommandContext) {
 		`Config file: ${path}${exists ? "" : " (not created; using defaults)"}`,
 		`Save chat examples locally: ${captureActive ? "ON" : "OFF"}${observations === undefined ? "" : ` (${plural(observations, "saved example")})`}`,
 		`Habit-learning model: ${config.consolidation_model}`,
-		`Manual analysis: ${config.consolidation_enabled ? "ON / available from setup" : "available when you choose Analyze saved examples now"}`,
+		`Analyze saved examples now: ${config.consolidation_enabled ? "available from setup" : "available when you choose it in setup"}`,
 		`Review suggested habits: ${summary.error ? `ledger unreadable (${summary.error})` : summary.ledger ? `${plural(reviewCount, "suggestion")} waiting, ${plural(summary.active, "approved habit")}` : "no review list yet"}`,
 		`Use approved habits before replies: ${selectorActive ? (config.selector_mode === "instant" ? "ON (local/no-network)" : `ON (${config.selector_mode})`) : config.selector_enabled ? "configured ON, inactive because Experience is OFF" : "OFF"}`,
 		"Automatic schedule: Phase 2 / OFF",
@@ -379,7 +379,7 @@ function buildSetupOptions(config: { enabled: boolean; capture_enabled: boolean;
 		"Analyze saved examples now",
 		"Review suggested habits",
 		`${checkbox(config.selector_enabled)} Use approved habits before replies`,
-		"Run habit learning automatically: Phase 2 / off (explain)",
+		"Automatic schedule: Phase 2 / off (explain)",
 		"Show current settings",
 		"Explain these settings",
 		...(anythingEnabled ? ["Turn all experience features off"] : []),
@@ -391,16 +391,9 @@ function setupControlsMessage(): string {
 	return [
 		"Agent Experience setup controls — no config changed yet.",
 		"Menu items change with Space/Enter and the menu returns after each action.",
-		"If no menu appears or selection is unavailable, use these plain commands:",
-		"/experience setup save on|off          # save chat examples locally",
-		"/experience setup model                # choose model for habit learning",
-		"/experience setup analyze-now          # analyze saved examples now",
-		"/experience setup review               # review suggested habits",
-		"/experience setup use-habits on|off    # use approved habits before replies",
-		"/experience setup background off       # keep automatic schedule off",
-		"/experience setup status               # show current settings",
-		"/experience setup help                 # explain these settings",
-		"/experience setup off                  # turn all experience features off",
+		"Run /experience setup in the Pi TUI. Everything is done from that one menu.",
+		"If no menu appears, restart Pi so the latest extension UI loads, then run /experience setup again.",
+		"No typed setup subcommands are required for normal use.",
 	].join("\n");
 }
 
@@ -414,12 +407,12 @@ function setupHelpMessage(config: { enabled: boolean; capture_enabled: boolean; 
 		"Agent Experience setup help:",
 		"Press Space or Enter on a row to change it or run that action; choose Done to exit.",
 		"Save chat examples locally: turn this on first to start saving examples. It stores redacted completed user/assistant pairs under ~/.agents/experience. It does not store raw full prompts or injected text.",
-		"Choose model for habit learning: selects the model used only when you manually analyze saved examples.",
-		"Analyze saved examples now: reads saved redacted examples, calls the chosen model once, and creates suggested habits for review.",
+		"Choose model for habit learning: opens a model picker inside setup. You do not type a model command.",
+		"Analyze saved examples now: runs from this setup menu, reads saved redacted examples, calls the chosen model once, and creates suggested habits for review.",
 		config.selector_mode === "instant"
 			? "Use approved habits before replies: lets Pi add only human-approved habits as reminders before future replies. Current mode is local/no-network."
 			: `Use approved habits before replies: lets Pi add only human-approved habits as reminders before future replies. Current mode may call ${config.selector_model} with bounded redacted selector payloads.`,
-		"Run habit learning automatically: Phase 2 / off in this release. Setup will not install, enable, or start a timer.",
+		"Automatic schedule: Phase 2 / off in this release. Setup will not install, enable, or start a timer.",
 		"Review suggested habits: opens the list of proposed habits for you to approve or reject. Nothing is auto-approved.",
 		anythingEnabled
 			? "Turn all experience features off: stops capture and all runtime gates. Existing local records are preserved."
@@ -449,23 +442,23 @@ async function chooseSetup(ctx: ExtensionCommandContext, title: string, options:
 }
 
 async function handleSetupConsolidation(ctx: ExtensionCommandContext) {
-	const choice = await chooseSetup(ctx, "Manual habit learning", [
-		"Explain manual habit learning (no changes)",
+	const choice = await chooseSetup(ctx, "Analyze saved examples", [
+		"Explain Analyze saved examples now (no changes)",
 		"Allow Analyze saved examples now",
-		"Do not allow manual habit learning",
+		"Do not allow Analyze saved examples now",
 		"Back/cancel (no changes)",
 	]);
-	if (!choice || choice === "Back/cancel (no changes)") return notify(ctx, "Habit-suggestion setup cancelled. No config changed.", "info");
-	if (choice === "Explain manual habit learning (no changes)") {
+	if (!choice || choice === "Back/cancel (no changes)") return notify(ctx, "Analyze saved examples setup cancelled. No config changed.", "info");
+	if (choice === "Explain Analyze saved examples now (no changes)") {
 		return notify(ctx, [
-			"Manual habit learning means Pi can analyze saved examples now and create proposed habits for you to review.",
+			"Analyze saved examples now lets Pi read saved redacted examples and create proposed habits for you to review.",
 			"This release does not run that automatically: no timer or scheduled model job is installed.",
-			"Turning this on only allows explicit/manual candidate generation. It does not create or approve habits by itself.",
+			"Turning this on only allows the setup menu action. It does not create or approve habits by itself.",
 		].join("\n"), "info");
 	}
 	if (choice === "Allow Analyze saved examples now") return handleConsolidation("on", ctx);
-	if (choice === "Do not allow manual habit learning") return handleConsolidation("off", ctx);
-	return notify(ctx, "Habit-suggestion setup cancelled. No config changed.", "info");
+	if (choice === "Do not allow Analyze saved examples now") return handleConsolidation("off", ctx);
+	return notify(ctx, "Analyze saved examples setup cancelled. No config changed.", "info");
 }
 
 async function handleSetupSelector(ctx: ExtensionCommandContext) {
@@ -501,15 +494,15 @@ async function handleSetupTimer(ctx: ExtensionCommandContext) {
 		return notify(ctx, [
 			"Automatic schedule remains Phase 2/off. No systemd unit was installed or started.",
 			`Config file: ${path}`,
-			`Manual analysis: ${config.consolidation_enabled ? "available from setup" : "available when you choose Analyze saved examples now"}`,
+			`Analyze saved examples now: ${config.consolidation_enabled ? "available from setup" : "available when you choose it in setup"}`,
 			"Automatic schedule: Phase 2 / OFF",
 			"Break-in/interruption behavior: OFF",
 		].join("\n"), "info");
 	}
 	return notify(ctx, [
-		"Automatic schedule would mean a scheduled job periodically tries to create review candidates from captures.",
-		"This release does not provide a package-owned timer or scheduled consolidation adapter.",
-		"The bundled systemd files are disabled maintainer templates only and are not installed by /experience setup/on.",
+		"Automatic schedule would mean a scheduled job periodically tries to create review suggestions from saved examples.",
+		"This release does not provide a package-owned timer or scheduled learning adapter.",
+		"The bundled systemd files are disabled maintainer templates only and are not installed by the setup menu.",
 		"So there is no timer to manage for normal users right now.",
 	].join("\n"), "info");
 }
@@ -526,7 +519,7 @@ async function handleSetupModel(ctx: ExtensionCommandContext) {
 	if (!choice || choice === "Back/cancel (no changes)") return notify(ctx, "Habit-learning model unchanged.", "info");
 	if (!models.includes(choice) && !configuredModelAvailable(ctx, choice)) return notify(ctx, `Model is not available/authenticated: ${redactText(choice)}`, "warn");
 	const { path } = await setAgentExperienceConsolidationModel(choice);
-	return notify(ctx, [`Habit-learning model: ${choice}`, `Config file: ${path}`, "Manual analysis is now available from /experience setup."].join("\n"), "info");
+	return notify(ctx, [`Habit-learning model: ${choice}`, `Config file: ${path}`, "Analyze saved examples now is available inside /experience setup."].join("\n"), "info");
 }
 
 async function handleAnalyzeNow(ctx: ExtensionCommandContext) {
@@ -557,12 +550,10 @@ async function handleAnalyzeNow(ctx: ExtensionCommandContext) {
 		const candidateIds = Array.isArray((result as any).result?.candidate_ids) ? (result as any).result.candidate_ids : [];
 		const pendingId = (result as any).result?.pending_review_id;
 		const proposalCount = Number((result as any).diff?.proposal_count ?? candidateIds.length ?? 0);
-		const inserted = (result as any).result?.inserted;
 		return notify(ctx, [
 			`Analyzed ${plural(batch.length, "saved example")}.`,
 			`Suggested habits created: ${proposalCount}`,
 			candidateIds.length ? `Review ids: ${candidateIds.join(", ")}` : pendingId ? `Review item: ${pendingId}` : "Review list updated.",
-			inserted ? `Inserted: ${JSON.stringify(inserted)}` : "",
 			"Next: choose Review suggested habits in /experience setup.",
 		].filter(Boolean).join("\n"), proposalCount > 0 ? "info" : "warn");
 	} catch (error: any) {
@@ -573,11 +564,52 @@ async function handleAnalyzeNow(ctx: ExtensionCommandContext) {
 	}
 }
 
+function reviewItemSource(item: any): any {
+	return item?.type === "candidate" ? item : item?.payload;
+}
+
 function reviewItemLabel(item: any, index: number): string {
-	const source = item.type === "candidate" ? item : item.payload;
+	const source = reviewItemSource(item);
 	const condition = truncateForModel(source?.condition || source?.conflict?.candidate_key || item.kind || item.id, 44);
 	const behavior = truncateForModel(source?.behavior || item.kind || "review item", 54);
 	return `${index + 1}. ${condition} → ${behavior}`;
+}
+
+function formatReviewItemForHuman(details: any): string {
+	const item = details?.item || details;
+	const source = reviewItemSource(item) || {};
+	const lines = ["Suggested habit", ""];
+	if (source.condition) lines.push(`When: ${redactText(String(source.condition)).slice(0, 500)}`);
+	if (source.behavior) lines.push(`Do: ${redactText(String(source.behavior)).slice(0, 500)}`);
+	if (typeof source.polarity === "number") lines.push(`Type: ${source.polarity < 0 ? "avoidance" : "preference"}`);
+	if (typeof source.confidence_bp === "number") lines.push(`Confidence: ${Math.round(source.confidence_bp / 100)}%`);
+	if (source.evidence_summary) lines.push(`Why suggested: ${redactText(String(source.evidence_summary)).slice(0, 700)}`);
+	const refs = Array.isArray(source.source_refs) ? source.source_refs.length : Array.isArray(source?.payload?.source_refs) ? source.payload.source_refs.length : undefined;
+	if (refs !== undefined) lines.push(`Evidence examples: ${refs}`);
+	const duplicateCount = Object.keys(details?.near_duplicate_groups || {}).length;
+	if (duplicateCount) lines.push(`Note: possible duplicate group found; review carefully.`);
+	lines.push("", "Choose Approve to use this habit later, Reject to discard it, or Back to keep reviewing.");
+	return lines.filter(Boolean).join("\n");
+}
+
+function formatReviewActionForHuman(action: "Approve" | "Reject", result: any): string {
+	const data = result?.habit || result?.item || result || {};
+	const condition = data.condition ? `\nWhen: ${redactText(String(data.condition)).slice(0, 300)}` : "";
+	const behavior = data.behavior ? `\nDo: ${redactText(String(data.behavior)).slice(0, 300)}` : "";
+	const status = data.status ? `\nStatus: ${redactText(String(data.status)).slice(0, 120)}` : "";
+	return `${action === "Approve" ? "Approved" : "Rejected"} suggestion.${condition}${behavior}${status}`;
+}
+
+function formatReviewListForHuman(list: any): string {
+	const items = Array.isArray(list?.items) ? list.items : [];
+	if (!items.length) return "No suggested habits are waiting for review. Open /experience setup and choose Analyze saved examples now to create suggestions.";
+	return ["Suggested habits waiting for review:", "", ...items.map((item: any, index: number) => reviewItemLabel(item, index)), "", "Open /experience setup, choose Review suggested habits, then choose a suggestion to approve or reject."].join("\n");
+}
+
+function formatReviewDiffForHuman(diff: any): string {
+	const groups = Object.entries(diff?.near_duplicate_groups || {});
+	if (!groups.length) return "No likely duplicate suggestions found.";
+	return ["Possible duplicate suggestions:", "", ...groups.map(([group, ids]) => `${group}: ${(ids as any[]).join(", ")}`), "", "Open /experience setup and review these suggestions before approving."].join("\n");
 }
 
 async function handleReviewSetup(ctx: ExtensionCommandContext) {
@@ -598,7 +630,7 @@ async function handleReviewSetup(ctx: ExtensionCommandContext) {
 		const item = list.items[index];
 		if (!item) continue;
 		const details = await withExistingReviewStorage(async (storage) => showPendingReviewItem(storage.db, { userId: storage.userId, id: item.id }));
-		notify(ctx, formatResult(details), "info");
+		notify(ctx, formatReviewItemForHuman(details), "info");
 		const action = await chooseSetup(ctx, "What do you want to do with this suggestion?", ["Approve", "Reject", "Back to review list"], false);
 		if (!action || action === "Back to review list") continue;
 		try {
@@ -614,7 +646,7 @@ async function handleReviewSetup(ctx: ExtensionCommandContext) {
 					? acceptPendingReview(storage.db, { userId: storage.userId, id: item.id, checksum: item.checksum, now })
 					: rejectPendingReview(storage.db, { userId: storage.userId, id: item.id, checksum: item.checksum, now });
 			});
-			notify(ctx, `${action === "Approve" ? "Approved" : "Rejected"} suggestion.\n${formatResult(result)}`, "info");
+			notify(ctx, formatReviewActionForHuman(action, result), "info");
 		} catch (error: any) {
 			const raw = String(error?.message || error);
 			notify(ctx, `Review action failed safely: ${redactText(raw).slice(0, 500)}`, "warn");
@@ -681,10 +713,10 @@ async function showSetupPanel(ctx: ExtensionCommandContext): Promise<string | un
 	const rows = [
 		{ id: "save", label: "Save chat examples locally", value: config.enabled && config.capture_enabled ? "on" : "off", description: observations === undefined ? "Stores redacted completed examples locally." : `Stores redacted examples locally. Current count: ${observations}.` },
 		{ id: "model", label: "Choose model for habit learning", value: modelAvailable ? config.consolidation_model : `not ready: ${config.consolidation_model}`, description: "Pick the model used only when you manually analyze saved examples." },
-		{ id: "analyze", label: "Analyze saved examples now", value: "run", description: "Manual consolidation: calls the chosen model once and creates suggestions for review." },
+		{ id: "analyze", label: "Analyze saved examples now", value: "run", description: "Calls the chosen model once and creates suggestions for review." },
 		{ id: "review", label: "Review suggested habits", value: `${summary.pending + summary.candidate} waiting`, description: "Inspect, approve, or reject suggestions. Nothing is auto-approved." },
 		{ id: "use", label: "Use approved habits before replies", value: config.selector_enabled ? "on" : "off", description: "Opt-in reminders from approved active habits only. Unreviewed suggestions are never used." },
-		{ id: "schedule", label: "Run habit learning automatically", value: "Phase 2 / off", description: "Scheduling is not enabled in phase 1. Use Analyze saved examples now manually." },
+		{ id: "schedule", label: "Automatic schedule", value: "Phase 2 / off", description: "Scheduling is not enabled in phase 1. Use Analyze saved examples now from this menu." },
 		{ id: "status", label: "Show current settings", value: "open", description: "Show counts, model, and next step." },
 		{ id: "help", label: "Explain these settings", value: "open", description: "Plain-English help for every row." },
 		{ id: "done", label: "Done", value: "close", description: "Exit setup." },
@@ -739,7 +771,7 @@ async function handleSetupDirect(args: string[], ctx: ExtensionCommandContext): 
 			} else if (value === "off" || value === "disable") {
 				const { config, path } = await setAgentExperienceCaptureActive(false);
 				notify(ctx, [`Save chat examples locally: OFF`, `Config file: ${path}`, `Current setting: ${config.capture_enabled ? "ON" : "OFF"}`].join("\n"), "info");
-			} else notify(ctx, "Usage: /experience setup save on|off", "warn");
+			} else notify(ctx, "Open /experience setup and use the Save chat examples locally row.", "warn");
 			return true;
 		case "2":
 		case "off":
@@ -781,7 +813,7 @@ async function handleSetupDirect(args: string[], ctx: ExtensionCommandContext): 
 			if (value === "now" || value === "run") await handleAnalyzeNow(ctx);
 			else if (value === "on" || value === "enable") await handleConsolidation("on", ctx);
 			else if (value === "off" || value === "disable") await handleConsolidation("off", ctx);
-			else notify(ctx, "Usage: /experience setup analyze-now OR /experience setup model OR /experience setup suggest on|off", "warn");
+			else notify(ctx, "Open /experience setup and use the model, analyze, or review rows from the menu.", "warn");
 			return true;
 		case "6":
 		case "use-habits":
@@ -793,7 +825,7 @@ async function handleSetupDirect(args: string[], ctx: ExtensionCommandContext): 
 		case "preinject":
 			if (value === "on" || value === "enable") await handleSetupUseHabitsToggle(ctx, true);
 			else if (value === "off" || value === "disable") await handleSetupUseHabitsToggle(ctx, false);
-			else notify(ctx, "Usage: /experience setup use-habits on|off", "warn");
+			else notify(ctx, "Open /experience setup and use the Use approved habits before replies row.", "warn");
 			return true;
 		case "7":
 		case "background":
@@ -802,7 +834,7 @@ async function handleSetupDirect(args: string[], ctx: ExtensionCommandContext): 
 			else if (value === "off" || value === "disable") {
 				const { config, path } = await setAgentExperienceTimerEnabled(false);
 				notify(ctx, [`Automatic schedule: Phase 2 / OFF`, `Config file: ${path}`, `Break-in/interruption behavior: ${config.break_in_enabled ? "ON" : "OFF"}`].join("\n"), "info");
-			} else notify(ctx, "Usage: /experience setup background off", "warn");
+			} else notify(ctx, "Open /experience setup and use the Automatic schedule row. It stays Phase 2/off.", "warn");
 			return true;
 		case "8":
 		case "help": {
@@ -842,7 +874,7 @@ async function handleSetup(ctx: ExtensionCommandContext, args: string[] = []) {
 			else if (choice === "Turn all experience features off") await handleOff(ctx);
 			else if (choice === "Choose model for habit learning") await handleSetupModel(ctx);
 			else if (choice === "Analyze saved examples now") await handleAnalyzeNow(ctx);
-			else if (choice.startsWith("Run habit learning automatically")) await handleSetupTimer(ctx);
+			else if (choice.startsWith("Automatic schedule")) await handleSetupTimer(ctx);
 			else if (choice.endsWith("Use approved habits before replies")) await handleSetupUseHabitsToggle(ctx, !config.selector_enabled);
 			else if (choice.includes("Save chat examples locally")) {
 				if (config.enabled && config.capture_enabled) captureBuffer.clearAll();
@@ -875,10 +907,10 @@ async function handleOn(ctx: ExtensionCommandContext) {
 			"Agent Experience is ON.",
 			`Config file: ${path}`,
 			"Save chat examples locally: ON",
-			"Manual analysis: available from /experience setup analyze-now after choosing a model",
-			"Use approved habits before replies: OFF in normal on/off mode",
+			"Analyze saved examples now: available from /experience setup after choosing a model",
+			"Use approved habits before replies: OFF until enabled from setup",
 			"Automatic schedule: Phase 2 / OFF",
-			"Run /experience status anytime for counts and next step.",
+			"Open /experience setup anytime for current settings and next step.",
 		].join("\n"),
 		"info",
 	);
@@ -893,7 +925,7 @@ async function handleOff(ctx: ExtensionCommandContext) {
 			"Agent Experience is OFF.",
 			`Config file: ${path}`,
 			"Save chat examples locally: OFF",
-			"Manual analysis: OFF",
+			"Analyze saved examples now: OFF",
 			"Use approved habits before replies: OFF",
 			"Automatic schedule: Phase 2 / OFF",
 			"Off drops in-memory capture buffers without writing observations. Existing records are preserved.",
@@ -925,7 +957,7 @@ function diagnosticFor(kind: "selector-runtime" | "capture-persist", error: unkn
 		return {
 			key: `${kind}:${redacted}`,
 			message: lawMissing
-				? `Agent Experience approved-habit reminders are paused because the required law file is missing. To stop this warning, run /experience setup use-habits off, or create the configured law file. Detail: ${redacted}`
+				? `Agent Experience approved-habit reminders are paused because the required law file is missing. To stop this warning, open /experience setup and turn off Use approved habits before replies, or create the configured law file. Detail: ${redacted}`
 				: `Agent Experience approved-habit reminders are paused: ${redacted}`,
 		};
 	}
@@ -992,27 +1024,25 @@ async function handleReview(args: string[], ctx: ExtensionCommandContext) {
 	const paths = getAgentExperiencePaths();
 	if (!(await fileExists(resolvePrivatePath(paths.root, "ledger.sqlite")))) {
 		return notify(ctx, [
-			"No review ledger yet.",
-			"Capture may be accumulating redacted observations, but no candidates exist yet.",
+			"No review list yet.",
+			"Saved examples can exist before suggestions are created.",
+			"Open /experience setup and choose Analyze saved examples now to create suggestions.",
 			"This release does not run scheduled learning, install a timer, or call a model automatically.",
-			"Normal commands: /experience status, /experience on, /experience off.",
 		].join("\n"), "info");
 	}
 	if (action === "list") {
 		try {
 			const result = await withExistingReviewStorage(async (storage) => listPendingReviewItems(storage.db, { userId: storage.userId }));
-			return notify(ctx, result.items.length
-				? formatResult(result)
-				: "No review items yet. Captures can exist without candidates because this release has no automatic consolidation/model/timer.", "info");
+			return notify(ctx, formatReviewListForHuman(result), "info");
 		} catch (error) {
 			return notify(ctx, formatReviewReadError(error), "warn");
 		}
 	}
 	if (action === "show") {
-		if (!id) return notify(ctx, "Usage: /experience review show <id>", "warn");
+		if (!id) return notify(ctx, "Open /experience setup, choose Review suggested habits, then select a suggestion to inspect.", "warn");
 		try {
 			const result = await withExistingReviewStorage(async (storage) => showPendingReviewItem(storage.db, { userId: storage.userId, id }));
-			return notify(ctx, formatResult(result), "info");
+			return notify(ctx, formatReviewItemForHuman(result), "info");
 		} catch (error) {
 			return notify(ctx, formatReviewReadError(error), "warn");
 		}
@@ -1020,14 +1050,14 @@ async function handleReview(args: string[], ctx: ExtensionCommandContext) {
 	if (action === "diff") {
 		try {
 			const result = await withExistingReviewStorage(async (storage) => diffPendingReviewItems(storage.db, { userId: storage.userId }));
-			return notify(ctx, formatResult(result), "info");
+			return notify(ctx, formatReviewDiffForHuman(result), "info");
 		} catch (error) {
 			return notify(ctx, formatReviewReadError(error), "warn");
 		}
 	}
 	if (action === "accept" || action === "reject") {
 		const checksum = parseFlag(args, "--checksum");
-		if (!id || !checksum) return notify(ctx, `Usage: /experience review ${action} <id> --checksum <checksum>`, "warn");
+		if (!id || !checksum) return notify(ctx, "Open /experience setup, choose Review suggested habits, then approve or reject from the menu.", "warn");
 		const now = new Date().toISOString();
 		const result = await withReviewStorage(async (storage) => {
 			const shown = showPendingReviewItem(storage.db, { userId: storage.userId, id });
@@ -1040,12 +1070,12 @@ async function handleReview(args: string[], ctx: ExtensionCommandContext) {
 				? acceptPendingReview(storage.db, { userId: storage.userId, id, checksum, now })
 				: rejectPendingReview(storage.db, { userId: storage.userId, id, checksum, now });
 		});
-		return notify(ctx, formatResult(result), "info");
+		return notify(ctx, formatReviewActionForHuman(action === "accept" ? "Approve" : "Reject", result), "info");
 	}
 	if (action === "report") {
 		return handleHabits(["report"], ctx);
 	}
-	return notify(ctx, "Usage: /experience review [list|show|diff|accept|reject|report] ...", "warn");
+	return notify(ctx, "Open /experience setup and choose Review suggested habits.", "warn");
 }
 
 async function handlePending(args: string[], ctx: ExtensionCommandContext) {
@@ -1099,9 +1129,9 @@ async function handleConsolidation(command: string | undefined, ctx: ExtensionCo
 	notify(
 		ctx,
 		[
-			`Manual analysis from setup: ${value === "on" ? "ON" : "OFF"}`,
+			`Analyze saved examples now from setup: ${value === "on" ? "ON" : "OFF"}`,
 			`Config file: ${path}`,
-			"Use /experience setup analyze-now to run one model call manually. No background job or timer starts automatically.",
+			"Use the Analyze saved examples now row inside /experience setup to run one model call. No background job or timer starts automatically.",
 			`Save chat examples locally: ${config.enabled && config.capture_enabled ? "ON" : "OFF"}`,
 		].join("\n"),
 		value === "on" ? "warn" : "info",
@@ -1158,30 +1188,17 @@ function usage(topic = "") {
 	if (normalized === "setup") {
 		return [
 			"Agent Experience setup:",
-			"/experience setup                         # one setup panel; Space/Enter changes selected row",
-			"/experience setup save on|off             # save chat examples locally",
-			"/experience setup model                   # choose model for habit learning",
-			"/experience setup analyze-now             # analyze saved examples now",
-			"/experience setup review                  # review suggested habits",
-			"/experience setup use-habits on|off       # use approved habits before replies",
-			"/experience setup background off          # keep automatic schedule off",
-			"/experience setup status|help",
-			"/experience on      # shortcut: resume local redacted capture",
-			"/experience status  # see what is happening and the next step",
-			"/experience off     # stop capture and all runtime gates",
-			"Automatic schedule is Phase 2/off. Manual analysis works through setup.",
+			"/experience setup                         # the one normal-user setup panel",
+			"Inside that menu: save examples, choose model, analyze saved examples, review suggestions, approve/reject, and use approved habits.",
+			"Use Space/Enter on menu rows. No typed setup subcommands are required for normal use.",
+			"Automatic schedule is Phase 2/off. Analyze saved examples from the setup menu when you want suggestions.",
 		].join("\n");
 	}
 	if (normalized === "review") {
 		return [
 			"Agent Experience review:",
-			"/experience review",
-			"/experience review list",
-			"/experience review show <id>",
-			"/experience review diff",
-			"/experience review accept <id> --checksum <checksum>",
-			"/experience review reject <id> --checksum <checksum>",
-			"/experience review report",
+			"Open /experience setup and choose Review suggested habits.",
+			"The setup menu shows suggestions in plain English and lets you approve or reject them.",
 			"Review keeps checksum/stale-state protection. It never auto-approves habits.",
 		].join("\n");
 	}
@@ -1198,10 +1215,10 @@ function usage(topic = "") {
 	if (normalized === "troubleshoot") {
 		return [
 			"Agent Experience troubleshooting:",
-			"/experience status                 # verify enabled=true and capture=true",
+			"/experience setup                  # open settings and status in one menu",
 			"ls -la ~/.agents/experience        # config and observations.jsonl live here by default",
 			"tail -3 ~/.agents/experience/observations.jsonl",
-			"experience-consolidate status # verify bundled CLI can read config; consolidation is manual",
+			"experience-consolidate status # maintainer check: bundled CLI can read config",
 			"If no observations appear after a normal turn, restart Pi so the latest extension code is loaded.",
 			"Capture writes completed turns at agent_end; selector/ledger are separate.",
 		].join("\n");
@@ -1217,31 +1234,21 @@ function usage(topic = "") {
 			"/experience habit accept|reject|disable|enable <id> --checksum <checksum>",
 			"/experience habits report",
 			"experience-consolidate is a maintainer/test CLI and still requires explicit fixture/model output.",
-			"Advanced selector smart mode may call a configured model/provider; normal setup/on keeps it off.",
+			"Advanced smart reminders may call a configured model/provider; normal setup keeps them off.",
 		].join("\n");
 	}
 	return [
 		"Agent Experience:",
-		"/experience setup                         # one setup panel; Space/Enter changes selected row",
-		"/experience setup save on|off             # save chat examples locally",
-		"/experience setup model                   # choose model for habit learning",
-		"/experience setup analyze-now             # analyze saved examples now",
-		"/experience setup review                  # review suggested habits",
-		"/experience setup use-habits on|off       # use approved habits before replies",
-		"/experience setup background off          # keep automatic schedule off",
-		"/experience setup status|help",
-		"/experience on      # shortcut: resume local redacted capture",
-		"/experience off     # stop capture and all runtime gates",
-		"/experience status  # plain dashboard",
-		"/experience review  # direct shortcut to review suggestions",
-		"/experience help setup|review|advanced|troubleshoot",
-		"Manual analysis works through setup. Normal UX does not install timers; automatic schedule is Phase 2/off. Suggestions are never auto-approved.",
+		"/experience setup                         # the one normal-user setup panel",
+		"Inside setup: save examples, choose model, analyze saved examples, review suggestions, approve/reject, and use approved habits.",
+		"No other typed command is required for normal setup, model choice, analysis, review, approval, or approved-habit reminders.",
+		"Automatic schedule is Phase 2/off. Suggestions are never auto-approved.",
 	].join("\n");
 }
 
 export default function agentExperienceExtension(pi: ExtensionAPI) {
 	pi.registerCommand("experience", {
-		description: "Agent Experience controls: setup, on/off, status, review, and advanced capture/selector/review commands",
+		description: "Agent Experience setup control panel; advanced/backcompat commands remain hidden for maintainers",
 		handler: async (args, ctx) => {
 			const tokens = String(args || "").trim().split(/\s+/).filter(Boolean);
 			const [command = "status", subcommand] = tokens;

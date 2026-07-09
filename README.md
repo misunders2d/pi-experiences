@@ -117,18 +117,16 @@ Duplicate copies can register the same hooks twice and cause duplicate capture o
 - **Experience** is the whole behavior-learning layer.
 - **Setup** is the main control panel. It opens a Space/Enter settings panel for saving chat examples locally, choosing the habit-learning model, analyzing saved examples now, reviewing suggested habits, using approved habits before replies, showing the schedule as Phase 2/off, showing current settings, and explaining every setting. It must not change config until you choose an item. The safe save-examples choice turns on local redacted capture and leaves timers and approved-habit reminders off unless you explicitly toggle them.
 - **Capture** means saving redacted text fields and metadata from completed user/assistant turns to `observations.jsonl`. It is the raw material. Capture does **not** create habits by itself.
-- **Choose model for habit learning** selects the configured Pi model used only when you explicitly run manual analysis.
+- **Choose model for habit learning** opens a model picker inside `/experience setup`; users do not type a model command.
 - **Analyze saved examples now** reads already saved redacted examples, calls the configured model once, validates/sanitizes the model output, and writes suggested habits into review. It never approves habits.
 - **Pending review** means proposed habits are waiting for you to approve or reject them. Pending items are not used for injection.
-- **Active habits** are reviewed habits. Normal setup/on does not use them before replies unless you explicitly enable approved-habit reminders.
+- **Active habits** are reviewed habits. The setup menu does not use them before replies unless you explicitly enable approved-habit reminders.
 - **Schedule** is Phase 2/off. The package does not install, start, or pretend-enable a timer.
 
-Inside Pi:
+Inside Pi, start with exactly one normal-user command:
 
 ```text
 /experience setup
-/experience status
-/experience review
 ```
 
 Then use Pi normally for a few turns. Captures are written locally to:
@@ -139,30 +137,19 @@ Then use Pi normally for a few turns. Captures are written locally to:
 
 The file stores redacted conversation-pair records with bounded text fields and metadata, not raw full session logs.
 
-### Normal commands
+### Normal command
 
-The normal UX is a single control panel plus optional shortcuts:
+The normal UX is one control panel:
 
 ```text
-/experience setup                         # Space/Enter control panel; no change until you choose
-/experience setup save on|off             # save chat examples locally
-/experience setup model                  # choose habit-learning model
-/experience setup analyze-now            # analyze saved examples now
-/experience setup review                 # review suggested habits
-/experience setup use-habits on|off      # use approved habits before replies
-/experience setup background off         # keep automatic schedule off
-/experience setup status                 # show current settings
-/experience setup help                   # explain every setting
-/experience setup off                    # turn all experience features off
-/experience on                            # shortcut: resume local redacted capture
-/experience off                           # shortcut: stop capture and all runtime gates
-/experience status                        # shortcut: plain dashboard
-/experience review                        # shortcut: inspect/accept/reject candidates if any exist
+/experience setup
 ```
 
-The interactive `/experience setup` panel uses rows that run on Space/Enter. `[x]` means ON and `[ ]` means OFF where a row is a toggle; action rows such as model, analyze, review, status, and help run directly and then return to the panel. You can also manage all settings from `/experience setup ...` without remembering the shortcuts. If Pi does not render the interactive menu, use the explicit setup subcommands above.
+The interactive `/experience setup` panel uses rows that run on Space/Enter. `[x]` means ON and `[ ]` means OFF where a row is a toggle. From that one menu a normal user can save examples, choose a model from a picker, analyze saved examples now, review suggestions, approve/reject, use approved habits before replies, see status, and read explanations.
 
-If observations are growing but `/experience review` shows no candidates, choose **Analyze saved examples now** in `/experience setup`. Candidate generation is manual, not scheduled.
+No typed setup subcommands are required for normal use. If the panel does not render, restart Pi so the latest extension UI loads and run `/experience setup` again.
+
+If observations are growing but there are no suggestions, choose **Analyze saved examples now** inside `/experience setup`. Candidate generation is manual, not scheduled.
 
 Advanced/backcompat commands such as `/experience capture`, `/experience consolidation`, `/experience selector`, `/experience pending`, and `experience-consolidate --fixture-output` are maintainer/testing controls, not the normal first-run path.
 
@@ -194,7 +181,7 @@ Privacy and safety invariants:
 - selector `prompt_hash` is deliberately `omitted`;
 - only active same-user habits are selector candidates;
 - disabled, dormant, candidate, pending-review, quarantine, evidence, and report rows are not selector input;
-- no automatic law-file writes are performed by the extension; `/experience setup use-habits on` may create the default private `law.md` only after an explicit user choice;
+- no automatic law-file writes are performed by the extension; the Use approved habits row in `/experience setup` may create the default private `law.md` only after an explicit user choice;
 - no automatic habit activation happens from selector use.
 
 ## Review flow
@@ -202,26 +189,12 @@ Privacy and safety invariants:
 The extension is designed around human review.
 
 ```text
-capture redacted pairs -> analyze saved examples now -> proposed candidates -> human review -> active habits -> optional approved-habit reminders
+capture redacted pairs -> analyze saved examples now -> proposed suggestions -> human review -> active habits -> optional approved-habit reminders
 ```
 
-In 0.1.11, `/experience setup analyze-now` can create candidates from already saved examples using the configured Pi model. The bundled `experience-consolidate` command remains an advanced maintainer/test CLI; normal users should not need it.
+In 0.1.11, the **Analyze saved examples now** row inside `/experience setup` can create suggestions from already saved examples using the configured Pi model. Then use **Review suggested habits** inside the same setup menu to inspect, approve, or reject them. Normal users do not need typed review commands.
 
-Review commands:
-
-```text
-/experience review
-/experience review list
-/experience review show <id>
-/experience review diff
-/experience review accept <id> --checksum <checksum>
-/experience review reject <id> --checksum <checksum>
-/experience review report
-```
-
-Checksums are used so stale review actions fail closed. The old `/experience pending ...` and `/experience habit ...` commands remain advanced/backcompat aliases.
-
-Checksums are used so stale review actions fail closed.
+Checksums are still used internally so stale review actions fail closed. Advanced/backcompat review commands exist for maintainers, but they are not the normal path.
 
 ## Configuration
 

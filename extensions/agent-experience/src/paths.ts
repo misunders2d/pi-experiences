@@ -89,8 +89,8 @@ export async function setAgentExperienceSimpleOn(paths = getAgentExperiencePaths
 		enabled: true,
 		capture_enabled: true,
 		// Simple on/setup is intentionally capture-only in this release. These gates stay off
-		// because there is no bundled scheduled/live consolidation adapter or package-owned timer;
-		// manual on-demand analysis is available only from /experience setup analyze-now.
+		// because there is no bundled scheduled/live learning adapter or package-owned timer;
+		// on-demand analysis is available from the /experience setup menu.
 		selector_enabled: false,
 		embedding_enabled: false,
 		consolidation_enabled: false,

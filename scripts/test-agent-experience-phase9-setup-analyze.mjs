@@ -57,6 +57,7 @@ process.env.AX_USER_ID = 'owner';
 const paths = getAgentExperiencePaths();
 const { commands, handlers } = makePi();
 const notes = [];
+let setupChoices = [];
 const availableModel = { provider: 'openai-codex', id: 'gpt-5.5', name: 'GPT 5.5', input: ['text'] };
 const unavailableModel = { provider: 'example', id: 'unauth', name: 'Unauthenticated', input: ['text'] };
 const modelRegistry = {
@@ -82,16 +83,18 @@ const ctx = {
         assert.ok(!options.includes('example/unauth'), 'unauthenticated model must not be listed');
         return 'openai-codex/gpt-5.5';
       }
-      if (/Review suggested habits/.test(title)) return options[0];
+      if (/Review suggested habits/.test(title)) return setupChoices.shift() ?? options[0];
       if (/What do you want/.test(title)) return 'Approve';
+      const next = setupChoices.shift();
+      if (next !== undefined) return next;
       return undefined;
     },
     notify(message, level) { notes.push({ message, level }); },
   },
 };
 
-await commands.get('experience').handler('setup save on', ctx);
-await commands.get('experience').handler('setup model', ctx);
+setupChoices = ['[ ] Save chat examples locally — turn on first', 'Choose model for habit learning', 'Done'];
+await commands.get('experience').handler('setup', ctx);
 let configResult = await readAgentExperienceConfig(paths);
 assert.equal(configResult.config.enabled, true);
 assert.equal(configResult.config.capture_enabled, true);
@@ -163,14 +166,17 @@ __setAgentExperienceConsolidationAdapterForTest({
   },
 });
 
-await commands.get('experience').handler('setup analyze-now', ctx);
+setupChoices = ['Analyze saved examples now', 'Done'];
+await commands.get('experience').handler('setup', ctx);
 assert.ok(notes.some((note) => /Suggested habits created: 1/.test(note.message || '')), 'analyze-now must create one suggestion');
 
 await writeFile(resolvePrivatePath(paths.root, 'law.md'), '# test law\nDo not store secrets. Do not bypass approvals.\n', { mode: 0o600 });
-await commands.get('experience').handler('setup review', ctx);
+setupChoices = ['Review suggested habits', undefined, 'Done'];
+await commands.get('experience').handler('setup', ctx);
 assert.ok(notes.some((note) => /Approved suggestion/.test(note.message || '')), 'setup review must approve suggestion from setup flow');
 
-await commands.get('experience').handler('setup use-habits on', ctx);
+setupChoices = ['[ ] Use approved habits before replies', 'Done'];
+await commands.get('experience').handler('setup', ctx);
 configResult = await readAgentExperienceConfig(paths);
 assert.equal(configResult.config.selector_enabled, true);
 

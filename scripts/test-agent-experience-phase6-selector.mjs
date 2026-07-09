@@ -224,7 +224,8 @@ try {
   const missingLawWarning = missingLawNotes.find((note) => /law file missing/.test(note.message) && note.level === 'warn');
   assert.ok(missingLawWarning, 'missing law must emit a bounded visible diagnostic');
   assert.match(missingLawWarning.message, /approved-habit reminders are paused/);
-  assert.match(missingLawWarning.message, /\/experience setup use-habits off/);
+  assert.match(missingLawWarning.message, /open \/experience setup and turn off Use approved habits before replies/);
+  assert.doesNotMatch(missingLawWarning.message, /setup use-habits off/);
   assert.doesNotMatch(missingLawWarning.message, /selector skipped/i);
   const missingLawNoteCount = missingLawNotes.length;
   await missingLaw.handlers.get('before_agent_start')({ prompt: 'hook prompt again', systemPrompt: 'base' }, { cwd: liveCwd, ui: missingLawCtx.ui });

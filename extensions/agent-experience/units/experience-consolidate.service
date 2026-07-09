@@ -5,9 +5,9 @@ ConditionPathExists=%h/.agents/experience/agent-experience.toml
 
 [Service]
 Type=oneshot
-# Template only. Normal manual learning runs through /experience setup analyze-now.
+# Template only. Normal users run learning from the /experience setup menu.
 # This package does not provide a package-owned timer. Do not enable this unit as-is.
-ExecStart=/usr/bin/env sh -c 'echo "Agent Experience timer template disabled: use /experience setup analyze-now for manual learning; do not enable this timer without an explicit reviewed scheduler design." >&2; exit 1'
+ExecStart=/usr/bin/env sh -c 'echo "Agent Experience timer template disabled: use /experience setup and choose Analyze saved examples now; do not enable this timer without an explicit reviewed scheduler design." >&2; exit 1'
 Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7

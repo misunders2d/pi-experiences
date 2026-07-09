@@ -149,11 +149,12 @@ try {
   const notes = [];
   await commands.get('experience').handler('status', { cwd: process.cwd(), ui: { notify(message) { notes.push(message); } } });
   assert.match(notes.at(-1), /Experience: OFF/);
-  assert.match(notes.at(-1), /Manual analysis: available when you choose Analyze saved examples now/);
+  assert.match(notes.at(-1), /Analyze saved examples now: available when you choose it in setup/);
   assert.match(notes.at(-1), /Automatic schedule: Phase 2 \/ OFF/);
   await commands.get('experience').handler('help', { cwd: process.cwd(), ui: { notify(message) { notes.push(message); } } });
-  assert.match(notes.at(-1), /experience setup/);
-  assert.match(notes.at(-1), /Normal UX does not install timers/);
+  assert.match(notes.at(-1), /\/experience setup/);
+  assert.match(notes.at(-1), /the one normal-user setup panel/);
+  assert.doesNotMatch(notes.at(-1), /setup model|setup analyze-now|setup review|setup use-habits/);
   await commands.get('experience').handler('selector calibrate', { cwd: process.cwd(), ui: { notify(message) { notes.push(message); } } });
   assert.match(notes.at(-1), /Manual weekly calibration/);
   assert.match(notes.at(-1), /No recurring reminder is enabled/);
@@ -215,7 +216,7 @@ try {
   assert.equal(selectStorageRecordsByUser(restored.db, 'habits', 'owner').some((row) => row.id === 'rollback-extra'), false, 'rollback restore removes post-backup selector-visible state');
   restored.db.close();
 
-  await assert.rejects(() => execFileAsync(process.execPath, ['--experimental-strip-types', './bin/experience-consolidate.mjs', 'now', '--dry-run', '--fixture-output', fixture, '--root', root], { cwd: process.cwd() }), /consolidation_disabled/);
+  await assert.rejects(() => execFileAsync(process.execPath, ['--experimental-strip-types', './bin/experience-consolidate.mjs', 'now', '--dry-run', '--fixture-output', fixture, '--root', root], { cwd: process.cwd() }), /learning_disabled/);
   await writeFile(join(root, 'agent-experience.toml'), formatAgentExperienceConfig({ ...DEFAULT_AGENT_EXPERIENCE_CONFIG, enabled: true, consolidation_enabled: true }), 'utf8');
   const { stdout } = await execFileAsync(process.execPath, ['--experimental-strip-types', './bin/experience-consolidate.mjs', 'now', '--dry-run', '--fixture-output', fixture, '--root', root], { cwd: process.cwd() });
   assert.match(stdout, /"dry_run": true/);
