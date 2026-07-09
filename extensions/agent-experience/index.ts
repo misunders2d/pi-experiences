@@ -703,55 +703,11 @@ async function handleSetupUseHabitsToggle(ctx: ExtensionCommandContext, enable: 
 	return handleSelector(enable ? "on" : "off", ctx);
 }
 
-async function showSetupPanel(ctx: ExtensionCommandContext): Promise<string | undefined> {
-	if ((ctx as { mode?: string }).mode !== "tui" || typeof (ctx as any).ui?.custom !== "function") return undefined;
-	const paths = getAgentExperiencePaths();
-	const { config } = await readAgentExperienceConfig(paths);
-	const observations = await countObservationLines(paths.root).catch(() => undefined);
-	const summary = await reviewSummary(paths.root, getConfiguredUserId());
-	const modelAvailable = configuredModelAvailable(ctx, config.consolidation_model);
-	const rows = [
-		{ id: "save", label: "Save chat examples locally", value: config.enabled && config.capture_enabled ? "on" : "off", description: observations === undefined ? "Stores redacted completed examples locally." : `Stores redacted examples locally. Current count: ${observations}.` },
-		{ id: "model", label: "Choose model for habit learning", value: modelAvailable ? config.consolidation_model : `not ready: ${config.consolidation_model}`, description: "Pick the model used only when you manually analyze saved examples." },
-		{ id: "analyze", label: "Analyze saved examples now", value: "run", description: "Calls the chosen model once and creates suggestions for review." },
-		{ id: "review", label: "Review suggested habits", value: `${summary.pending + summary.candidate} waiting`, description: "Inspect, approve, or reject suggestions. Nothing is auto-approved." },
-		{ id: "use", label: "Use approved habits before replies", value: config.selector_enabled ? "on" : "off", description: "Opt-in reminders from approved active habits only. Unreviewed suggestions are never used." },
-		{ id: "schedule", label: "Automatic schedule", value: "Phase 2 / off", description: "Scheduling is not enabled in phase 1. Use Analyze saved examples now from this menu." },
-		{ id: "status", label: "Show current settings", value: "open", description: "Show counts, model, and next step." },
-		{ id: "help", label: "Explain these settings", value: "open", description: "Plain-English help for every row." },
-		{ id: "done", label: "Done", value: "close", description: "Exit setup." },
-	];
-	return await ctx.ui.custom<string | undefined>((tui, theme, _kb, done) => {
-		let selected = 0;
-		const line = (text: string, width: number) => text.length > width ? `${text.slice(0, Math.max(0, width - 1))}…` : text;
-		return {
-			render(width: number) {
-				const out = [
-					theme.fg("accent", theme.bold("Agent Experience setup — Space/Enter changes selected row")),
-					theme.fg("dim", "One panel: save examples → choose model → analyze now → review → use approved habits."),
-					"",
-				];
-				for (let i = 0; i < rows.length; i += 1) {
-					const row = rows[i];
-					const prefix = i === selected ? "> " : "  ";
-					const text = `${prefix}${row.label}  ${row.value}`;
-					out.push(line(i === selected ? theme.fg("accent", text) : text, width));
-				}
-				out.push("");
-				out.push(line(theme.fg("muted", `  ${rows[selected].description}`), width));
-				out.push(line(theme.fg("dim", "  ↑↓ navigate • Space/Enter change/run • Esc close"), width));
-				return out;
-			},
-			invalidate() {},
-			handleInput(data: string) {
-				if (data === "\x1b[A") selected = selected === 0 ? rows.length - 1 : selected - 1;
-				else if (data === "\x1b[B") selected = selected === rows.length - 1 ? 0 : selected + 1;
-				else if (data === " " || data === "\r" || data === "\n") done(rows[selected].id);
-				else if (data === "\x1b") done("done");
-				tui.requestRender();
-			},
-		};
-	});
+async function showSetupPanel(_ctx: ExtensionCommandContext): Promise<string | undefined> {
+	// Use Pi's built-in select menu for setup. The custom TUI renderer looked nicer,
+	// but cursor movement/input focus was unreliable in real sessions, making setup unusable.
+	// Returning undefined forces the stable selectable-menu path below.
+	return undefined;
 }
 
 async function handleSetupDirect(args: string[], ctx: ExtensionCommandContext): Promise<boolean> {
@@ -857,7 +813,7 @@ async function handleSetupDirect(args: string[], ctx: ExtensionCommandContext): 
 
 async function handleSetup(ctx: ExtensionCommandContext, args: string[] = []) {
 	if (await handleSetupDirect(args, ctx)) return;
-	if ((ctx as { hasUI?: boolean }).hasUI === false || (typeof (ctx as any).ui?.custom !== "function" && typeof (ctx as any).ui?.select !== "function")) {
+	if ((ctx as { hasUI?: boolean }).hasUI === false || typeof (ctx as any).ui?.select !== "function") {
 		notify(ctx, setupUnavailableMessage(), "info");
 		return;
 	}

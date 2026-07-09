@@ -48,6 +48,9 @@ const ctx = {
       notes.push({ message: `${title}: ${options.join(' | ')}`, level: 'select', options });
       return setupChoices.shift();
     },
+    custom() {
+      throw new Error('setup must use normal Pi select menu, not custom TUI panel');
+    },
     notify(message, level) {
       notes.push({ message, level });
     },
