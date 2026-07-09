@@ -37,6 +37,15 @@ async function writeObservationFile(root, records) {
   await writeFile(resolvePrivatePath(root, 'observations.jsonl'), records.map((record) => canonicalJson(record)).join('\n') + '\n', { mode: 0o600 });
 }
 
+async function waitForNote(pattern, label) {
+  const deadline = Date.now() + 2000;
+  while (Date.now() < deadline) {
+    if (notes.some((note) => pattern.test(note.message || ''))) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.fail(label);
+}
+
 function makePi() {
   const commands = new Map();
   const handlers = new Map();
@@ -60,14 +69,15 @@ const notes = [];
 let setupChoices = [];
 const availableModel = { provider: 'openai-codex', id: 'gpt-5.5', name: 'GPT 5.5', input: ['text'] };
 const unavailableModel = { provider: 'example', id: 'unauth', name: 'Unauthenticated', input: ['text'] };
+const extraAuthModels = Array.from({ length: 40 }, (_, index) => ({ provider: 'openrouter', id: `bulk-${index}`, name: `Bulk ${index}`, input: ['text'] }));
 const modelRegistry = {
-  getAvailable() { return [availableModel, unavailableModel]; },
+  getAvailable() { return [availableModel, unavailableModel, ...extraAuthModels]; },
   find(provider, modelId) {
     if (provider === availableModel.provider && modelId === availableModel.id) return availableModel;
     if (provider === unavailableModel.provider && modelId === unavailableModel.id) return unavailableModel;
-    return undefined;
+    return extraAuthModels.find((model) => model.provider === provider && model.id === modelId);
   },
-  hasConfiguredAuth(model) { return model === availableModel; },
+  hasConfiguredAuth(model) { return model !== unavailableModel; },
   async getApiKeyAndHeaders() { return { ok: true, apiKey: 'test-not-used' }; },
 };
 const ctx = {
@@ -81,6 +91,8 @@ const ctx = {
       if (/Choose model/.test(title)) {
         assert.ok(options.includes('openai-codex/gpt-5.5'), 'authenticated model should be listed');
         assert.ok(!options.includes('example/unauth'), 'unauthenticated model must not be listed');
+        assert.ok(options.some((option) => /^Show all authenticated models/.test(option)), 'large model sets must be behind Show all');
+        assert.ok(options.length <= 10, 'default model picker must stay short and usable');
         return 'openai-codex/gpt-5.5';
       }
       if (/Review suggested habits/.test(title)) return setupChoices.shift() ?? options[0];
@@ -168,7 +180,8 @@ __setAgentExperienceConsolidationAdapterForTest({
 
 setupChoices = ['Analyze saved examples now', 'Done'];
 await commands.get('experience').handler('setup', ctx);
-assert.ok(notes.some((note) => /Suggested habits created: 1/.test(note.message || '')), 'analyze-now must create one suggestion');
+assert.ok(notes.some((note) => /Analyze saved examples started/.test(note.message || '')), 'analyze-now must start without blocking setup');
+await waitForNote(/Suggested habits created: 1/, 'analyze-now must create one suggestion');
 
 await writeFile(resolvePrivatePath(paths.root, 'law.md'), '# test law\nDo not store secrets. Do not bypass approvals.\n', { mode: 0o600 });
 setupChoices = ['Review suggested habits', undefined, 'Done'];

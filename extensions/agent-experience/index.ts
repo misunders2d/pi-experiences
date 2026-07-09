@@ -61,6 +61,7 @@ interface ConsolidationModelAdapter {
 }
 
 let consolidationModelAdapter: ConsolidationModelAdapter | undefined;
+const analyzeJobs = new Map<string, Promise<void>>();
 
 export function __setAgentExperienceSelectorAdapterForTest(adapter: SelectorModelAdapter | undefined) {
 	selectorModelAdapter = adapter;
@@ -143,6 +144,24 @@ function availableTextModels(ctx: Pick<ExtensionContext, "modelRegistry" | "mode
 		.map((model: Model<any>) => modelKey(model));
 	if (ctx.model?.input?.includes("text") && registry?.hasConfiguredAuth?.(ctx.model)) keys.unshift(modelKey(ctx.model));
 	return [...new Set(keys)].sort();
+}
+
+function recommendedTextModels(ctx: Pick<ExtensionContext, "modelRegistry" | "model">, configured: string): string[] {
+	const all = new Set(availableTextModels(ctx));
+	const preferred = [
+		configured,
+		ctx.model?.input?.includes("text") ? modelKey(ctx.model) : "",
+		"openai-codex/gpt-5.5",
+		"openai-codex/gpt-5.4-mini",
+		"zai/glm-5.2",
+		"zai/glm-5.1",
+		"zai/glm-5-turbo",
+		"openrouter/openai/gpt-5",
+		"openrouter/openai/gpt-5-mini",
+	].filter(Boolean);
+	const chosen = preferred.filter((key) => all.has(key));
+	for (const key of [...all].filter((key) => !key.startsWith("openrouter/")).slice(0, 6)) chosen.push(key);
+	return [...new Set(chosen)].slice(0, 8);
 }
 
 function configuredModelAvailable(ctx: Pick<ExtensionContext, "modelRegistry">, configured: string): boolean {
@@ -513,31 +532,34 @@ async function handleSetupModel(ctx: ExtensionCommandContext) {
 		return notify(ctx, "No authenticated text models are available for habit learning. Configure a Pi model first, then return to /experience setup.", "warn");
 	}
 	const { config } = await readAgentExperienceConfig(getAgentExperiencePaths());
-	const options = [config.consolidation_model, ...models].filter(Boolean);
-	const unique = [...new Set(options)];
-	const choice = await chooseSetup(ctx, "Choose model for habit learning", [...unique, "Back/cancel (no changes)"], false);
+	const recommended = recommendedTextModels(ctx, config.consolidation_model);
+	const options = [
+		...recommended,
+		...(models.length > recommended.length ? [`Show all authenticated models (${models.length})`] : []),
+		"Back/cancel (no changes)",
+	];
+	let choice = await chooseSetup(ctx, "Choose model for habit learning", options, false);
+	if (choice?.startsWith("Show all authenticated models")) {
+		choice = await chooseSetup(ctx, "Choose model for habit learning — all models", [...models, "Back/cancel (no changes)"], false);
+	}
 	if (!choice || choice === "Back/cancel (no changes)") return notify(ctx, "Habit-learning model unchanged.", "info");
 	if (!models.includes(choice) && !configuredModelAvailable(ctx, choice)) return notify(ctx, `Model is not available/authenticated: ${redactText(choice)}`, "warn");
 	const { path } = await setAgentExperienceConsolidationModel(choice);
 	return notify(ctx, [`Habit-learning model: ${choice}`, `Config file: ${path}`, "Analyze saved examples now is available inside /experience setup."].join("\n"), "info");
 }
 
-async function handleAnalyzeNow(ctx: ExtensionCommandContext) {
+async function runAnalyzeNowJob(ctx: ExtensionCommandContext) {
 	const paths = getAgentExperiencePaths();
 	const { config } = await readAgentExperienceConfig(paths);
-	if (!config.enabled) return notify(ctx, "Turn on Save chat examples locally in /experience setup before analyzing examples.", "warn");
 	const model = config.consolidation_model;
-	if (!configuredModelAvailable(ctx, model) && !consolidationModelAdapter) {
-		return notify(ctx, `Choose an authenticated habit-learning model in /experience setup first. Current model is not available: ${redactText(model)}`, "warn");
-	}
 	let observations: ValidatedObservationRecord[];
 	try {
 		observations = await readValidatedObservationGeneration(paths.root, defaultObservationManifest(), getConfiguredUserId());
 	} catch (error: any) {
 		const raw = String(error?.message || error);
-		return notify(ctx, `No readable saved examples yet. Turn on Save chat examples locally, have a normal conversation, then run Analyze saved examples now. Detail: ${redactText(raw).slice(0, 300)}`, "warn");
+		return notify(ctx, `No readable saved examples yet. Turn on Save chat examples locally, have a normal conversation, then choose Analyze saved examples now. Detail: ${redactText(raw).slice(0, 300)}`, "warn");
 	}
-	if (observations.length < 1) return notify(ctx, "No saved examples yet. Turn on Save chat examples locally, have a normal conversation, then run Analyze saved examples now.", "warn");
+	if (observations.length < 1) return notify(ctx, "No saved examples yet. Turn on Save chat examples locally, have a normal conversation, then choose Analyze saved examples now.", "warn");
 	const batch = observations;
 	const expected = expectedRangeFromObservations(batch, getConfiguredUserId());
 	const adapter = consolidationModelAdapter ?? createPiConsolidationModelAdapter(ctx);
@@ -551,10 +573,10 @@ async function handleAnalyzeNow(ctx: ExtensionCommandContext) {
 		const pendingId = (result as any).result?.pending_review_id;
 		const proposalCount = Number((result as any).diff?.proposal_count ?? candidateIds.length ?? 0);
 		return notify(ctx, [
-			`Analyzed ${plural(batch.length, "saved example")}.`,
+			`Analyze saved examples finished: ${plural(batch.length, "saved example")} checked.`,
 			`Suggested habits created: ${proposalCount}`,
 			candidateIds.length ? `Review ids: ${candidateIds.join(", ")}` : pendingId ? `Review item: ${pendingId}` : "Review list updated.",
-			"Next: choose Review suggested habits in /experience setup.",
+			"Next: open /experience setup and choose Review suggested habits.",
 		].filter(Boolean).join("\n"), proposalCount > 0 ? "info" : "warn");
 	} catch (error: any) {
 		const raw = String(error?.message || error);
@@ -562,6 +584,22 @@ async function handleAnalyzeNow(ctx: ExtensionCommandContext) {
 	} finally {
 		storage?.db.close();
 	}
+}
+
+async function handleAnalyzeNow(ctx: ExtensionCommandContext) {
+	const paths = getAgentExperiencePaths();
+	const { config } = await readAgentExperienceConfig(paths);
+	if (!config.enabled) return notify(ctx, "Turn on Save chat examples locally in /experience setup before analyzing examples.", "warn");
+	const model = config.consolidation_model;
+	if (!configuredModelAvailable(ctx, model) && !consolidationModelAdapter) {
+		return notify(ctx, `Choose an authenticated habit-learning model in /experience setup first. Current model is not available: ${redactText(model)}`, "warn");
+	}
+	const jobKey = `${paths.root}:${getConfiguredUserId()}`;
+	if (analyzeJobs.has(jobKey)) return notify(ctx, "Analyze saved examples is already running. Pi remains usable; come back to /experience setup and choose Review suggested habits after it finishes.", "info");
+	const job = runAnalyzeNowJob(ctx).finally(() => analyzeJobs.delete(jobKey));
+	analyzeJobs.set(jobKey, job);
+	void job.catch(() => undefined);
+	return notify(ctx, "Analyze saved examples started. Pi remains usable while the model works. I’ll post a message here when suggestions are ready, then use /experience setup → Review suggested habits.", "info");
 }
 
 function reviewItemSource(item: any): any {
@@ -1087,7 +1125,7 @@ async function handleConsolidation(command: string | undefined, ctx: ExtensionCo
 		[
 			`Analyze saved examples now from setup: ${value === "on" ? "ON" : "OFF"}`,
 			`Config file: ${path}`,
-			"Use the Analyze saved examples now row inside /experience setup to run one model call. No background job or timer starts automatically.",
+			"Use the Analyze saved examples now row inside /experience setup to start one model call when you choose. No timer starts automatically.",
 			`Save chat examples locally: ${config.enabled && config.capture_enabled ? "ON" : "OFF"}`,
 		].join("\n"),
 		value === "on" ? "warn" : "info",
