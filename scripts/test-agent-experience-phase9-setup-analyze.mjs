@@ -147,8 +147,11 @@ const strictRawOutput = {
   }],
 };
 assert.equal(__normalizeAgentExperienceConsolidationModelOutputForTest(strictRawOutput, strictNormalizeInput).proposals.length, 1);
-assert.throws(() => __normalizeAgentExperienceConsolidationModelOutputForTest({ ...strictRawOutput, proposals: [{ ...strictRawOutput.proposals[0], source_refs: [{ seq: 1 }] }] }, strictNormalizeInput), /missing_source_ref_file_generation|missing_source_ref_checksum/);
-assert.throws(() => __normalizeAgentExperienceConsolidationModelOutputForTest({ ...strictRawOutput, proposals: [{ ...strictRawOutput.proposals[0], source_refs: [{ file_generation: 'active', seq: 1, checksum: 'wrong' }] }] }, strictNormalizeInput), /source_ref_mismatch/);
+const repairedMissingRefFields = __normalizeAgentExperienceConsolidationModelOutputForTest({ ...strictRawOutput, proposals: [{ ...strictRawOutput.proposals[0], source_refs: [{ seq: 1 }] }] }, strictNormalizeInput);
+assert.deepEqual(repairedMissingRefFields.proposals[0].source_refs, [{ file_generation: 'active', seq: 1, checksum: r1.checksum }], 'normalizer repairs source refs from local seq');
+const repairedWrongChecksum = __normalizeAgentExperienceConsolidationModelOutputForTest({ ...strictRawOutput, proposals: [{ ...strictRawOutput.proposals[0], source_refs: [{ file_generation: 'wrong-generation', seq: 1, checksum: 'wrong' }] }] }, strictNormalizeInput);
+assert.deepEqual(repairedWrongChecksum.proposals[0].source_refs, [{ file_generation: 'active', seq: 1, checksum: r1.checksum }], 'normalizer ignores model checksum/generation typos when seq is valid');
+assert.throws(() => __normalizeAgentExperienceConsolidationModelOutputForTest({ ...strictRawOutput, proposals: [{ ...strictRawOutput.proposals[0], source_refs: [{ seq: 999 }] }] }, strictNormalizeInput), /invalid_source_ref/);
 
 __setAgentExperienceConsolidationAdapterForTest({
   async generate(input) {

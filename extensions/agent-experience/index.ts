@@ -242,12 +242,11 @@ function normalizeSourceRefs(rawRefs: unknown, input: ConsolidationModelAdapterI
 	if (!Array.isArray(rawRefs) || rawRefs.length === 0) throw new Error("habit_learning_model_missing_source_refs");
 	const bySeq = new Map(input.observations.map((record) => [record.seq, record]));
 	const refs = rawRefs.map((ref: any) => {
-		if (typeof ref?.file_generation !== "string" || !ref.file_generation.trim()) throw new Error("habit_learning_model_missing_source_ref_file_generation");
 		if (!Number.isInteger(ref?.seq)) throw new Error("habit_learning_model_missing_source_ref_seq");
-		if (typeof ref?.checksum !== "string" || !ref.checksum.trim()) throw new Error("habit_learning_model_missing_source_ref_checksum");
 		const record = bySeq.get(ref.seq);
 		if (!record) throw new Error("habit_learning_model_invalid_source_ref");
-		if (ref.file_generation !== record.file_generation || ref.checksum !== record.checksum) throw new Error("habit_learning_model_source_ref_mismatch");
+		// Models often copy the right seq but typo checksum/generation. Seq is enough to bind
+		// to the already-validated local observation batch, so canonicalize refs from local data.
 		return { file_generation: record.file_generation, seq: record.seq, checksum: record.checksum };
 	});
 	return refs.filter((ref, index, array) => array.findIndex((candidate) => candidate.seq === ref.seq) === index);
@@ -951,7 +950,7 @@ function diagnosticFor(kind: "selector-runtime" | "capture-persist", error: unkn
 		return {
 			key: `${kind}:${redacted}`,
 			message: lawMissing
-				? `Agent Experience approved-habit reminders are paused because the required law file is missing. To stop this warning, open /experience setup and turn off Use approved habits before replies, or create the configured law file. Detail: ${redacted}`
+				? `Agent Experience approved-habit reminders are paused because the internal safety file is missing.`
 				: `Agent Experience approved-habit reminders are paused: ${redacted}`,
 		};
 	}
@@ -1313,6 +1312,22 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 			const basePrompt = String((event as { systemPrompt?: unknown }).systemPrompt ?? "");
 			return { systemPrompt: `${basePrompt}\n\n${result.message}` };
 		} catch (error: any) {
+			const raw = String(error?.message || error);
+			if (/law file missing/i.test(raw)) {
+				try {
+					await setAgentExperienceSelectorEnabled(false, paths);
+					notifyDedupedDiagnostic(ctx, selectorDiagnosticsShown, {
+						key: "selector-runtime:missing-safety-file:auto-off",
+						message: "Agent Experience approved-habit reminders were turned off because the internal safety file is missing. Re-enable them from /experience setup if wanted.",
+					});
+				} catch (disableError: any) {
+					notifyDedupedDiagnostic(ctx, selectorDiagnosticsShown, {
+						key: `selector-runtime:missing-safety-file:disable-failed:${redactText(String(disableError?.message || disableError)).slice(0, 200)}`,
+						message: `Agent Experience approved-habit reminders are paused because the internal safety file is missing, but Pi could not turn them off automatically. Detail: ${redactText(String(disableError?.message || disableError)).slice(0, 300)}`,
+					});
+				}
+				return;
+			}
 			notifyDedupedDiagnostic(ctx, selectorDiagnosticsShown, diagnosticFor("selector-runtime", error));
 			return;
 		} finally {
