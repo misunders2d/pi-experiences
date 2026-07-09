@@ -1,5 +1,5 @@
-import { existsSync } from "node:fs";
-import { readFile, stat } from "node:fs/promises";
+import { constants, existsSync } from "node:fs";
+import { readFile, rm, stat } from "node:fs/promises";
 import { completeSimple } from "@earendil-works/pi-ai/compat";
 import type { AssistantMessage, Model } from "@earendil-works/pi-ai/compat";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -16,7 +16,7 @@ import {
 	setAgentExperienceTimerEnabled,
 } from "./src/paths.ts";
 import { appendObservation } from "./src/storage/observations.ts";
-import { initExperienceStorage, loadSqlite, openExistingExperienceStorage } from "./src/storage/sqlite.ts";
+import { initExperienceStorage, openExistingExperienceStorage } from "./src/storage/sqlite.ts";
 import {
 	acceptCandidateHabit,
 	acceptPendingReview,
@@ -39,7 +39,6 @@ import { extractSingleFinalAssistantText } from "./src/capture/extract.ts";
 import { runSelectorRuntime, type SelectorModelAdapter } from "./src/selector.ts";
 import { createPiSelectorModelAdapter } from "./src/selector-model.ts";
 import { collectAgentExperienceMetrics, formatAgentExperienceMetrics } from "./src/metrics.ts";
-import { STORAGE_SCHEMA_VERSION } from "./src/storage/schema.ts";
 import { defaultObservationManifest, readValidatedObservationGeneration, type ValidatedObservationRecord } from "./src/consolidate/observations.ts";
 import { expectedRangeFromObservations, runConsolidationOnce } from "./src/consolidate/runner.ts";
 
@@ -96,8 +95,12 @@ function captureKeyFromContext(ctx: Pick<ExtensionContext, "sessionManager"> | {
 }
 
 async function getEffectiveCapture(paths = getAgentExperiencePaths()) {
-	const { config } = await readAgentExperienceConfig(paths);
-	return { paths, config, active: config.enabled === true && config.capture_enabled === true };
+	try {
+		const { config } = await readAgentExperienceConfig(paths);
+		return { paths, config, active: config.enabled === true && config.capture_enabled === true };
+	} catch {
+		return { paths, config: undefined, active: false };
+	}
 }
 
 async function appendCapturedPair(root: string, pair: CompletedPair, reason: CloseReason) {
@@ -125,10 +128,10 @@ function plural(count: number, word: string): string {
 
 function parseProviderModel(value: string): { provider: string; modelId: string } | undefined {
 	const slash = value.indexOf("/");
-	if (slash <= 0 || slash !== value.lastIndexOf("/")) return undefined;
+	if (slash <= 0) return undefined;
 	const provider = value.slice(0, slash);
 	const modelId = value.slice(slash + 1);
-	if (!provider || !modelId || provider.includes("..") || modelId.includes("..")) return undefined;
+	if (!provider || !modelId || provider.includes("..") || modelId.includes("..") || modelId.includes("\0")) return undefined;
 	return { provider, modelId };
 }
 
@@ -215,6 +218,8 @@ function buildConsolidationSystemPrompt(): string {
 		"Only propose habits supported by the provided examples. Do not invent facts.",
 		"Do not include secrets, emails, phone numbers, file paths, tokens, raw prompts, or private identifiers.",
 		"Prefer 1-6 concise candidate habits. Return zero proposals if evidence is weak.",
+		"Only propose repeated patterns: cite at least 3 supporting examples across at least 2 different days when available.",
+		"Similar meanings in different wording or languages may support the same habit; cite each matching example separately.",
 		"Every proposal must cite source_refs using only provided seq/checksum values.",
 		"Exact output schema:",
 		'{"schema_version":1,"user_id":"owner","file_generation":"active","batch_id":"manual-id","model":"provider/model","created_at":"ISO","observations_read":{"seq_start":1,"seq_end":3,"checksum":"last-read-checksum"},"proposals":[{"proposal_id":"p1","kind":"habit_candidate","candidate_key":"stable-kebab-key","condition":"When ...","behavior":"Do ...","polarity":1,"confidence_bp":8000,"source_refs":[{"file_generation":"active","seq":1,"checksum":"..."}],"evidence_summary":"short redacted summary","ambiguous":false}]}',
@@ -245,11 +250,17 @@ function normalizeSourceRefs(rawRefs: unknown, input: ConsolidationModelAdapterI
 		if (!Number.isInteger(ref?.seq)) throw new Error("habit_learning_model_missing_source_ref_seq");
 		const record = bySeq.get(ref.seq);
 		if (!record) throw new Error("habit_learning_model_invalid_source_ref");
-		// Models often copy the right seq but typo checksum/generation. Seq is enough to bind
-		// to the already-validated local observation batch, so canonicalize refs from local data.
+		// Models group same-meaning examples; Pi only trusts seq and canonicalizes refs locally.
 		return { file_generation: record.file_generation, seq: record.seq, checksum: record.checksum };
 	});
 	return refs.filter((ref, index, array) => array.findIndex((candidate) => candidate.seq === ref.seq) === index);
+}
+
+function hasEnoughRepeatedEvidence(refs: { seq: number }[], input: ConsolidationModelAdapterInput): boolean {
+	const bySeq = new Map(input.observations.map((record) => [record.seq, record]));
+	const uniqueSeqs = [...new Set(refs.map((ref) => ref.seq))];
+	const days = new Set(uniqueSeqs.map((seq) => bySeq.get(seq)?.created_at).filter(Boolean).map((iso) => new Date(String(iso)).toISOString().slice(0, 10)));
+	return uniqueSeqs.length >= 3 && days.size >= 2;
 }
 
 function normalizeConfidence(value: unknown): number {
@@ -258,10 +269,11 @@ function normalizeConfidence(value: unknown): number {
 }
 
 function normalizeConsolidationModelOutput(raw: any, input: ConsolidationModelAdapterInput): unknown {
-	const proposals = Array.isArray(raw?.proposals) ? raw.proposals.slice(0, 50).map((proposal: any) => {
+	const proposals = Array.isArray(raw?.proposals) ? raw.proposals.slice(0, 50).flatMap((proposal: any) => {
 		const source_refs = normalizeSourceRefs(proposal?.source_refs, input);
+		if (!hasEnoughRepeatedEvidence(source_refs, input)) return [];
 		if (proposal?.kind === "correction_split") {
-			return {
+			return [{
 				proposal_id: requireNonEmptyString(proposal.proposal_id, "proposal_id"),
 				kind: "correction_split",
 				candidate_key: requireNonEmptyString(proposal.candidate_key, "candidate_key"),
@@ -273,10 +285,10 @@ function normalizeConsolidationModelOutput(raw: any, input: ConsolidationModelAd
 				source_refs,
 				...(proposal.evidence_summary ? { evidence_summary: redactText(String(proposal.evidence_summary)).slice(0, 1000) } : {}),
 				ambiguous: proposal.ambiguous === true,
-			};
+			}];
 		}
 		if (proposal?.kind !== "habit_candidate") throw new Error("habit_learning_model_invalid_proposal_kind");
-		return {
+		return [{
 			proposal_id: requireNonEmptyString(proposal.proposal_id, "proposal_id"),
 			kind: "habit_candidate",
 			candidate_key: requireNonEmptyString(proposal.candidate_key, "candidate_key"),
@@ -287,7 +299,7 @@ function normalizeConsolidationModelOutput(raw: any, input: ConsolidationModelAd
 			source_refs,
 			...(proposal.evidence_summary ? { evidence_summary: redactText(String(proposal.evidence_summary)).slice(0, 1000) } : {}),
 			ambiguous: proposal.ambiguous === true,
-		};
+		}];
 	}) : [];
 	return {
 		schema_version: 1,
@@ -309,7 +321,7 @@ function createPiConsolidationModelAdapter(ctx: Pick<ExtensionContext, "modelReg
 	return {
 		async generate(input) {
 			const parsed = parseProviderModel(input.model);
-			if (!parsed || `${parsed.provider}/${parsed.modelId}` !== input.model) throw new Error("habit_learning_model_invalid");
+			if (!parsed) throw new Error("habit_learning_model_invalid");
 			const model = ctx.modelRegistry?.find?.(parsed.provider, parsed.modelId);
 			if (!model) throw new Error("habit_learning_model_unavailable");
 			const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
@@ -339,22 +351,21 @@ function createPiConsolidationModelAdapter(ctx: Pick<ExtensionContext, "modelReg
 async function reviewSummary(root: string, userId: string): Promise<{ ledger: boolean; pending: number; active: number; candidate: number; error?: string }> {
 	const dbPath = resolvePrivatePath(root, "ledger.sqlite");
 	if (!(await fileExists(dbPath))) return { ledger: false, pending: 0, active: 0, candidate: 0 };
-	let db: any | undefined;
+	let storage: Awaited<ReturnType<typeof openExistingExperienceStorage>> | undefined;
 	try {
-		const sqlite = await loadSqlite();
-		db = new sqlite.DatabaseSync(dbPath, { open: true, readOnly: true });
+		storage = await openExistingExperienceStorage(root, { userId });
+		const db = storage.db;
 		const normalizedUserId = normalizeUserId(userId);
-		const version = Number(db.prepare("PRAGMA user_version").get()?.user_version ?? 0);
-		if (version !== STORAGE_SCHEMA_VERSION) throw new Error(`Agent Experience storage schema mismatch: expected ${STORAGE_SCHEMA_VERSION}, got ${version}`);
-		const pending = Number(db.prepare("SELECT COUNT(*) AS count FROM pending_review WHERE user_id = ? AND status = 'open'").get(normalizedUserId).count);
-		const candidate = Number(db.prepare("SELECT COUNT(*) AS count FROM habits WHERE user_id = ? AND status = 'candidate'").get(normalizedUserId).count);
+		const visible = listPendingReviewItems(db, { userId: normalizedUserId });
+		const pending = visible.items.filter((item: any) => item.type === "pending_review").length;
+		const candidate = visible.items.filter((item: any) => item.type === "candidate").length;
 		const active = Number(db.prepare("SELECT COUNT(*) AS count FROM habits WHERE user_id = ? AND status = 'active'").get(normalizedUserId).count);
 		return { ledger: true, pending, active, candidate };
 	} catch (error) {
 		const raw = error instanceof Error ? error.message : String(error);
 		return { ledger: true, pending: 0, active: 0, candidate: 0, error: redactText(raw).slice(0, 300) };
 	} finally {
-		db?.close();
+		storage?.db.close();
 	}
 }
 
@@ -547,41 +558,85 @@ async function handleSetupModel(ctx: ExtensionCommandContext) {
 	return notify(ctx, [`Habit-learning model: ${choice}`, `Config file: ${path}`, "Analyze saved examples now is available inside /experience setup."].join("\n"), "info");
 }
 
+async function acquireAnalyzeLock(root: string) {
+	const lockPath = resolvePrivatePath(root, "analyze.lock");
+	async function create() {
+		const handle = await openSensitiveFileForWrite(root, lockPath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY);
+		await handle.writeFile(JSON.stringify({ pid: process.pid, started_at: new Date().toISOString() }) + "\n");
+		return { path: lockPath, release: async () => { await handle.close().catch(() => undefined); await rm(lockPath, { force: true }).catch(() => undefined); } };
+	}
+	try {
+		return await create();
+	} catch (error: any) {
+		if (error?.code !== "EEXIST") throw error;
+		try {
+			const info = await stat(lockPath);
+			if (Date.now() - info.mtimeMs > 10 * 60 * 1000) {
+				await rm(lockPath, { force: true });
+				return await create();
+			}
+		} catch (lockError: any) {
+			if (lockError?.code !== "ENOENT") throw lockError;
+			return await create();
+		}
+		return undefined;
+	}
+}
+
+function formatAnalyzeFailure(error: unknown): string {
+	const raw = String((error as any)?.message || error);
+	if (/auth|api.?key|credential/i.test(raw)) return "Habit learning could not use the selected model. Choose another authenticated model in /experience setup.";
+	if (/invalid_json|truncated|format|schema|proposal|source_ref/i.test(raw)) return "The selected model returned output Pi could not verify. No suggestions were approved. Try Analyze again or choose another model.";
+	if (/timeout|abort/i.test(raw)) return "Habit learning took too long or was interrupted. No suggestions were approved. Try again later.";
+	return `Habit learning failed safely. No suggestions were approved. Detail: ${redactText(raw).slice(0, 300)}`;
+}
+
 async function runAnalyzeNowJob(ctx: ExtensionCommandContext) {
 	const paths = getAgentExperiencePaths();
 	const { config } = await readAgentExperienceConfig(paths);
 	const model = config.consolidation_model;
+	const lock = await acquireAnalyzeLock(paths.root);
+	if (!lock) return notify(ctx, "Analyze saved examples is already running. Pi remains usable; come back to /experience setup and choose Review suggested habits after it finishes.", "info");
 	let observations: ValidatedObservationRecord[];
 	try {
 		observations = await readValidatedObservationGeneration(paths.root, defaultObservationManifest(), getConfiguredUserId());
 	} catch (error: any) {
+		await lock.release();
 		const raw = String(error?.message || error);
 		return notify(ctx, `No readable saved examples yet. Turn on Save chat examples locally, have a normal conversation, then choose Analyze saved examples now. Detail: ${redactText(raw).slice(0, 300)}`, "warn");
 	}
-	if (observations.length < 1) return notify(ctx, "No saved examples yet. Turn on Save chat examples locally, have a normal conversation, then choose Analyze saved examples now.", "warn");
+	if (observations.length < 1) {
+		await lock.release();
+		return notify(ctx, "No saved examples yet. Turn on Save chat examples locally, have a normal conversation, then choose Analyze saved examples now.", "warn");
+	}
 	const batch = observations;
 	const expected = expectedRangeFromObservations(batch, getConfiguredUserId());
 	const adapter = consolidationModelAdapter ?? createPiConsolidationModelAdapter(ctx);
 	let storage: Awaited<ReturnType<typeof initExperienceStorage>> | undefined;
 	try {
-		storage = await initExperienceStorage(paths.root, { allowInit: true, userId: getConfiguredUserId() });
-		const output = await adapter.generate({ model, userId: storage.userId, observations: batch, expected, signal: (ctx as any).signal });
+		const userId = getConfiguredUserId();
+		const output = await adapter.generate({ model, userId, observations: batch, expected, signal: (ctx as any).signal });
+		storage = await initExperienceStorage(paths.root, { allowInit: true, userId });
 		const result = await runConsolidationOnce({ root: paths.root, db: storage.db, userId: storage.userId, observations: batch, modelOutput: output, model, config, dryRun: false, breakIn: false, now: new Date().toISOString() });
 		if (!result.ok) return notify(ctx, `Habit learning did not create suggestions: ${redactText(String(result.reason || "model output invalid"))}`, "warn");
 		const candidateIds = Array.isArray((result as any).result?.candidate_ids) ? (result as any).result.candidate_ids : [];
 		const pendingId = (result as any).result?.pending_review_id;
 		const proposalCount = Number((result as any).diff?.proposal_count ?? candidateIds.length ?? 0);
-		return notify(ctx, [
+		return notify(ctx, proposalCount > 0 ? [
 			`Analyze saved examples finished: ${plural(batch.length, "saved example")} checked.`,
 			`Suggested habits created: ${proposalCount}`,
 			candidateIds.length ? `Review ids: ${candidateIds.join(", ")}` : pendingId ? `Review item: ${pendingId}` : "Review list updated.",
 			"Next: open /experience setup and choose Review suggested habits.",
-		].filter(Boolean).join("\n"), proposalCount > 0 ? "info" : "warn");
+		].filter(Boolean).join("\n") : [
+			`Analyze saved examples finished: ${plural(batch.length, "saved example")} checked.`,
+			"No repeated habit was strong enough to review yet.",
+			"A suggestion needs at least 3 supporting examples across 2 different days.",
+		].join("\n"), proposalCount > 0 ? "info" : "info");
 	} catch (error: any) {
-		const raw = String(error?.message || error);
-		return notify(ctx, `Habit learning failed safely. No suggestions were approved. Detail: ${redactText(raw).slice(0, 500)}`, "warn");
+		return notify(ctx, formatAnalyzeFailure(error), "warn");
 	} finally {
 		storage?.db.close();
+		await lock.release();
 	}
 }
 
@@ -589,6 +644,7 @@ async function handleAnalyzeNow(ctx: ExtensionCommandContext) {
 	const paths = getAgentExperiencePaths();
 	const { config } = await readAgentExperienceConfig(paths);
 	if (!config.enabled) return notify(ctx, "Turn on Save chat examples locally in /experience setup before analyzing examples.", "warn");
+	if (!config.consolidation_enabled) return notify(ctx, "Choose a habit-learning model in /experience setup before analyzing examples.", "warn");
 	const model = config.consolidation_model;
 	if (!configuredModelAvailable(ctx, model) && !consolidationModelAdapter) {
 		return notify(ctx, `Choose an authenticated habit-learning model in /experience setup first. Current model is not available: ${redactText(model)}`, "warn");
@@ -602,14 +658,26 @@ async function handleAnalyzeNow(ctx: ExtensionCommandContext) {
 }
 
 function reviewItemSource(item: any): any {
-	return item?.type === "candidate" ? item : item?.payload;
+	if (item?.type === "candidate") return { ...(item.payload || {}), condition: item.condition, behavior: item.behavior, polarity: item.polarity, confidence_bp: item.confidence_bp, status: item.status };
+	return item?.payload;
 }
 
 function reviewItemLabel(item: any, index: number): string {
 	const source = reviewItemSource(item);
-	const condition = truncateForModel(source?.condition || source?.conflict?.candidate_key || item.kind || item.id, 44);
-	const behavior = truncateForModel(source?.behavior || item.kind || "review item", 54);
-	return `${index + 1}. ${condition} → ${behavior}`;
+	const kind = source?.kind === "correction_split" ? "correction" : "habit";
+	const key = source?.candidate_key ? ` — ${truncateForModel(source.candidate_key, 34)}` : "";
+	return `Review #${index + 1} ${kind}${key}`;
+}
+
+function formatReviewListItemForHuman(item: any, index: number): string {
+	const source = reviewItemSource(item) || {};
+	const lines = [`${index + 1}) ${source.kind === "correction_split" ? "Correction" : "Habit suggestion"}`];
+	if (source.condition) lines.push(`   When: ${redactText(String(source.condition)).slice(0, 220)}`);
+	if (source.behavior) lines.push(`   Do: ${redactText(String(source.behavior)).slice(0, 260)}`);
+	if (source.evidence_summary) lines.push(`   Why: ${redactText(String(source.evidence_summary)).slice(0, 260)}`);
+	const refs = Array.isArray(source.source_refs) ? source.source_refs.length : undefined;
+	if (refs !== undefined) lines.push(`   Evidence examples: ${refs}`);
+	return lines.join("\n");
 }
 
 function formatReviewItemForHuman(details: any): string {
@@ -633,6 +701,9 @@ function formatReviewActionForHuman(action: "Approve" | "Reject", result: any): 
 	const data = result?.habit || result?.item || result || {};
 	const condition = data.condition ? `\nWhen: ${redactText(String(data.condition)).slice(0, 300)}` : "";
 	const behavior = data.behavior ? `\nDo: ${redactText(String(data.behavior)).slice(0, 300)}` : "";
+	if (action === "Approve" && data.status === "candidate") {
+		return `Approved suggestion. It will not be used before replies yet; it needs more supporting examples before activation.${condition}${behavior}`;
+	}
 	const status = data.status ? `\nStatus: ${redactText(String(data.status)).slice(0, 120)}` : "";
 	return `${action === "Approve" ? "Approved" : "Rejected"} suggestion.${condition}${behavior}${status}`;
 }
@@ -640,7 +711,7 @@ function formatReviewActionForHuman(action: "Approve" | "Reject", result: any): 
 function formatReviewListForHuman(list: any): string {
 	const items = Array.isArray(list?.items) ? list.items : [];
 	if (!items.length) return "No suggested habits are waiting for review. Open /experience setup and choose Analyze saved examples now to create suggestions.";
-	return ["Suggested habits waiting for review:", "", ...items.map((item: any, index: number) => reviewItemLabel(item, index)), "", "Open /experience setup, choose Review suggested habits, then choose a suggestion to approve or reject."].join("\n");
+	return ["Suggested habits waiting for review:", "", ...items.map((item: any, index: number) => formatReviewListItemForHuman(item, index)), "", "Choose Review # in the menu to inspect full details, then approve or reject."].join("\n\n");
 }
 
 function formatReviewDiffForHuman(diff: any): string {
@@ -660,6 +731,7 @@ async function handleReviewSetup(ctx: ExtensionCommandContext) {
 			return notify(ctx, formatReviewReadError(error), "warn");
 		}
 		if (!list.items.length) return notify(ctx, "No suggested habits are waiting for review.", "info");
+		notify(ctx, formatReviewListForHuman(list), "info");
 		const labels = list.items.map((item: any, index: number) => reviewItemLabel(item, index));
 		const choice = await chooseSetup(ctx, "Review suggested habits", [...labels, "Back to setup"], false);
 		if (!choice || choice === "Back to setup") return;
@@ -672,6 +744,7 @@ async function handleReviewSetup(ctx: ExtensionCommandContext) {
 		if (!action || action === "Back to review list") continue;
 		try {
 			const now = new Date().toISOString();
+			if (action === "Approve" && item.type === "candidate" && !(await ensureLawFileForSetup(ctx))) continue;
 			const result = await withReviewStorage(async (storage) => {
 				const shown = showPendingReviewItem(storage.db, { userId: storage.userId, id: item.id });
 				if (shown.item.type === "candidate") {
@@ -1000,15 +1073,11 @@ async function withReviewStorage<T>(fn: (storage: Awaited<ReturnType<typeof init
 
 async function withExistingReviewStorage<T>(fn: (storage: { db: any; root: string; userId: string }) => Promise<T> | T): Promise<T> {
 	const paths = getAgentExperiencePaths();
-	const dbPath = resolvePrivatePath(paths.root, "ledger.sqlite");
-	const sqlite = await loadSqlite();
-	const db = new sqlite.DatabaseSync(dbPath, { open: true, readOnly: true });
+	const storage = await openExistingExperienceStorage(paths.root, { userId: getConfiguredUserId() });
 	try {
-		const version = Number(db.prepare("PRAGMA user_version").get()?.user_version ?? 0);
-		if (version !== STORAGE_SCHEMA_VERSION) throw new Error(`Agent Experience storage schema mismatch: expected ${STORAGE_SCHEMA_VERSION}, got ${version}`);
-		return await fn({ db, root: paths.root, userId: getConfiguredUserId() });
+		return await fn({ db: storage.db, root: storage.root, userId: storage.userId });
 	} finally {
-		db.close();
+		storage.db.close();
 	}
 }
 
@@ -1297,7 +1366,13 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 
 	pi.on("before_agent_start", async (event, ctx) => {
 		const paths = getAgentExperiencePaths();
-		const { config } = await readAgentExperienceConfig(paths);
+		let config: Awaited<ReturnType<typeof readAgentExperienceConfig>>["config"];
+		try {
+			({ config } = await readAgentExperienceConfig(paths));
+		} catch (error) {
+			notifyDedupedDiagnostic(ctx, selectorDiagnosticsShown, { key: "selector-runtime:config-read-failed", message: `Agent Experience approved-habit reminders are paused because config could not be read: ${redactText(String((error as any)?.message || error)).slice(0, 300)}` });
+			return;
+		}
 		if (!config.enabled || !config.selector_enabled) return;
 		const prompt = String((event as { prompt?: unknown; text?: unknown }).prompt ?? (event as { text?: unknown }).text ?? "");
 		if (!prompt.trim()) return;

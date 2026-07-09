@@ -1,4 +1,4 @@
-import { chmod, mkdir, open, readFile, stat } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, readFile, stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { constants } from "node:fs";
@@ -41,19 +41,34 @@ export async function readAgentExperienceConfig(paths = getAgentExperiencePaths(
 	if (!(await exists(paths.configPath))) {
 		return { config: applyAgentExperienceEnvOverrides({ ...DEFAULT_AGENT_EXPERIENCE_CONFIG }, process.env), exists: false, path: paths.configPath };
 	}
+	await assertRegularConfigFile(paths.configPath);
 	const text = await readFile(paths.configPath, "utf8");
 	return { config: parseAgentExperienceConfig(text, process.env), exists: true, path: paths.configPath };
 }
 
 async function ensurePrivateRoot(root: string): Promise<void> {
 	await mkdir(root, { recursive: true, mode: 0o700 });
+	const info = await lstat(root);
+	if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("Agent Experience private root is not a real directory");
 	await chmod(root, 0o700);
+}
+
+async function assertRegularConfigFile(path: string): Promise<void> {
+	try {
+		const info = await lstat(path);
+		if (!info.isFile() || info.isSymbolicLink()) throw new Error("Agent Experience config is not a regular private file");
+	} catch (error: any) {
+		if (error?.code === "ENOENT") return;
+		throw error;
+	}
 }
 
 export async function writeAgentExperienceConfig(config: AgentExperienceConfig, paths = getAgentExperiencePaths()): Promise<void> {
 	await ensurePrivateRoot(paths.root);
 	await mkdir(dirname(paths.configPath), { recursive: true, mode: 0o700 });
-	const handle = await open(paths.configPath, constants.O_CREAT | constants.O_TRUNC | constants.O_WRONLY, 0o600);
+	await assertRegularConfigFile(paths.configPath);
+	const nofollow = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
+	const handle = await open(paths.configPath, constants.O_CREAT | constants.O_TRUNC | constants.O_WRONLY | nofollow, 0o600);
 	try {
 		await handle.writeFile(formatAgentExperienceConfig(config), "utf8");
 	} finally {

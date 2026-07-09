@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import agentExperienceExtension, { __normalizeAgentExperienceConsolidationModelOutputForTest, __setAgentExperienceConsolidationAdapterForTest } from '../extensions/agent-experience/index.ts';
-import { getAgentExperiencePaths, readAgentExperienceConfig } from '../extensions/agent-experience/src/paths.ts';
+import { getAgentExperiencePaths, readAgentExperienceConfig, setAgentExperienceConsolidationEnabled, setAgentExperienceConsolidationModel } from '../extensions/agent-experience/src/paths.ts';
 import { canonicalJson } from '../extensions/agent-experience/src/storage/checksum.ts';
 import { ensurePrivateRoot, resolvePrivatePath } from '../extensions/agent-experience/src/storage/private-root.ts';
 import { observationChecksumForTest, observationPairRefForTest } from '../extensions/agent-experience/src/storage/observations.ts';
@@ -68,13 +68,15 @@ const { commands, handlers } = makePi();
 const notes = [];
 let setupChoices = [];
 const availableModel = { provider: 'openai-codex', id: 'gpt-5.5', name: 'GPT 5.5', input: ['text'] };
+const slashModel = { provider: 'openrouter', id: 'openai/gpt-5', name: 'OpenRouter GPT 5', input: ['text'] };
 const unavailableModel = { provider: 'example', id: 'unauth', name: 'Unauthenticated', input: ['text'] };
 const extraAuthModels = Array.from({ length: 40 }, (_, index) => ({ provider: 'openrouter', id: `bulk-${index}`, name: `Bulk ${index}`, input: ['text'] }));
 const modelRegistry = {
-  getAvailable() { return [availableModel, unavailableModel, ...extraAuthModels]; },
+  getAvailable() { return [availableModel, slashModel, unavailableModel, ...extraAuthModels]; },
   find(provider, modelId) {
     if (provider === availableModel.provider && modelId === availableModel.id) return availableModel;
     if (provider === unavailableModel.provider && modelId === unavailableModel.id) return unavailableModel;
+    if (provider === slashModel.provider && modelId === slashModel.id) return slashModel;
     return extraAuthModels.find((model) => model.provider === provider && model.id === modelId);
   },
   hasConfiguredAuth(model) { return model !== unavailableModel; },
@@ -91,8 +93,15 @@ const ctx = {
       if (/Choose model/.test(title)) {
         assert.ok(options.includes('openai-codex/gpt-5.5'), 'authenticated model should be listed');
         assert.ok(!options.includes('example/unauth'), 'unauthenticated model must not be listed');
-        assert.ok(options.some((option) => /^Show all authenticated models/.test(option)), 'large model sets must be behind Show all');
-        assert.ok(options.length <= 10, 'default model picker must stay short and usable');
+        if (!/all models/.test(title)) {
+          assert.ok(options.some((option) => /^Show all authenticated models/.test(option)), 'large model sets must be behind Show all');
+          assert.ok(options.length <= 10, 'default model picker must stay short and usable');
+        }
+        if (setupChoices[0] === 'Show all authenticated models') {
+          setupChoices.shift();
+          return options.find((option) => /^Show all authenticated models/.test(option));
+        }
+        if (setupChoices[0]?.startsWith('openrouter/')) return setupChoices.shift();
         return 'openai-codex/gpt-5.5';
       }
       if (/Review suggested habits/.test(title)) return setupChoices.shift() ?? options[0];
@@ -113,6 +122,17 @@ assert.equal(configResult.config.capture_enabled, true);
 assert.equal(configResult.config.consolidation_model, 'openai-codex/gpt-5.5');
 assert.equal(configResult.config.consolidation_enabled, true);
 assert.equal(configResult.config.timer_enabled, false);
+
+setupChoices = ['Choose model for habit learning', 'Show all authenticated models', 'openrouter/openai/gpt-5', 'Choose model for habit learning', 'openai-codex/gpt-5.5', 'Done'];
+await commands.get('experience').handler('setup', ctx);
+configResult = await readAgentExperienceConfig(paths);
+assert.equal(configResult.config.consolidation_model, 'openai-codex/gpt-5.5', 'model ids containing slash can be selected, then normal model can be restored');
+assert.ok(notes.some((note) => /Habit-learning model: openrouter\/openai\/gpt-5/.test(note.message || '')), 'OpenRouter slash model id should save successfully from setup picker');
+await setAgentExperienceConsolidationEnabled(false, paths);
+setupChoices = ['Analyze saved examples now', 'Done'];
+await commands.get('experience').handler('setup', ctx);
+assert.ok(notes.some((note) => /Choose a habit-learning model/.test(note.message || '')), 'analyze must not run when model learning is disabled');
+await setAgentExperienceConsolidationModel('openai-codex/gpt-5.5', paths);
 
 const r1 = makeObservation({ seq: 1, createdAt: '2026-07-08T08:00:00.000Z', user: 'please be concise', assistant: 'understood, concise answer' });
 const r2 = makeObservation({ seq: 2, previous: r1, createdAt: '2026-07-08T09:00:00.000Z', user: 'too much fluff, give evidence only', assistant: 'short evidence list' });
@@ -141,16 +161,22 @@ const strictRawOutput = {
     behavior: 'Use exact checked source references',
     polarity: 1,
     confidence_bp: 9000,
-    source_refs: [{ file_generation: 'active', seq: 1, checksum: r1.checksum }],
-    evidence_summary: 'Supported by one checked ref.',
+    source_refs: [r1, r2, r3].map((record) => ({ file_generation: 'active', seq: record.seq, checksum: record.checksum })),
+    evidence_summary: 'Supported by three checked refs across two days.',
     ambiguous: false,
   }],
 };
 assert.equal(__normalizeAgentExperienceConsolidationModelOutputForTest(strictRawOutput, strictNormalizeInput).proposals.length, 1);
-const repairedMissingRefFields = __normalizeAgentExperienceConsolidationModelOutputForTest({ ...strictRawOutput, proposals: [{ ...strictRawOutput.proposals[0], source_refs: [{ seq: 1 }] }] }, strictNormalizeInput);
-assert.deepEqual(repairedMissingRefFields.proposals[0].source_refs, [{ file_generation: 'active', seq: 1, checksum: r1.checksum }], 'normalizer repairs source refs from local seq');
-const repairedWrongChecksum = __normalizeAgentExperienceConsolidationModelOutputForTest({ ...strictRawOutput, proposals: [{ ...strictRawOutput.proposals[0], source_refs: [{ file_generation: 'wrong-generation', seq: 1, checksum: 'wrong' }] }] }, strictNormalizeInput);
-assert.deepEqual(repairedWrongChecksum.proposals[0].source_refs, [{ file_generation: 'active', seq: 1, checksum: r1.checksum }], 'normalizer ignores model checksum/generation typos when seq is valid');
+const weakOneOff = __normalizeAgentExperienceConsolidationModelOutputForTest({ ...strictRawOutput, proposals: [{ ...strictRawOutput.proposals[0], source_refs: [{ seq: 1 }] }] }, strictNormalizeInput);
+assert.equal(weakOneOff.proposals.length, 0, 'one-off model suggestions must not become review candidates');
+const repairedMissingRefFields = __normalizeAgentExperienceConsolidationModelOutputForTest({ ...strictRawOutput, proposals: [{ ...strictRawOutput.proposals[0], source_refs: [{ seq: 1 }, { seq: 2 }, { seq: 3 }] }] }, strictNormalizeInput);
+assert.deepEqual(repairedMissingRefFields.proposals[0].source_refs, [
+  { file_generation: 'active', seq: 1, checksum: r1.checksum },
+  { file_generation: 'active', seq: 2, checksum: r2.checksum },
+  { file_generation: 'active', seq: 3, checksum: r3.checksum },
+], 'normalizer repairs source refs from local seq');
+const repairedWrongChecksum = __normalizeAgentExperienceConsolidationModelOutputForTest({ ...strictRawOutput, proposals: [{ ...strictRawOutput.proposals[0], source_refs: [{ file_generation: 'wrong-generation', seq: 1, checksum: 'wrong' }, { file_generation: 'wrong-generation', seq: 2, checksum: 'wrong' }, { file_generation: 'wrong-generation', seq: 3, checksum: 'wrong' }] }] }, strictNormalizeInput);
+assert.equal(repairedWrongChecksum.proposals[0].source_refs.length, 3, 'normalizer ignores model checksum/generation typos when seq is valid');
 assert.throws(() => __normalizeAgentExperienceConsolidationModelOutputForTest({ ...strictRawOutput, proposals: [{ ...strictRawOutput.proposals[0], source_refs: [{ seq: 999 }] }] }, strictNormalizeInput), /invalid_source_ref/);
 
 __setAgentExperienceConsolidationAdapterForTest({
@@ -186,23 +212,35 @@ await commands.get('experience').handler('setup', ctx);
 assert.ok(notes.some((note) => /Analyze saved examples started/.test(note.message || '')), 'analyze-now must start without blocking setup');
 await waitForNote(/Suggested habits created: 1/, 'analyze-now must create one suggestion');
 
-await writeFile(resolvePrivatePath(paths.root, 'law.md'), '# test law\nDo not store secrets. Do not bypass approvals.\n', { mode: 0o600 });
-setupChoices = ['Review suggested habits', undefined, 'Done'];
+setupChoices = ['Review suggested habits', undefined, 'Create default safety file and continue', 'Done'];
 await commands.get('experience').handler('setup', ctx);
 assert.ok(notes.some((note) => /Approved suggestion/.test(note.message || '')), 'setup review must approve suggestion from setup flow');
+assert.ok(notes.some((note) => /safety file/i.test(note.title || '') || /Safety file/i.test(note.message || '')), 'first-run approval must repair missing safety file inside setup');
 
 setupChoices = ['[ ] Use approved habits before replies', 'Done'];
 await commands.get('experience').handler('setup', ctx);
 configResult = await readAgentExperienceConfig(paths);
 assert.equal(configResult.config.selector_enabled, true);
 
-const storage = await initExperienceStorage(paths.root, { allowInit: true, userId: 'owner' });
+let storage = await initExperienceStorage(paths.root, { allowInit: true, userId: 'owner' });
 let active;
 try {
   const rows = storage.db.prepare("SELECT id, condition, behavior FROM habits WHERE user_id = 'owner' AND status = 'active'").all();
   assert.equal(rows.length, 1, 'approved eligible habit should be active');
   active = rows[0];
   assert.match(active.behavior, /concrete evidence/);
+} finally {
+  storage.db.close();
+}
+notes.length = 0;
+setupChoices = ['Analyze saved examples now', 'Done'];
+await commands.get('experience').handler('setup', ctx);
+await waitForNote(/Analyze saved examples finished/, 'second analyze must finish');
+storage = await initExperienceStorage(paths.root, { allowInit: true, userId: 'owner' });
+try {
+  const rows = storage.db.prepare("SELECT id, status, condition, behavior FROM habits WHERE user_id = 'owner'").all();
+  assert.equal(rows.filter((row) => row.status === 'active').length, 1, 'duplicate analyze must not demote active approved habit');
+  assert.equal(rows.filter((row) => row.status === 'candidate').length, 0, 'duplicate analyze must not recreate visible candidate for active habit');
 } finally {
   storage.db.close();
 }

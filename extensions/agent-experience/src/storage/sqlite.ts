@@ -1,4 +1,4 @@
-import { chmod, stat } from "node:fs/promises";
+import { chmod, lstat, stat } from "node:fs/promises";
 import { resolvePrivatePath, ensurePrivateRoot, normalizeUserId, SENSITIVE_FILE_MODE } from "./private-root.ts";
 import { checksumJson, canonicalJson } from "./checksum.ts";
 import { redactJson } from "./redaction.ts";
@@ -44,7 +44,8 @@ export async function loadSqlite() {
 
 async function ledgerExists(dbPath: string): Promise<boolean> {
 	try {
-		await stat(dbPath);
+		const info = await lstat(dbPath);
+		if (!info.isFile() || info.isSymbolicLink()) throw new Error("Agent Experience ledger is not a regular private file");
 		return true;
 	} catch (error: any) {
 		if (error?.code === "ENOENT") return false;
@@ -79,6 +80,7 @@ export async function initExperienceStorage(root: string, options: InitExperienc
 	const userId = normalizeUserId(options.userId);
 	const privateRoot = await ensurePrivateRoot(root);
 	const dbPath = resolvePrivatePath(privateRoot, "ledger.sqlite");
+	if (await ledgerExists(dbPath)) await ledgerExists(dbPath);
 	const sqlite = await loadSqlite();
 	const db = new sqlite.DatabaseSync(dbPath, { open: true });
 	try {

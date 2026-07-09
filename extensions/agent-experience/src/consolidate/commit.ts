@@ -68,6 +68,7 @@ function uniqueArrayByCanonical(values: unknown[]): unknown[] {
 function mergeCandidateData(existingResidual: any, incoming: any): unknown {
 	const merged: Record<string, unknown> = { ...(incoming && typeof incoming === "object" && !Array.isArray(incoming) ? incoming : {}) };
 	for (const key of [
+		"status",
 		"review_status",
 		"law_hash",
 		"activation_decision",
@@ -89,13 +90,14 @@ function mergeCandidateData(existingResidual: any, incoming: any): unknown {
 
 function insertIdempotentStorageRecord(db: any, table: "habits" | "evidence", input: { id: string; userId: string; data: unknown; now: string }): { id: string; inserted: boolean; checksum: string } {
 	const row = buildTypedStorageRow(table, { id: input.id, userId: input.userId, data: input.data, now: input.now });
-	const existing = db.prepare(`SELECT id, user_id, data_json, checksum FROM ${table} WHERE id = ?`).get(input.id);
+	const existing = db.prepare(`SELECT id, user_id, record_kind, schema_version, status, habit_id, condition, behavior, polarity, confidence_bp, activation, staleness, data_json, checksum, created_at, updated_at FROM ${table} WHERE id = ?`).get(input.id);
 	if (existing) {
 		if (existing.user_id !== input.userId) throw new Error(`${table} stable id collision`);
 		if (existing.checksum === row.checksum) return { id: input.id, inserted: false, checksum: row.checksum };
 		if (table !== "habits") throw new Error(`${table} stable id collision`);
-		const merged = buildTypedStorageRow(table, { id: input.id, userId: input.userId, data: mergeCandidateData(JSON.parse(existing.data_json), input.data), now: input.now });
-		db.prepare(`UPDATE habits SET data_json = ?, checksum = ?, updated_at = ? WHERE id = ? AND user_id = ?`).run(merged.data_json, merged.checksum, merged.updated_at, merged.id, merged.user_id);
+		const existingData = { ...JSON.parse(existing.data_json), record_kind: existing.record_kind, schema_version: existing.schema_version, status: existing.status, habit_id: existing.habit_id, condition: existing.condition, behavior: existing.behavior, polarity: existing.polarity, confidence_bp: existing.confidence_bp, activation: existing.activation, staleness: existing.staleness };
+		const merged = buildTypedStorageRow(table, { id: input.id, userId: input.userId, data: mergeCandidateData(existingData, input.data), createdAt: existing.created_at, now: input.now });
+		db.prepare(`UPDATE habits SET record_kind=?, schema_version=?, status=?, habit_id=?, condition=?, behavior=?, polarity=?, confidence_bp=?, activation=?, staleness=?, data_json = ?, checksum = ?, updated_at = ? WHERE id = ? AND user_id = ?`).run(merged.record_kind, merged.schema_version, merged.status, merged.habit_id, merged.condition, merged.behavior, merged.polarity, merged.confidence_bp, merged.activation, merged.staleness, merged.data_json, merged.checksum, merged.updated_at, merged.id, merged.user_id);
 		return { id: input.id, inserted: false, checksum: merged.checksum };
 	}
 	db.prepare(`INSERT INTO ${table} (id, user_id, record_kind, schema_version, status, habit_id, condition, behavior, polarity, confidence_bp, activation, staleness, data_json, checksum, created_at, updated_at)

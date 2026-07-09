@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { lstat, readFile } from "node:fs/promises";
 import { resolvePrivatePath, ensurePrivateRoot, normalizeUserId } from "../storage/private-root.ts";
 import { checksumJson } from "../storage/checksum.ts";
 import type { ObservationRecord } from "../storage/observations.ts";
@@ -80,6 +80,8 @@ export async function readValidatedObservationGeneration(root: string, manifest:
 	const fileGeneration = assertSafeGeneration(manifest.file_generation);
 	const fileName = manifest.path || "observations.jsonl";
 	const path = resolvePrivatePath(privateRoot, fileName);
+	const info = await lstat(path);
+	if (!info.isFile() || info.isSymbolicLink()) throw new Error("Observation JSONL is not a regular private file");
 	const text = await readFile(path, "utf8");
 	if (!text.endsWith("\n")) throw new Error("Observation JSONL has incomplete tail");
 	const records = text.trim() ? text.trim().split("\n").map((line) => JSON.parse(line)) : [];

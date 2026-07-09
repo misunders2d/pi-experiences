@@ -5,7 +5,7 @@ import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import agentExperienceExtension from '../extensions/agent-experience/index.ts';
-import { getAgentExperiencePaths } from '../extensions/agent-experience/src/paths.ts';
+import { getAgentExperiencePaths, readAgentExperienceConfig, writeAgentExperienceConfig } from '../extensions/agent-experience/src/paths.ts';
 import {
   assertPathInsidePrivateRoot,
   ensurePrivateRoot,
@@ -25,6 +25,8 @@ import {
 } from '../extensions/agent-experience/src/storage/sqlite.ts';
 import { appendObservation } from '../extensions/agent-experience/src/storage/observations.ts';
 import { createBackup, listBackups, restoreBackup } from '../extensions/agent-experience/src/storage/backup.ts';
+import { DEFAULT_AGENT_EXPERIENCE_CONFIG } from '../extensions/agent-experience/src/config.ts';
+import { readConfiguredLawSnapshot } from '../extensions/agent-experience/src/review.ts';
 
 const temp = await mkdtemp(join(tmpdir(), 'agent-experience-phase2-'));
 process.env.AX_STATE_ROOT = join(temp, 'state');
@@ -63,6 +65,16 @@ const outside = await mkdtemp(join(tmpdir(), 'agent-experience-outside-'));
 const linkPath = resolvePrivatePath(root, 'escape-link');
 await symlink(outside, linkPath);
 await assert.rejects(() => assertPathInsidePrivateRoot(root, join(linkPath, 'x')), /escapes/);
+await writeFile(join(temp, 'outside-config.toml'), 'enabled = true\n');
+await symlink(join(temp, 'outside-config.toml'), paths.configPath);
+await assert.rejects(() => readAgentExperienceConfig(paths), /regular private file/);
+await rm(paths.configPath, { force: true });
+await writeAgentExperienceConfig({ ...DEFAULT_AGENT_EXPERIENCE_CONFIG, enabled: true }, paths);
+await assert.rejects(() => readConfiguredLawSnapshot(root, { law_path: '../outside-law.md' }), /inside private state/);
+await writeFile(join(temp, 'outside-law.md'), 'outside law\n');
+await symlink(join(temp, 'outside-law.md'), resolvePrivatePath(root, 'law.md'));
+await assert.rejects(() => readConfiguredLawSnapshot(root, { law_path: 'law.md' }), /regular private file/);
+await rm(resolvePrivatePath(root, 'law.md'), { force: true });
 
 const realParent = await mkdtemp(join(tmpdir(), 'agent-experience-real-parent-'));
 const aliasParent = join(temp, 'alias-parent');
@@ -84,6 +96,15 @@ const sensitive = {
 const redacted = redactJson(sensitive);
 assert.equal(containsUnredactedSensitiveText(redacted), false, 'redacted JSON must contain no sensitive fixture text');
 assert.equal(containsUnredactedSensitiveText(redactText(JSON.stringify(sensitive))), false, 'redacted text must contain no sensitive fixture text');
+assert.equal(containsUnredactedSensitiveText('api_key=abcdefghijklmnopqrstuvwxyz'), true);
+assert.equal(containsUnredactedSensitiveText('api_key="abcdefghijklmnopqrstuvwxyz"'), true);
+assert.equal(containsUnredactedSensitiveText(redactText('api_key="abcdefghijklmnopqrstuvwxyz"')), false);
+assert.equal(containsUnredactedSensitiveText(redactText('api_key=abcdefghijklmnopqrstuvwxyz')), false);
+assert.equal(containsUnredactedSensitiveText('aaaabbbbccccddddeeeeffff.gggghhhhiiiijjjjkkkkllll.mmmmnnnnooooppppqqqqrrrr'), true);
+assert.equal(containsUnredactedSensitiveText(redactText('-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----')), false);
+assert.equal(containsUnredactedSensitiveText('/tmp/pi-secret-file'), true);
+assert.equal(containsUnredactedSensitiveText('/media/misunderstood/DATA/private'), true);
+assert.equal(containsUnredactedSensitiveText(redactText('/media/misunderstood/DATA/private')), false);
 assert.equal(sensitive.email, 'phase2@example.invalid', 'redactJson must not mutate caller input');
 
 const a = { b: 2, a: { z: 9, c: 3 } };

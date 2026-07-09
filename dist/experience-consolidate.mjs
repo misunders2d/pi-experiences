@@ -6,7 +6,7 @@ import { readFile as readFile3 } from "node:fs/promises";
 import { dirname as dirname3, resolve as resolve3 } from "node:path";
 
 // extensions/agent-experience/src/paths.ts
-import { chmod, mkdir, open, readFile, stat } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, readFile, stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 
@@ -142,15 +142,25 @@ async function readAgentExperienceConfig(paths = getAgentExperiencePaths()) {
   if (!await exists(paths.configPath)) {
     return { config: applyAgentExperienceEnvOverrides({ ...DEFAULT_AGENT_EXPERIENCE_CONFIG }, process.env), exists: false, path: paths.configPath };
   }
+  await assertRegularConfigFile(paths.configPath);
   const text = await readFile(paths.configPath, "utf8");
   return { config: parseAgentExperienceConfig(text, process.env), exists: true, path: paths.configPath };
 }
+async function assertRegularConfigFile(path) {
+  try {
+    const info = await lstat(path);
+    if (!info.isFile() || info.isSymbolicLink()) throw new Error("Agent Experience config is not a regular private file");
+  } catch (error) {
+    if (error?.code === "ENOENT") return;
+    throw error;
+  }
+}
 
 // extensions/agent-experience/src/storage/sqlite.ts
-import { chmod as chmod3, stat as stat3 } from "node:fs/promises";
+import { chmod as chmod3, lstat as lstat3 } from "node:fs/promises";
 
 // extensions/agent-experience/src/storage/private-root.ts
-import { chmod as chmod2, copyFile, lstat, mkdir as mkdir2, open as open2, realpath, stat as stat2 } from "node:fs/promises";
+import { chmod as chmod2, copyFile, lstat as lstat2, mkdir as mkdir2, open as open2, realpath, stat as stat2 } from "node:fs/promises";
 import { dirname as dirname2, isAbsolute, relative, resolve as resolve2, sep } from "node:path";
 var PRIVATE_DIR_MODE = 448;
 var SENSITIVE_FILE_MODE = 384;
@@ -186,7 +196,7 @@ function resolvePrivatePath(root, ...segments) {
 async function ensurePrivateRoot(root = getPrivateStateRoot()) {
   const resolvedRoot = resolve2(root);
   await mkdir2(resolvedRoot, { recursive: true, mode: PRIVATE_DIR_MODE });
-  const info = await lstat(resolvedRoot);
+  const info = await lstat2(resolvedRoot);
   if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("Agent Experience private root is not a real directory");
   await chmod2(resolvedRoot, PRIVATE_DIR_MODE);
   return resolvedRoot;
@@ -216,7 +226,7 @@ function checksumJson(value) {
 var REDACTED = "[REDACTED]";
 var SENSITIVE_KEY = /(?:token|api[_-]?key|secret|password|authorization|private[_-]?key|credential|path|file)/i;
 function redactText(input) {
-  return String(input).replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, REDACTED).replace(/(?:\+?1[-.\s])?(?:\(?\d{3}\)?[-.\s])\d{3}[-.\s]\d{4}\b/g, REDACTED).replace(/\b(?:sk|pk|ghp|xox[baprs]|ya29|AKIA)[A-Za-z0-9_\-]{8,}\b/g, REDACTED).replace(/(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi, REDACTED).replace(/(?:~\/|\/home\/[^\s"']+|\/Users\/[^\s"']+|\/var\/folders\/[^\s"']+|[A-Za-z]:\\Users\\[^\s"']+)/g, REDACTED);
+  return String(input).replace(/-----BEGIN [A-Z ]*(?:PRIVATE KEY|SECRET KEY)[\s\S]*?-----END [A-Z ]*(?:PRIVATE KEY|SECRET KEY)-----/g, REDACTED).replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, REDACTED).replace(/(?:\+?1[-.\s])?(?:\(?\d{3}\)?[-.\s])\d{3}[-.\s]\d{4}\b/g, REDACTED).replace(/\b(?:sk|pk|ghp|xox[baprs]|ya29|AKIA)[A-Za-z0-9_\-]{8,}\b/g, REDACTED).replace(/\b[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\b/g, REDACTED).replace(/(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi, REDACTED).replace(/\b(?:api[_-]?key|secret|password|token|credential)\s*[:=]\s*["'`]?[^\s"'`]{8,}["'`]?/gi, REDACTED).replace(/(?:~\/|\/(?:home|Users|var\/folders|tmp|media|mnt|Volumes)\/[^\s"']+|[A-Za-z]:\\Users\\[^\s"']+)/g, REDACTED);
 }
 function redactJson(input) {
   function visit(value, key = "") {
@@ -234,7 +244,7 @@ function redactJson(input) {
 }
 function containsUnredactedSensitiveText(value) {
   const text = typeof value === "string" ? value : JSON.stringify(value);
-  return /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}|(?:\+?1[-.\s])?(?:\(?\d{3}\)?[-.\s])\d{3}[-.\s]\d{4}|(?:sk|pk|ghp|xox[baprs]|ya29|AKIA)[A-Za-z0-9_\-]{8,}|(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}|(?:~\/|\/home\/[^\s"']+|\/Users\/[^\s"']+|\/var\/folders\/[^\s"']+|[A-Za-z]:\\Users\\[^\s"']+)/i.test(text || "");
+  return /-----BEGIN [A-Z ]*(?:PRIVATE KEY|SECRET KEY)|[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}|(?:\+?1[-.\s])?(?:\(?\d{3}\)?[-.\s])\d{3}[-.\s]\d{4}|(?:sk|pk|ghp|xox[baprs]|ya29|AKIA)[A-Za-z0-9_\-]{8,}|\b[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\b|(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}|\b(?:api[_-]?key|secret|password|token|credential)\s*[:=]\s*["'`]?[^\s"'`]{8,}["'`]?|(?:~\/|\/(?:home|Users|var\/folders|tmp|media|mnt|Volumes)\/[^\s"']+|[A-Za-z]:\\Users\\[^\s"']+)/i.test(text || "");
 }
 
 // extensions/agent-experience/src/storage/schema.ts
@@ -588,11 +598,22 @@ async function loadSqlite() {
     throw new Error(`Agent Experience SQLite unavailable: ${error?.message || error}`);
   }
 }
+async function ledgerExists(dbPath) {
+  try {
+    const info = await lstat3(dbPath);
+    if (!info.isFile() || info.isSymbolicLink()) throw new Error("Agent Experience ledger is not a regular private file");
+    return true;
+  } catch (error) {
+    if (error?.code === "ENOENT") return false;
+    throw error;
+  }
+}
 async function initExperienceStorage(root, options) {
   if (!options?.allowInit) throw new Error("Agent Experience storage init requires allowInit=true");
   const userId = normalizeUserId(options.userId);
   const privateRoot = await ensurePrivateRoot(root);
   const dbPath = resolvePrivatePath(privateRoot, "ledger.sqlite");
+  if (await ledgerExists(dbPath)) await ledgerExists(dbPath);
   const sqlite = await loadSqlite();
   const db = new sqlite.DatabaseSync(dbPath, { open: true });
   try {
@@ -695,7 +716,7 @@ function buildTypedStorageRow(table, input) {
 }
 
 // extensions/agent-experience/src/consolidate/observations.ts
-import { readFile as readFile2 } from "node:fs/promises";
+import { lstat as lstat4, readFile as readFile2 } from "node:fs/promises";
 var ALLOWED_ORIGINS = /* @__PURE__ */ new Set(["test", "manual", "local_interactive"]);
 var SUPPORTED_PAYLOAD_KINDS = /* @__PURE__ */ new Set(["conversation_pair_v1"]);
 var OBSERVATION_KEYS = /* @__PURE__ */ new Set(["id", "seq", "user_id", "origin", "prev_pair_ref", "payload_redacted", "created_at", "checksum"]);
@@ -749,6 +770,8 @@ async function readValidatedObservationGeneration(root, manifest, userId) {
   const fileGeneration = assertSafeGeneration(manifest.file_generation);
   const fileName = manifest.path || "observations.jsonl";
   const path = resolvePrivatePath(privateRoot, fileName);
+  const info = await lstat4(path);
+  if (!info.isFile() || info.isSymbolicLink()) throw new Error("Observation JSONL is not a regular private file");
   const text = await readFile2(path, "utf8");
   if (!text.endsWith("\n")) throw new Error("Observation JSONL has incomplete tail");
   const records = text.trim() ? text.trim().split("\n").map((line) => JSON.parse(line)) : [];
@@ -886,6 +909,7 @@ function uniqueArrayByCanonical(values) {
 function mergeCandidateData(existingResidual, incoming) {
   const merged = { ...incoming && typeof incoming === "object" && !Array.isArray(incoming) ? incoming : {} };
   for (const key of [
+    "status",
     "review_status",
     "law_hash",
     "activation_decision",
@@ -906,13 +930,14 @@ function mergeCandidateData(existingResidual, incoming) {
 }
 function insertIdempotentStorageRecord(db, table, input) {
   const row = buildTypedStorageRow(table, { id: input.id, userId: input.userId, data: input.data, now: input.now });
-  const existing = db.prepare(`SELECT id, user_id, data_json, checksum FROM ${table} WHERE id = ?`).get(input.id);
+  const existing = db.prepare(`SELECT id, user_id, record_kind, schema_version, status, habit_id, condition, behavior, polarity, confidence_bp, activation, staleness, data_json, checksum, created_at, updated_at FROM ${table} WHERE id = ?`).get(input.id);
   if (existing) {
     if (existing.user_id !== input.userId) throw new Error(`${table} stable id collision`);
     if (existing.checksum === row.checksum) return { id: input.id, inserted: false, checksum: row.checksum };
     if (table !== "habits") throw new Error(`${table} stable id collision`);
-    const merged = buildTypedStorageRow(table, { id: input.id, userId: input.userId, data: mergeCandidateData(JSON.parse(existing.data_json), input.data), now: input.now });
-    db.prepare(`UPDATE habits SET data_json = ?, checksum = ?, updated_at = ? WHERE id = ? AND user_id = ?`).run(merged.data_json, merged.checksum, merged.updated_at, merged.id, merged.user_id);
+    const existingData = { ...JSON.parse(existing.data_json), record_kind: existing.record_kind, schema_version: existing.schema_version, status: existing.status, habit_id: existing.habit_id, condition: existing.condition, behavior: existing.behavior, polarity: existing.polarity, confidence_bp: existing.confidence_bp, activation: existing.activation, staleness: existing.staleness };
+    const merged = buildTypedStorageRow(table, { id: input.id, userId: input.userId, data: mergeCandidateData(existingData, input.data), createdAt: existing.created_at, now: input.now });
+    db.prepare(`UPDATE habits SET record_kind=?, schema_version=?, status=?, habit_id=?, condition=?, behavior=?, polarity=?, confidence_bp=?, activation=?, staleness=?, data_json = ?, checksum = ?, updated_at = ? WHERE id = ? AND user_id = ?`).run(merged.record_kind, merged.schema_version, merged.status, merged.habit_id, merged.condition, merged.behavior, merged.polarity, merged.confidence_bp, merged.activation, merged.staleness, merged.data_json, merged.checksum, merged.updated_at, merged.id, merged.user_id);
     return { id: input.id, inserted: false, checksum: merged.checksum };
   }
   db.prepare(`INSERT INTO ${table} (id, user_id, record_kind, schema_version, status, habit_id, condition, behavior, polarity, confidence_bp, activation, staleness, data_json, checksum, created_at, updated_at)

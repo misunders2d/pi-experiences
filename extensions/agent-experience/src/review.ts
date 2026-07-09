@@ -1,6 +1,6 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { lstat, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { isAbsolute, join, resolve } from "node:path";
+import { join } from "node:path";
 import { canonicalJson, checksumJson, sha256Hex } from "./storage/checksum.ts";
 import { normalizeUserId, resolvePrivatePath, ensurePrivateRoot } from "./storage/private-root.ts";
 import { redactJson, containsUnredactedSensitiveText } from "./storage/redaction.ts";
@@ -118,7 +118,8 @@ export function listPendingReviewItems(db: any, input: { userId: string }) {
 	const pending = db.prepare("SELECT id, user_id, kind, status, payload_json, checksum, created_at, updated_at FROM pending_review WHERE user_id = ? AND status = 'open' ORDER BY created_at, id").all(userId)
 		.map((row: any) => ({ type: "pending_review", ...row, payload: parseJson(row.payload_json) }));
 	const candidates = db.prepare("SELECT id, user_id, record_kind, status, condition, behavior, polarity, confidence_bp, data_json, checksum, created_at, updated_at FROM habits WHERE user_id = ? AND status = 'candidate' ORDER BY updated_at, id").all(userId)
-		.map((row: any) => ({ type: "candidate", ...row, payload: parseJson(row.data_json) }));
+		.map((row: any) => ({ type: "candidate", ...row, payload: parseJson(row.data_json) }))
+		.filter((row: any) => row.payload?.review_status !== "approved_pending_eligibility");
 	const items = [...pending, ...candidates];
 	const groups: Record<string, string[]> = {};
 	let groupNumber = 1;
@@ -174,13 +175,16 @@ export interface LawSnapshot {
 }
 
 export function resolveConfiguredLawPath(root: string, lawPath = "law.md"): string {
-	const configured = lawPath.trim() || "law.md";
-	return isAbsolute(configured) ? configured : resolve(root, configured);
+	const configured = (lawPath.trim() || "law.md");
+	if (configured.includes("/") || configured.includes("\\") || configured === "." || configured === "..") throw new Error("Agent Experience safety file path must stay inside private state");
+	return resolvePrivatePath(root, configured);
 }
 
 export async function readConfiguredLawSnapshot(root: string, config: { law_path?: string }): Promise<LawSnapshot> {
 	const file = resolveConfiguredLawPath(root, config.law_path);
 	if (!existsSync(file)) throw new Error(`Agent Experience law file missing: ${file}`);
+	const info = await lstat(file);
+	if (!info.isFile() || info.isSymbolicLink()) throw new Error("Agent Experience safety file is not a regular private file");
 	const text = await readFile(file, "utf8");
 	const checksum = sha256Hex(text);
 	const files = [{ path: file, checksum, required: true }];
