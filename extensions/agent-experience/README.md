@@ -7,15 +7,16 @@ Opt-in Pi package extension for local Agent Experience capture, human review, an
 Use the setup menu first. It is the main control panel:
 
 ```text
-/experience setup                         # checkbox-style settings panel; no changes until you choose
+/experience setup                         # Space/Enter control panel; no changes until you choose
 /experience setup save on|off             # save chat examples locally
-/experience setup suggest on|off          # allow habit suggestions when you ask
-/experience setup use-habits on|off       # use approved habits before replies
-/experience setup background off          # keep background learning off
-/experience setup status                  # show current settings
-/experience setup review                  # review suggested habits
-/experience setup help                    # explain every setting
-/experience setup off                     # turn all experience features off
+/experience setup model                  # choose habit-learning model
+/experience setup analyze-now            # analyze saved examples now
+/experience setup review                 # review suggested habits
+/experience setup use-habits on|off      # use approved habits before replies
+/experience setup background off         # keep automatic schedule off
+/experience setup status                 # show current settings
+/experience setup help                   # explain every setting
+/experience setup off                    # turn all experience features off
 ```
 
 Optional shortcuts:
@@ -27,12 +28,12 @@ Optional shortcuts:
 /experience review  # inspect/accept/reject candidates if any exist
 ```
 
-`/experience setup` opens a checkbox-style settings panel for saving chat examples locally, suggesting habits from saved examples when asked, using approved habits before replies, background-learning explanation, reviewing suggested habits, showing current settings, and explaining every setting. `[x]` means ON and `[ ]` means OFF; pressing Enter on a setting toggles it and returns to the panel until Done. Explain these settings is inside the panel and explains privacy/model/timer behavior. It changes nothing until you choose. If Pi does not render the interactive menu, use the explicit `/experience setup ...` subcommands. `/experience on` enables local redacted capture only. They do **not** install timers, run background learning, call live model jobs, enable embeddings, enable break-in mode, or use approved habits before replies.
+`/experience setup` opens the normal-user control panel for saving chat examples locally, choosing the habit-learning model, analyzing saved examples now, reviewing suggested habits, using approved habits before replies, showing current settings, and explaining schedule/privacy behavior. `[x]` means ON and `[ ]` means OFF where a row is a toggle; Space/Enter runs the highlighted row and returns to the panel until Done. It changes nothing until you choose. If Pi does not render the interactive panel, use the explicit `/experience setup ...` subcommands. `/experience on` enables local redacted capture only. Setup does **not** install timers, run background learning, enable embeddings, enable break-in mode, auto-approve suggestions, or use approved habits before replies unless explicitly enabled.
 
 ## Safety defaults
 
 - Package install alone does not enable capture, selector, consolidation, timer, or live runtime behavior.
-- The setup menu changes config only after an explicit menu choice. `/experience on` only turns on saving redacted chat examples locally; it leaves habit suggestions, approved-habit reminders, timers, embeddings, break-in mode, and model jobs off.
+- The setup menu changes config only after an explicit menu choice. `/experience on` only turns on saving redacted chat examples locally; it leaves approved-habit reminders, timers, embeddings, and break-in mode off. Model jobs run only when you choose Analyze saved examples now.
 - Selector/pre-injection remains off until advanced explicit enable.
 - Default selector mode, once selector is enabled, is `instant`: local lexical selection only, no model/network call.
 - `smart` selector mode is advanced opt-in and may call the configured model/provider.
@@ -113,9 +114,17 @@ Smart mode latency should be measured against the user's configured threshold be
 
 Checksums protect stale review actions. Review never auto-approves habits.
 
-## Manual consolidation — advanced maintainer/test only
+## Manual analysis
 
-Package bin:
+Normal users run manual habit learning from setup:
+
+```text
+/experience setup model
+/experience setup analyze-now
+/experience setup review
+```
+
+The package bin remains advanced maintainer/test plumbing:
 
 ```bash
 experience-consolidate status
@@ -132,7 +141,7 @@ Model-output safety:
 
 ## Systemd timer templates — disabled advanced templates
 
-Templates live in `extensions/agent-experience/units/`, but 0.1.10 does **not** provide a package-owned timer or live consolidation adapter. `/experience setup` menu actions and `/experience on` never install, enable, or start these units.
+Templates live in `extensions/agent-experience/units/`, but 0.1.11 does **not** provide a package-owned timer. `/experience setup` menu actions and `/experience on` never install, enable, or start these units. Setup shows automatic scheduling as Phase 2/off.
 
 The bundled service intentionally fails with an explicit message until a maintainer replaces `ExecStart` with an approved reviewed consolidation command. Do not copy/enable the timer as normal UX.
 

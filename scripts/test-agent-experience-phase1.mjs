@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
-import { mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -81,7 +81,9 @@ assert.equal(existsSync(paths.root), false, 'setup with no select UI must not cr
 const fallbackNote = notes.find((note) => /setup controls/.test(note.message));
 assert.ok(fallbackNote, 'no-select setup must show fallback setup controls text');
 assert.match(fallbackNote.message, /setup save on\|off/);
-assert.match(fallbackNote.message, /setup suggest on\|off/);
+assert.match(fallbackNote.message, /setup model/);
+assert.match(fallbackNote.message, /setup analyze-now/);
+assert.match(fallbackNote.message, /setup review/);
 assert.match(fallbackNote.message, /setup use-habits on\|off/);
 assert.doesNotMatch(fallbackNote.message, /setup consolidation on\|off|setup guidance on\|off|setup timer off/);
 assert.ok(notes.some((note) => /no config changed/i.test(note.message)), 'no-select setup must say no config changed');
@@ -128,10 +130,11 @@ assert.equal(existsSync(paths.root), false, 'escaped setup menu must not create 
 assert.match(notes.at(-1).message, /closed/);
 assert.deepEqual(notes.find((note) => note.level === 'select').options, [
   '[ ] Save chat examples locally — turn on first',
-  '[ ] Suggest habits from saved examples when I ask',
-  '[ ] Use approved habits before replies',
-  'Background learning: off / not available (explain)',
+  'Choose model for habit learning',
+  'Analyze saved examples now',
   'Review suggested habits',
+  '[ ] Use approved habits before replies',
+  'Run habit learning automatically: Phase 2 / off (explain)',
   'Show current settings',
   'Explain these settings',
   'Done',
@@ -155,7 +158,7 @@ assert.ok(notes.some((note) => /Use approved habits before replies/.test(note.me
 await commands.get('experience').handler('setup help', ctx);
 assert.equal(existsSync(paths.root), false, 'setup help subcommand must not create state root');
 assert.match(notes.at(-1).message, /Agent Experience setup help/);
-assert.match(notes.at(-1).message, /Background learning: unavailable/);
+assert.match(notes.at(-1).message, /Run habit learning automatically: Phase 2/);
 assert.match(notes.at(-1).message, /turn this on first to start/);
 setupChoices = ['[ ] Save chat examples locally — turn on first', undefined];
 await commands.get('experience').handler('setup', ctx);
@@ -187,16 +190,12 @@ const configText = await readFile(paths.configPath, 'utf8');
 assert.match(configText, /law_path = "law\.md"/, 'config must persist law path');
 assert.doesNotMatch(configText, /TOKEN|SECRET|PRIVATE_KEY|BEGIN PRIVATE KEY/i, 'config must not contain secret-like fixture text');
 
-setupChoices = ['[ ] Suggest habits from saved examples when I ask', undefined];
+setupChoices = ['Analyze saved examples now', undefined];
+const beforeAnalyzeSetup = notes.length;
 await commands.get('experience').handler('setup', ctx);
-assert.doesNotMatch(notes.at(-1).message, plainSetupLeakPattern, 'suggest-habits setup confirmation must not expose internal flag names');
+assert.ok(notes.slice(beforeAnalyzeSetup).some((note) => /saved examples|model|Habit learning/i.test(note.message)), 'analyze-now setup action must explain missing prerequisites without enabling fake timer');
 readResult = await readAgentExperienceConfig(paths);
-assert.equal(readResult.config.consolidation_enabled, true, 'setup toggle can enable manual consolidation flag');
-assert.equal(readResult.config.timer_enabled, false, 'consolidation setup must not start timer');
-setupChoices = ['[x] Suggest habits from saved examples when I ask', undefined];
-await commands.get('experience').handler('setup', ctx);
-readResult = await readAgentExperienceConfig(paths);
-assert.equal(readResult.config.consolidation_enabled, false, 'setup toggle can disable manual consolidation flag');
+assert.equal(readResult.config.timer_enabled, false, 'analyze-now setup action must not start timer');
 await commands.get('experience').handler('setup suggest on', ctx);
 assert.doesNotMatch(notes.at(-1).message, plainSetupLeakPattern, 'plain suggest setup command must not expose internal flag names');
 readResult = await readAgentExperienceConfig(paths);
@@ -211,19 +210,38 @@ await commands.get('experience').handler('setup consolidation off', ctx);
 readResult = await readAgentExperienceConfig(paths);
 assert.equal(readResult.config.consolidation_enabled, false, 'advanced/backcompat setup subcommand can disable manual consolidation flag');
 
-setupChoices = ['[ ] Use approved habits before replies', undefined];
+setupChoices = ['[ ] Use approved habits before replies', 'Create default safety file and continue', undefined];
 await commands.get('experience').handler('setup', ctx);
 assert.doesNotMatch(notes.at(-1).message, plainSetupLeakPattern, 'use-habits setup confirmation must not expose internal flag names');
 readResult = await readAgentExperienceConfig(paths);
-assert.equal(readResult.config.selector_enabled, true, 'setup toggle can enable advanced guidance');
+assert.equal(readResult.config.selector_enabled, true, 'setup toggle can enable approved-habit reminders after safety file choice');
+assert.equal(existsSync(join(paths.root, 'law.md')), true, 'setup can create default safety file for approved-habit reminders');
 setupChoices = ['[x] Use approved habits before replies', undefined];
 await commands.get('experience').handler('setup', ctx);
 readResult = await readAgentExperienceConfig(paths);
 assert.equal(readResult.config.selector_enabled, false, 'setup toggle can disable guidance');
+await rm(join(paths.root, 'law.md'), { force: true });
+await mkdir(join(paths.root, 'law.md'));
+setupChoices = ['Continue but keep reminders paused until file exists'];
+await commands.get('experience').handler('setup use-habits on', ctx);
+readResult = await readAgentExperienceConfig(paths);
+assert.equal(readResult.config.selector_enabled, false, 'direct setup use-habits on must not overwrite or enable when existing law path is unreadable');
+assert.equal((await stat(join(paths.root, 'law.md'))).isDirectory(), true, 'setup must not truncate/overwrite an existing unreadable law path');
+await rm(join(paths.root, 'law.md'), { recursive: true, force: true });
+setupChoices = ['Continue but keep reminders paused until file exists'];
+await commands.get('experience').handler('setup use-habits on', ctx);
+readResult = await readAgentExperienceConfig(paths);
+assert.equal(readResult.config.selector_enabled, false, 'direct setup use-habits on must keep reminders disabled when safety file is deferred');
+assert.ok(notes.some((note) => /remain paused/.test(note.message)), 'deferred safety file path must tell user reminders remain paused');
+setupChoices = ['Cancel'];
+await commands.get('experience').handler('setup use-habits on', ctx);
+readResult = await readAgentExperienceConfig(paths);
+assert.equal(readResult.config.selector_enabled, false, 'direct setup use-habits on must stay disabled when safety file prompt is canceled');
+setupChoices = ['Create default safety file and continue'];
 await commands.get('experience').handler('setup use-habits on', ctx);
 assert.doesNotMatch(notes.at(-1).message, plainSetupLeakPattern, 'plain use-habits setup command must not expose internal flag names');
 readResult = await readAgentExperienceConfig(paths);
-assert.equal(readResult.config.selector_enabled, true, 'plain setup subcommand can enable approved-habit reminders');
+assert.equal(readResult.config.selector_enabled, true, 'plain setup subcommand can enable approved-habit reminders after safety file exists or is created');
 await commands.get('experience').handler('setup use-habits off', ctx);
 readResult = await readAgentExperienceConfig(paths);
 assert.equal(readResult.config.selector_enabled, false, 'plain setup subcommand can disable approved-habit reminders');
@@ -234,9 +252,8 @@ await commands.get('experience').handler('setup guidance off', ctx);
 readResult = await readAgentExperienceConfig(paths);
 assert.equal(readResult.config.selector_enabled, false, 'advanced/backcompat setup subcommand can disable guidance');
 
-setupChoices = ['[ ] Suggest habits from saved examples when I ask', undefined];
-await commands.get('experience').handler('setup', ctx);
-setupChoices = ['Background learning: off / not available (explain)', 'Keep background learning disabled', undefined];
+await commands.get('experience').handler('setup suggest on', ctx);
+setupChoices = ['Run habit learning automatically: Phase 2 / off (explain)', 'Keep automatic schedule Phase 2/off', undefined];
 await commands.get('experience').handler('setup', ctx);
 readResult = await readAgentExperienceConfig(paths);
 assert.equal(readResult.config.consolidation_enabled, true, 'timer setup must not disable manual consolidation flag');

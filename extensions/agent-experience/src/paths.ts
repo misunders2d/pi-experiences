@@ -89,8 +89,8 @@ export async function setAgentExperienceSimpleOn(paths = getAgentExperiencePaths
 		enabled: true,
 		capture_enabled: true,
 		// Simple on/setup is intentionally capture-only in this release. These gates stay off
-		// because there is no bundled live consolidation adapter, no package-owned timer, and
-		// selector smart mode may call a model/provider if enabled.
+		// because there is no bundled scheduled/live consolidation adapter or package-owned timer;
+		// manual on-demand analysis is available only from /experience setup analyze-now.
 		selector_enabled: false,
 		embedding_enabled: false,
 		consolidation_enabled: false,
@@ -135,6 +135,21 @@ export async function setAgentExperienceConsolidationEnabled(consolidationEnable
 		...current.config,
 		consolidation_enabled: consolidationEnabled,
 		// Timer/model automation remains a separate future gate.
+		timer_enabled: false,
+		break_in_enabled: false,
+	};
+	await writeAgentExperienceConfig(config, paths);
+	return { config, path: paths.configPath };
+}
+
+export async function setAgentExperienceConsolidationModel(model: string, paths = getAgentExperiencePaths()): Promise<{ config: AgentExperienceConfig; path: string }> {
+	const current = await readAgentExperienceConfig(paths);
+	const config = {
+		...DEFAULT_AGENT_EXPERIENCE_CONFIG,
+		...current.config,
+		consolidation_model: model,
+		consolidation_enabled: true,
+		// Choosing a model enables manual learning only. Timer/break-in remain separate gates.
 		timer_enabled: false,
 		break_in_enabled: false,
 	};

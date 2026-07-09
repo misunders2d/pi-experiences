@@ -23,30 +23,32 @@ experience = reviewed behavioral habits inferred from repeated interaction
 ## Plain-language pieces
 
 - **Experience** is the whole behavior-learning layer.
-- **Setup** is the main control panel. It opens a checkbox-style settings panel for saving chat examples locally, suggesting habits from saved examples when asked, using approved habits before replies, background-learning explanation, reviewing suggested habits, showing current settings, and explaining every setting. It must not change config until you choose an item. After each toggle it returns to the panel until Done. The safe save-examples toggle turns on local redacted capture and leaves timers, live model learning, and approved-habit reminders off unless explicitly toggled.
+- **Setup** is the main control panel. It opens a Space/Enter settings panel for saving chat examples locally, choosing the habit-learning model, analyzing saved examples now, reviewing suggested habits, using approved habits before replies, showing the schedule as Phase 2/off, showing current settings, and explaining every setting. It must not change config until you choose an item. After each action it returns to the panel until Done. The safe save-examples toggle turns on local redacted capture and leaves timers and approved-habit reminders off unless explicitly toggled.
 - **Capture** saves redacted text fields and metadata from completed turns to `observations.jsonl`. It creates raw material only, not habits.
-- **Suggest habits from saved examples when I ask** means Pi may analyze saved examples only when explicitly asked and then show proposed habits for review. In 0.1.10 this is not automatic: no timer or live consolidation model adapter is installed.
+- **Choose model for habit learning** selects the configured Pi model used only when the user explicitly runs manual analysis.
+- **Analyze saved examples now** reads already saved redacted examples, calls the configured model once, validates/sanitizes model output, and writes suggested habits into review. It never approves habits.
 - **Pending review** means proposed habits await approval/rejection and are not injectable yet.
 - **Active habits** are reviewed habits. Normal setup/on does not use them before replies unless you explicitly enable approved-habit reminders.
-- **Timer** is only a future/advanced way to run learning in the background. It is not installed, started, or managed by the package.
+- **Schedule** is Phase 2/off. The package does not install, start, or pretend-enable a timer.
 
 ## Normal commands
 
 Canonical UX is one control panel:
 
 ```text
-/experience setup                         # checkbox-style settings panel; no change until you choose
+/experience setup                         # Space/Enter control panel; no change until you choose
 /experience setup save on|off             # save chat examples locally
-/experience setup suggest on|off          # allow habit suggestions when you ask
-/experience setup use-habits on|off       # use approved habits before replies
-/experience setup background off          # keep background learning off
-/experience setup status                  # show current settings
-/experience setup review                  # review suggested habits
-/experience setup help                    # explain every setting
-/experience setup off                     # turn all experience features off
+/experience setup model                  # choose habit-learning model
+/experience setup analyze-now            # analyze saved examples now
+/experience setup review                 # review suggested habits
+/experience setup use-habits on|off      # use approved habits before replies
+/experience setup background off         # keep automatic schedule off
+/experience setup status                 # show current settings
+/experience setup help                   # explain every setting
+/experience setup off                    # turn all experience features off
 ```
 
-The interactive setup panel shows `[x]` for ON and `[ ]` for OFF. Press Enter on a setting to toggle it; Show current settings, Review suggested habits, and Explain these settings live inside the panel; Done exits. If Pi does not render the interactive menu, use the explicit `/experience setup ...` subcommands above.
+The interactive setup panel shows `[x]` for ON and `[ ]` for OFF where a row is a toggle. Press Space/Enter to run the row; model, analyze, review, status, and help are action rows; Done exits. If Pi does not render the interactive menu, use the explicit `/experience setup ...` subcommands above.
 
 Optional shortcuts:
 
@@ -57,7 +59,7 @@ Optional shortcuts:
 /experience review  # inspect/accept/reject candidates if any exist
 ```
 
-If observations grow but `/experience review` shows no candidates, capture is working. In 0.1.10, candidate generation is not automatic.
+If observations grow but `/experience review` shows no candidates, choose `/experience setup analyze-now`. Candidate generation is manual, not scheduled.
 
 ## Safety defaults
 
@@ -70,7 +72,7 @@ If observations grow but `/experience review` shows no candidates, capture is wo
 - Reports, pending review, quarantine, evidence, disabled, dormant, candidate, suppressed, and archived rows are not selector input.
 - Selector logs do not store raw prompts; `prompt_hash` remains `omitted`.
 - No law-file writes happen automatically.
-- No timers, recurring jobs, live consolidation model calls, or auto-approval run in normal UX.
+- No timers, recurring jobs, or auto-approval run in normal UX. Manual analysis calls the explicitly configured model once.
 
 ## Review
 
@@ -136,7 +138,7 @@ wc -l ~/.agents/experience/observations.jsonl
 
 If capture is enabled but no observation appears after a completed turn, reload/restart Pi and check `/experience status`.
 
-If `/experience review` has no candidates while observations grow, the system is only capturing. Candidate generation is not automatic in 0.1.10.
+If `/experience review` has no candidates while observations grow, the system is only capturing. Choose `/experience setup analyze-now`; candidate generation is manual, not scheduled.
 
 If selector/pre-injection seems inactive:
 - confirm advanced selector controls were explicitly enabled;

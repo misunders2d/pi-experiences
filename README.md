@@ -56,7 +56,8 @@ The extension can:
 
 - opt in to local capture of redacted conversation pairs;
 - store captures under a private state root, default `~/.agents/experience/`;
-- manually consolidate repeated observations into candidate habits through the bundled `experience-consolidate` CLI;
+- choose a Pi model for habit learning inside `/experience setup`;
+- manually analyze saved examples from `/experience setup` and create candidate habits today;
 - require human review before habits become active;
 - keep pre-injection / selector injection disabled by default;
 - when enabled, select only active same-user habits;
@@ -80,7 +81,7 @@ pi update --extensions
 Pinned GitHub tag install is also available when you want an exact source ref:
 
 ```bash
-pi install git:github.com/misunders2d/pi-experiences@v0.1.10
+pi install git:github.com/misunders2d/pi-experiences@v0.1.11
 ```
 
 For local development:
@@ -114,12 +115,13 @@ Duplicate copies can register the same hooks twice and cause duplicate capture o
 ### Plain-language pieces
 
 - **Experience** is the whole behavior-learning layer.
-- **Setup** is the main control panel. It opens a checkbox-style settings panel for saving chat examples locally, suggesting habits from saved examples when asked, using approved habits before replies, background-learning explanation, reviewing suggested habits, showing current settings, and explaining every setting. It must not change config until you choose an item. The safe save-examples choice turns on local redacted capture and leaves timers, model learning, and approved-habit reminders off unless you explicitly toggle them.
+- **Setup** is the main control panel. It opens a Space/Enter settings panel for saving chat examples locally, choosing the habit-learning model, analyzing saved examples now, reviewing suggested habits, using approved habits before replies, showing the schedule as Phase 2/off, showing current settings, and explaining every setting. It must not change config until you choose an item. The safe save-examples choice turns on local redacted capture and leaves timers and approved-habit reminders off unless you explicitly toggle them.
 - **Capture** means saving redacted text fields and metadata from completed user/assistant turns to `observations.jsonl`. It is the raw material. Capture does **not** create habits by itself.
-- **Suggest habits from saved examples when I ask** means Pi may analyze saved examples only when explicitly asked and then show proposed habits for review. In 0.1.10 this is **not automatic**: no timer or live consolidation model adapter is installed.
+- **Choose model for habit learning** selects the configured Pi model used only when you explicitly run manual analysis.
+- **Analyze saved examples now** reads already saved redacted examples, calls the configured model once, validates/sanitizes the model output, and writes suggested habits into review. It never approves habits.
 - **Pending review** means proposed habits are waiting for you to approve or reject them. Pending items are not used for injection.
 - **Active habits** are reviewed habits. Normal setup/on does not use them before replies unless you explicitly enable approved-habit reminders.
-- **Timer** is only a future/advanced way to run learning in the background. It is not installed, started, or managed by this package.
+- **Schedule** is Phase 2/off. The package does not install, start, or pretend-enable a timer.
 
 Inside Pi:
 
@@ -142,24 +144,25 @@ The file stores redacted conversation-pair records with bounded text fields and 
 The normal UX is a single control panel plus optional shortcuts:
 
 ```text
-/experience setup                         # checkbox-style settings panel; no change until you choose
+/experience setup                         # Space/Enter control panel; no change until you choose
 /experience setup save on|off             # save chat examples locally
-/experience setup suggest on|off          # allow habit suggestions when you ask
-/experience setup use-habits on|off       # use approved habits before replies
-/experience setup background off          # keep background learning off
-/experience setup status                  # show current settings
-/experience setup review                  # review suggested habits
-/experience setup help                    # explain every setting
-/experience setup off                     # turn all experience features off
+/experience setup model                  # choose habit-learning model
+/experience setup analyze-now            # analyze saved examples now
+/experience setup review                 # review suggested habits
+/experience setup use-habits on|off      # use approved habits before replies
+/experience setup background off         # keep automatic schedule off
+/experience setup status                 # show current settings
+/experience setup help                   # explain every setting
+/experience setup off                    # turn all experience features off
 /experience on                            # shortcut: resume local redacted capture
 /experience off                           # shortcut: stop capture and all runtime gates
 /experience status                        # shortcut: plain dashboard
 /experience review                        # shortcut: inspect/accept/reject candidates if any exist
 ```
 
-The interactive `/experience setup` panel uses checkbox-style rows: `[x]` means ON and `[ ]` means OFF. Press Enter on a setting to toggle it; Show current settings, Review suggested habits, and Explain these settings live inside the panel; Done exits. You can also manage all settings from `/experience setup ...` without remembering the shortcuts. If Pi does not render the interactive menu, use the explicit setup subcommands above.
+The interactive `/experience setup` panel uses rows that run on Space/Enter. `[x]` means ON and `[ ]` means OFF where a row is a toggle; action rows such as model, analyze, review, status, and help run directly and then return to the panel. You can also manage all settings from `/experience setup ...` without remembering the shortcuts. If Pi does not render the interactive menu, use the explicit setup subcommands above.
 
-If observations are growing but `/experience review` shows no candidates, capture is working. In 0.1.10, candidate generation is not automatic because the package does not ship a live consolidation model adapter or install/manage a timer.
+If observations are growing but `/experience review` shows no candidates, choose **Analyze saved examples now** in `/experience setup`. Candidate generation is manual, not scheduled.
 
 Advanced/backcompat commands such as `/experience capture`, `/experience consolidation`, `/experience selector`, `/experience pending`, and `experience-consolidate --fixture-output` are maintainer/testing controls, not the normal first-run path.
 
@@ -191,7 +194,7 @@ Privacy and safety invariants:
 - selector `prompt_hash` is deliberately `omitted`;
 - only active same-user habits are selector candidates;
 - disabled, dormant, candidate, pending-review, quarantine, evidence, and report rows are not selector input;
-- no law-file writes are performed by the extension;
+- no automatic law-file writes are performed by the extension; `/experience setup use-habits on` may create the default private `law.md` only after an explicit user choice;
 - no automatic habit activation happens from selector use.
 
 ## Review flow
@@ -199,10 +202,10 @@ Privacy and safety invariants:
 The extension is designed around human review.
 
 ```text
-capture redacted pairs -> future/advanced consolidation -> proposed candidates -> human review -> active habits -> optional advanced selector injection
+capture redacted pairs -> analyze saved examples now -> proposed candidates -> human review -> active habits -> optional approved-habit reminders
 ```
 
-In 0.1.10, the package captures locally but does **not** automatically create candidates. The bundled `experience-consolidate` command is an advanced maintainer/test CLI that requires explicit fixture/model output; normal users should not need it.
+In 0.1.11, `/experience setup analyze-now` can create candidates from already saved examples using the configured Pi model. The bundled `experience-consolidate` command remains an advanced maintainer/test CLI; normal users should not need it.
 
 Review commands:
 
@@ -302,7 +305,7 @@ Opt-in.
 - Smart mode must fail closed on auth/model/timeout/malformed output.
 - Missing ledger/law must fail closed.
 - Hot selector path must not initialize storage or run migrations.
-- No law-file writes from the extension.
+- No automatic law-file writes from the extension; setup may create default private `law.md` only after explicit user choice and must not overwrite an existing unreadable file.
 - No automatic activation from selector use.
 
 ### Capture contract
@@ -333,7 +336,7 @@ For a bug fix:
 3. run reviewer/debate for non-trivial safety or runtime changes;
 4. run `npm run check`;
 5. bump `package.json` version;
-6. commit and tag, for example `v0.1.10`;
+6. commit and tag, for example `v0.1.11`;
 7. publish the same commit to npm;
 8. tell npm users to run `pi update --extensions`.
 
@@ -365,7 +368,7 @@ pi update --extensions
 For users who want a pinned exact source ref:
 
 ```bash
-pi install git:github.com/misunders2d/pi-experiences@v0.1.10
+pi install git:github.com/misunders2d/pi-experiences@v0.1.11
 ```
 
 Git package refs are pinned. `pi update --extensions` reconciles the pinned ref but does not float Git installs to a new tag.
@@ -376,7 +379,7 @@ For a bug fix:
 2. add or update regression tests;
 3. run review and `npm run check`;
 4. bump `package.json` version;
-5. commit and tag, for example `v0.1.10`;
+5. commit and tag, for example `v0.1.11`;
 6. publish the same commit to npm;
 7. npm users update with `pi update --extensions`; Git-pinned users install the new tag explicitly.
 
