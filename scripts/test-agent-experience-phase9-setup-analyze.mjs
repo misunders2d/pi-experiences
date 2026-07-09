@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -234,8 +235,13 @@ assert.equal(__getAgentExperienceDetailPanelOptionsForTest().overlay, false, 're
 assert.equal(__normalizeAgentExperienceConsolidationModelOutputForTest(strictRawOutput, strictNormalizeInput).proposals.length, 1);
 const weakOneOff = __normalizeAgentExperienceConsolidationModelOutputForTest({ ...strictRawOutput, proposals: [{ ...strictRawOutput.proposals[0], source_refs: [{ file_generation: 'active', seq: 1, checksum: r1.checksum }] }] }, strictNormalizeInput);
 assert.equal(weakOneOff.proposals.length, 0, 'one-off model suggestions must not become review candidates');
-assert.throws(() => __normalizeAgentExperienceConsolidationModelOutputForTest({ ...strictRawOutput, proposals: [{ ...strictRawOutput.proposals[0], source_refs: [{ seq: 1 }, { seq: 2 }, { seq: 3 }] }] }, strictNormalizeInput), /generation_mismatch|checksum_mismatch/, 'normalizer must reject missing model source ref generation/checksum');
-assert.throws(() => __normalizeAgentExperienceConsolidationModelOutputForTest({ ...strictRawOutput, proposals: [{ ...strictRawOutput.proposals[0], source_refs: [{ file_generation: 'wrong-generation', seq: 1, checksum: 'wrong' }, { file_generation: 'wrong-generation', seq: 2, checksum: 'wrong' }, { file_generation: 'wrong-generation', seq: 3, checksum: 'wrong' }] }] }, strictNormalizeInput), /generation_mismatch|checksum_mismatch/, 'normalizer must reject wrong model source ref generation/checksum');
+const canonicalizedRefs = __normalizeAgentExperienceConsolidationModelOutputForTest({ ...strictRawOutput, proposals: [{ ...strictRawOutput.proposals[0], source_refs: [{ seq: 1 }, { seq: 2, checksum: 'bad-copy' }, { file_generation: 'active', seq: 3, checksum: 'also-bad-copy' }] }] }, strictNormalizeInput);
+assert.deepEqual(canonicalizedRefs.proposals[0].source_refs, [
+  { file_generation: 'active', seq: 1, checksum: r1.checksum },
+  { file_generation: 'active', seq: 2, checksum: r2.checksum },
+  { file_generation: 'active', seq: 3, checksum: r3.checksum },
+], 'live normalizer must canonicalize source ref checksums from local observations');
+assert.throws(() => __normalizeAgentExperienceConsolidationModelOutputForTest({ ...strictRawOutput, proposals: [{ ...strictRawOutput.proposals[0], source_refs: [{ file_generation: 'wrong-generation', seq: 1, checksum: 'wrong' }, { file_generation: 'wrong-generation', seq: 2, checksum: 'wrong' }, { file_generation: 'wrong-generation', seq: 3, checksum: 'wrong' }] }] }, strictNormalizeInput), /generation_mismatch/, 'normalizer must reject wrong model source ref generation');
 assert.throws(() => __normalizeAgentExperienceConsolidationModelOutputForTest({ ...strictRawOutput, proposals: [{ ...strictRawOutput.proposals[0], source_refs: [{ seq: 999 }] }] }, strictNormalizeInput), /invalid_source_ref/);
 
 __setAgentExperienceConsolidationAdapterForTest({
@@ -269,10 +275,12 @@ __setAgentExperienceConsolidationAdapterForTest({
 setupChoices = ['Analyze saved examples now', 'Done'];
 await commands.get('experience').handler('setup', ctx);
 assert.ok(notes.some((note) => /Analyze saved examples started/.test(note.message || '')), 'analyze-now must start without blocking setup');
+assert.ok(!notes.some((note) => /Agent Experience setup closed/.test(note.message || '')), 'setup should close silently after Analyze starts so completion cannot print behind the menu');
 await waitForNote(/New suggested habits created: 1/, 'analyze-now must create one suggestion');
 
 notes.length = 0;
 let reviewPanelSeen = false;
+let safetyActionPanelSeen = false;
 ctx.ui.custom = async (factory) => {
   let resolved = false;
   let value;
@@ -282,6 +290,13 @@ ctx.ui.custom = async (factory) => {
     const next = setupChoices.shift();
     value = next === 'Review suggested habits' ? 'review' : next === 'Done' ? 'done' : undefined;
     resolved = true;
+    return value;
+  }
+  if (/Approved-habit safety file is missing/.test(rendered)) {
+    assert.match(rendered, /Space\/Enter run/, 'safety file action panel must advertise Space/Enter');
+    safetyActionPanelSeen = true;
+    component.handleInput(' ');
+    assert.equal(resolved, true, 'safety file action panel Space should choose selected action');
     return value;
   }
   assert.match(rendered, /Suggested habit/, 'review details must render inside the focused review panel');
@@ -297,9 +312,10 @@ setupChoices = ['Review suggested habits', undefined, 'Create default safety fil
 await commands.get('experience').handler('setup', ctx);
 delete ctx.ui.custom;
 assert.equal(reviewPanelSeen, true, 'setup review must use the focused review panel');
+assert.equal(safetyActionPanelSeen, true, 'missing safety file prompt must use Space-aware action panel');
 assert.ok(notes.some((note) => /Approved suggestion/.test(note.message || '')), 'setup review must approve suggestion from setup flow');
 assert.ok(!notes.some((note) => /Suggested habit\n|Suggested habits waiting for review|When:/.test(note.message || '')), 'review details must not be dumped into chat history notifications');
-assert.ok(notes.some((note) => /safety file/i.test(note.title || '') || /Safety file/i.test(note.message || '')), 'first-run approval must repair missing safety file inside setup');
+assert.equal(existsSync(resolvePrivatePath(paths.root, 'law.md')), true, 'first-run approval must create missing safety file inside setup');
 
 setupChoices = ['[ ] Use approved habits before replies', 'Done'];
 await commands.get('experience').handler('setup', ctx);

@@ -81,7 +81,7 @@ pi update --extensions
 Pinned GitHub tag install is also available when you want an exact source ref:
 
 ```bash
-pi install git:github.com/misunders2d/pi-experiences@v0.1.22
+pi install git:github.com/misunders2d/pi-experiences@v0.1.23
 ```
 
 For local development:
@@ -349,7 +349,7 @@ For a bug fix:
 3. run reviewer/debate for non-trivial safety or runtime changes;
 4. run `npm run check`;
 5. bump `package.json` version;
-6. commit and tag, for example `v0.1.22`;
+6. commit and tag, for example `v0.1.23`;
 7. publish the same commit to npm;
 8. tell npm users to run `pi update --extensions`.
 
@@ -381,7 +381,7 @@ pi update --extensions
 For users who want a pinned exact source ref:
 
 ```bash
-pi install git:github.com/misunders2d/pi-experiences@v0.1.22
+pi install git:github.com/misunders2d/pi-experiences@v0.1.23
 ```
 
 Git package refs are pinned. `pi update --extensions` reconciles the pinned ref but does not float Git installs to a new tag.
@@ -392,7 +392,7 @@ For a bug fix:
 2. add or update regression tests;
 3. run review and `npm run check`;
 4. bump `package.json` version;
-5. commit and tag, for example `v0.1.22`;
+5. commit and tag, for example `v0.1.23`;
 6. publish the same commit to npm;
 7. npm users update with `pi update --extensions`; Git-pinned users install the new tag explicitly.
 

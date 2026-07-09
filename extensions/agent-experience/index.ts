@@ -299,6 +299,49 @@ class TextPanelComponent implements Component {
 	invalidate(): void {}
 }
 
+class ChoicePanelComponent implements Component {
+	private selectedIndex = 0;
+	private readonly title: string;
+	private readonly details: string;
+	private readonly actions: string[];
+	private readonly done: (result: string | undefined) => void;
+
+	constructor(title: string, details: string, actions: string[], done: (result: string | undefined) => void) {
+		this.title = title;
+		this.details = details;
+		this.actions = actions;
+		this.done = done;
+	}
+
+	render(width: number): string[] {
+		const w = Math.max(50, width);
+		const lines = [truncateLine(this.title, w), truncateLine(this.details, w), "", "Action:"];
+		for (let i = 0; i < this.actions.length; i++) {
+			const prefix = i === this.selectedIndex ? "→ " : "  ";
+			lines.push(truncateLine(`${prefix}${this.actions[i]}`, w));
+		}
+		lines.push("", truncateLine("↑/↓ choose action · Space/Enter run · 1/2/3 · Esc cancel", w));
+		return boxedLines(lines, w);
+	}
+
+	handleInput(data: string): void {
+		if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c"))) return this.done(undefined);
+		if (matchesKey(data, Key.enter) || matchesKey(data, Key.space) || data === " ") return this.done(this.actions[this.selectedIndex]);
+		if (data === "1" && this.actions[0]) return this.done(this.actions[0]);
+		if (data === "2" && this.actions[1]) return this.done(this.actions[1]);
+		if (data === "3" && this.actions[2]) return this.done(this.actions[2]);
+		if (matchesKey(data, Key.up)) {
+			this.selectedIndex = this.selectedIndex === 0 ? this.actions.length - 1 : this.selectedIndex - 1;
+			return;
+		}
+		if (matchesKey(data, Key.down)) {
+			this.selectedIndex = this.selectedIndex === this.actions.length - 1 ? 0 : this.selectedIndex + 1;
+		}
+	}
+
+	invalidate(): void {}
+}
+
 class ReviewDecisionComponent implements Component {
 	private selectedIndex = 0;
 	private scroll = 0;
@@ -570,8 +613,8 @@ function normalizeSourceRefs(rawRefs: unknown, input: ConsolidationModelAdapterI
 		if (!Number.isInteger(ref?.seq)) throw new Error("habit_learning_model_missing_source_ref_seq");
 		const record = bySeq.get(ref.seq);
 		if (!record) throw new Error("habit_learning_model_invalid_source_ref");
-		if (ref.file_generation !== record.file_generation) throw new Error("habit_learning_model_source_ref_generation_mismatch");
-		if (ref.checksum !== record.checksum) throw new Error("habit_learning_model_source_ref_checksum_mismatch");
+		const suppliedGeneration = typeof ref?.file_generation === "string" ? ref.file_generation : input.expected.file_generation;
+		if (suppliedGeneration !== record.file_generation) throw new Error("habit_learning_model_source_ref_generation_mismatch");
 		return { file_generation: record.file_generation, seq: record.seq, checksum: record.checksum };
 	});
 	return refs.filter((ref, index, array) => array.findIndex((candidate) => candidate.seq === ref.seq) === index);
@@ -926,6 +969,15 @@ async function showTextPanel(ctx: ExtensionCommandContext, title: string, detail
 	return false;
 }
 
+async function chooseActionInPanel(ctx: ExtensionCommandContext, title: string, details: string, actions: string[]): Promise<string | undefined> {
+	const ui = (ctx as { hasUI?: boolean; ui?: { custom?: ExtensionCommandContext["ui"]["custom"] } })?.ui;
+	if ((ctx as { hasUI?: boolean }).hasUI !== false && typeof ui?.custom === "function") {
+		return ui.custom<string | undefined>((_tui, _theme, _keybindings, done) => new ChoicePanelComponent(title, details, actions, done), DETAIL_PANEL_CUSTOM_OPTIONS);
+	}
+	notify(ctx, details, "info");
+	return chooseSetup(ctx, title, actions, false);
+}
+
 async function chooseReviewActionInPanel(ctx: ExtensionCommandContext, title: string, details: string): Promise<SetupReviewAction | undefined> {
 	const ui = (ctx as { hasUI?: boolean; ui?: { custom?: ExtensionCommandContext["ui"]["custom"] } })?.ui;
 	if ((ctx as { hasUI?: boolean }).hasUI !== false && typeof ui?.custom === "function") {
@@ -1179,11 +1231,12 @@ async function ensureLawFileForSetup(ctx: ExtensionCommandContext): Promise<bool
 		const canCreateDefaultPrivateLaw = configuredLawPath === "law.md";
 		const file = canCreateDefaultPrivateLaw ? resolvePrivatePath(paths.root, "law.md") : undefined;
 		const isMissing = /law file missing/i.test(rawError) && !!file && !existsSync(file);
-		const choice = await chooseSetup(ctx, isMissing ? "Approved-habit safety file is missing" : "Approved-habit safety file cannot be read", [
+		const actions = [
 			...(isMissing ? ["Create default safety file and continue"] : []),
 			"Continue but keep reminders paused until file exists",
 			"Cancel",
-		], false);
+		];
+		const choice = await chooseActionInPanel(ctx, isMissing ? "Approved-habit safety file is missing" : "Approved-habit safety file cannot be read", "Choose what to do with the private safety file. Space or Enter runs the selected action.", actions);
 		if (choice === "Create default safety file and continue" && isMissing) {
 			const handle = await openSensitiveFileForWrite(paths.root, file);
 			try {
@@ -1344,7 +1397,7 @@ async function handleSetup(ctx: ExtensionCommandContext, args: string[] = []) {
 			else if (choice === "Explain these settings") await handleHelpSetup(ctx, config);
 			else if (choice === "Turn all experience features off") await handleOff(ctx);
 			else if (choice.startsWith("Choose model for habit learning")) await handleSetupModel(ctx);
-			else if (choice === "Analyze saved examples now") await handleAnalyzeNow(ctx);
+			else if (choice === "Analyze saved examples now") { await handleAnalyzeNow(ctx); return; }
 			else if (choice.startsWith("Automatic schedule")) await handleSetupTimer(ctx);
 			else if (choice.includes("Use approved habits before replies")) await handleSetupUseHabitsToggle(ctx, !config.selector_enabled);
 			else if (choice.includes("Save chat examples locally")) {
@@ -1361,7 +1414,7 @@ async function handleSetup(ctx: ExtensionCommandContext, args: string[] = []) {
 			const { config: updated, path } = await setAgentExperienceCaptureActive(!(config.enabled && config.capture_enabled));
 			notify(ctx, [`Save chat examples locally: ${updated.enabled && updated.capture_enabled ? "ON" : "OFF"}`, `Config file: ${path}`].join("\n"), "info");
 		} else if (action === "model") await handleSetupModel(ctx);
-		else if (action === "analyze") await handleAnalyzeNow(ctx);
+		else if (action === "analyze") { await handleAnalyzeNow(ctx); return; }
 		else if (action === "review") await handleReviewSetup(ctx);
 		else if (action === "use") await handleSetupUseHabitsToggle(ctx, !config.selector_enabled);
 		else if (action === "schedule") await handleSetupTimer(ctx);
