@@ -108,6 +108,11 @@ try {
   assert.deepEqual(correctionBatch.proposals.map((proposal) => proposal.polarity), [-1, 1]);
   assert.equal(correctionBatch.proposals[1].behavior, 'Give concise verified answers', 'replacement behavior is positive, never negative');
 
+  const conflictBadSource = validateModelOutputBatch(modelOutput(observations, { batch_id: 'conflict-bad-source', proposals: [
+    { ...modelOutput(observations).proposals[0], proposal_id: 'conflict-bad-a', candidate_key: 'same-key', condition: 'When answering status questions', behavior: 'Give concise answers', source_refs: observations.map((record) => ({ file_generation: record.file_generation, seq: record.seq, checksum: '0'.repeat(64) })) },
+    { ...modelOutput(observations).proposals[0], proposal_id: 'conflict-bad-b', candidate_key: 'same-key', condition: 'When answering status questions', behavior: 'Give very long answers', source_refs: observations.map((record) => ({ file_generation: record.file_generation, seq: record.seq, checksum: '0'.repeat(64) })) },
+  ] }), 'owner');
+  assert.throws(() => processValidatedModelOutput({ db: storage.db, userId: 'owner', output: conflictBadSource, observations }), /checksum/i, 'conflict path must reject forged source checksums before pending review');
   const conflict = validateModelOutputBatch(modelOutput(observations, { batch_id: 'conflict-batch', proposals: [
     { ...modelOutput(observations).proposals[0], proposal_id: 'conflict-a', candidate_key: 'same-key', condition: 'When answering status questions', behavior: 'Give concise answers' },
     { ...modelOutput(observations).proposals[0], proposal_id: 'conflict-b', candidate_key: 'same-key', condition: 'When answering status questions', behavior: 'Give very long answers' },

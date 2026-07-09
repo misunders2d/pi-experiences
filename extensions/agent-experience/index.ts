@@ -66,6 +66,8 @@ const analyzeJobs = new Map<string, Promise<void>>();
 
 type SetupReviewAction = "Approve" | "Reject" | "Back to review list";
 
+const DETAIL_PANEL_CUSTOM_OPTIONS = { overlay: false } as const;
+
 type LiveModelSearchResult = { model?: string; exact?: true };
 type SetupAction = "save" | "model" | "analyze" | "review" | "use" | "schedule" | "status" | "help" | "off" | "done";
 
@@ -136,12 +138,16 @@ const setupSettingsTheme: SettingsListTheme = {
 	hint: (text) => style(text, FG_DIM),
 };
 
-function buildSetupSettingItems(config: { enabled: boolean; capture_enabled: boolean; consolidation_enabled: boolean; selector_enabled: boolean }): SettingItem[] {
+function modelValueForSetup(config: { consolidation_model: string }): string {
+	return config.consolidation_model || "choose model";
+}
+
+function buildSetupSettingItems(config: { enabled: boolean; capture_enabled: boolean; consolidation_enabled: boolean; consolidation_model: string; selector_enabled: boolean }): SettingItem[] {
 	const captureActive = config.enabled && config.capture_enabled;
 	const anythingEnabled = config.enabled || config.capture_enabled || config.consolidation_enabled || config.selector_enabled;
 	return [
 		{ id: "save", label: "Save chat examples locally", currentValue: checkboxValue(captureActive), values: ["[ ] OFF", "[x] ON"], description: "Space/Enter toggles local redacted example capture." },
-		{ id: "model", label: "Choose model for habit learning", currentValue: "open", values: ["open"], description: "Space/Enter opens live typeahead model search. Type 5.5, codex, glm, etc." },
+		{ id: "model", label: "Choose model for habit learning", currentValue: modelValueForSetup(config), values: [modelValueForSetup(config)], description: "Space/Enter opens live typeahead model search. Type 5.5, codex, glm, etc." },
 		{ id: "analyze", label: "Analyze saved examples now", currentValue: "open", values: ["open"], description: "Starts nonblocking analysis. No habits are auto-approved." },
 		{ id: "review", label: "Review suggested habits", currentValue: "open", values: ["open"], description: "Inspect each suggestion in a boxed panel, then approve/reject/back." },
 		{ id: "use", label: "Use approved habits before replies", currentValue: checkboxValue(config.selector_enabled), values: ["[ ] OFF", "[x] ON"], description: "Space/Enter toggles approved-habit reminders. Suggestions still require review first." },
@@ -157,7 +163,7 @@ class SetupSettingsComponent implements Component {
 	private readonly box: Box;
 	private readonly list: SettingsList;
 
-	constructor(config: { enabled: boolean; capture_enabled: boolean; consolidation_enabled: boolean; selector_enabled: boolean }, done: (result: SetupAction | undefined) => void) {
+	constructor(config: { enabled: boolean; capture_enabled: boolean; consolidation_enabled: boolean; consolidation_model: string; selector_enabled: boolean }, done: (result: SetupAction | undefined) => void) {
 		this.box = new Box(2, 1, panelBg);
 		this.box.addChild(new Text(style("Agent Experience setup", FG_ACCENT, BOLD), 0, 0));
 		this.box.addChild(new Text(style("Space/Enter toggles checkbox rows or opens action rows. Esc closes.", FG_DIM), 0, 0));
@@ -253,6 +259,45 @@ class LiveModelSearchComponent implements Component, Focusable {
 	invalidate(): void { this.input.invalidate(); }
 }
 
+class TextPanelComponent implements Component {
+	private scroll = 0;
+	private readonly title: string;
+	private readonly details: string;
+	private readonly done: () => void;
+
+	constructor(title: string, details: string, done: () => void) {
+		this.title = title;
+		this.details = details;
+		this.done = done;
+	}
+
+	render(width: number): string[] {
+		const w = Math.max(60, width);
+		const detailLines = wrapPanelText(this.details, Math.max(30, w - 2));
+		const maxDetail = 24;
+		const start = Math.max(0, Math.min(this.scroll, Math.max(0, detailLines.length - maxDetail)));
+		const visible = detailLines.slice(start, start + maxDetail);
+		const lines = [truncateLine(this.title, w), truncateLine("Details stay in this panel. Esc/Enter returns to setup.", w), ""];
+		for (const line of visible) lines.push(truncateLine(line, w));
+		if (detailLines.length > maxDetail) lines.push(truncateLine(`… lines ${start + 1}-${Math.min(start + maxDetail, detailLines.length)} of ${detailLines.length}; PgUp/PgDn scroll`, w));
+		lines.push("", truncateLine("Enter/Esc back · PgUp/PgDn scroll", w));
+		return boxedLines(lines, w);
+	}
+
+	handleInput(data: string): void {
+		if (matchesKey(data, Key.escape) || matchesKey(data, Key.enter) || matchesKey(data, Key.space) || data === " ") return this.done();
+		if (matchesKey(data, Key.pageUp) || matchesKey(data, Key.up)) {
+			this.scroll = Math.max(0, this.scroll - 8);
+			return;
+		}
+		if (matchesKey(data, Key.pageDown) || matchesKey(data, Key.down)) {
+			this.scroll = Math.min(this.scroll + 8, 10_000);
+		}
+	}
+
+	invalidate(): void {}
+}
+
 class ReviewDecisionComponent implements Component {
 	private selectedIndex = 0;
 	private scroll = 0;
@@ -322,6 +367,10 @@ export function __setAgentExperienceSelectorAdapterForTest(adapter: SelectorMode
 
 export function __setAgentExperienceConsolidationAdapterForTest(adapter: ConsolidationModelAdapter | undefined) {
 	consolidationModelAdapter = adapter;
+}
+
+export function __getAgentExperienceDetailPanelOptionsForTest(): typeof DETAIL_PANEL_CUSTOM_OPTIONS {
+	return DETAIL_PANEL_CUSTOM_OPTIONS;
 }
 
 function notify(ctx: ExtensionCommandContext, message: string, level: "info" | "warn" | "error" = "info") {
@@ -428,6 +477,21 @@ function configuredModelAvailable(ctx: Pick<ExtensionContext, "modelRegistry">, 
 	return !!model && !!ctx.modelRegistry?.hasConfiguredAuth?.(model);
 }
 
+async function configuredModelAuthenticated(ctx: Pick<ExtensionContext, "modelRegistry">, configured: string): Promise<{ ok: true } | { ok: false; reason: string }> {
+	const parsed = parseProviderModel(configured);
+	if (!parsed) return { ok: false, reason: "invalid provider/model id" };
+	const model = ctx.modelRegistry?.find?.(parsed.provider, parsed.modelId);
+	if (!model) return { ok: false, reason: "model is not available in Pi registry" };
+	if (!ctx.modelRegistry?.hasConfiguredAuth?.(model)) return { ok: false, reason: "model auth is not configured" };
+	try {
+		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+		if (!auth.ok || !auth.apiKey) return { ok: false, reason: "model auth unavailable" };
+		return { ok: true };
+	} catch (error: any) {
+		return { ok: false, reason: redactText(String(error?.message || error)).slice(0, 300) };
+	}
+}
+
 function truncateForModel(value: unknown, max = 900): string {
 	const text = redactText(typeof value === "string" ? value : JSON.stringify(value ?? {}));
 	return text.length > max ? `${text.slice(0, max)}…` : text;
@@ -505,7 +569,8 @@ function normalizeSourceRefs(rawRefs: unknown, input: ConsolidationModelAdapterI
 		if (!Number.isInteger(ref?.seq)) throw new Error("habit_learning_model_missing_source_ref_seq");
 		const record = bySeq.get(ref.seq);
 		if (!record) throw new Error("habit_learning_model_invalid_source_ref");
-		// Models group same-meaning examples; Pi only trusts seq and canonicalizes refs locally.
+		if (ref.file_generation !== record.file_generation) throw new Error("habit_learning_model_source_ref_generation_mismatch");
+		if (ref.checksum !== record.checksum) throw new Error("habit_learning_model_source_ref_checksum_mismatch");
 		return { file_generation: record.file_generation, seq: record.seq, checksum: record.checksum };
 	});
 	return refs.filter((ref, index, array) => array.findIndex((candidate) => candidate.seq === ref.seq) === index);
@@ -628,7 +693,7 @@ async function reviewSummary(root: string, userId: string): Promise<{ ledger: bo
 	}
 }
 
-async function handleStatus(ctx: ExtensionCommandContext) {
+async function buildStatusText(): Promise<{ text: string; enabled: boolean }> {
 	const paths = getAgentExperiencePaths();
 	const { config, exists, path } = await readAgentExperienceConfig(paths);
 	const observations = await countObservationLines(paths.root);
@@ -641,7 +706,7 @@ async function handleStatus(ctx: ExtensionCommandContext) {
 		: reviewCount > 0
 			? "Choose Review suggested habits in /experience setup."
 			: "Choose Analyze saved examples now in /experience setup to create suggestions.";
-	notify(ctx, [
+	return { enabled: config.enabled, text: [
 		`Experience: ${config.enabled ? "ON" : "OFF"}`,
 		`Config file: ${path}${exists ? "" : " (not created; using defaults)"}`,
 		`Save chat examples locally: ${captureActive ? "ON" : "OFF"}${observations === undefined ? "" : ` (${plural(observations, "saved example")})`}`,
@@ -651,15 +716,26 @@ async function handleStatus(ctx: ExtensionCommandContext) {
 		`Use approved habits before replies: ${selectorActive ? (config.selector_mode === "instant" ? "ON (local/no-network)" : `ON (${config.selector_mode})`) : config.selector_enabled ? "configured ON, inactive because Experience is OFF" : "OFF"}`,
 		"Automatic schedule: Phase 2 / OFF",
 		`Next: ${nextStep}`,
-	].join("\n"), config.enabled ? "info" : "warn");
+	].join("\n") };
 }
 
-function buildSetupOptions(config: { enabled: boolean; capture_enabled: boolean; consolidation_enabled: boolean; selector_enabled: boolean }): string[] {
+async function handleStatus(ctx: ExtensionCommandContext) {
+	const status = await buildStatusText();
+	notify(ctx, status.text, status.enabled ? "info" : "warn");
+}
+
+async function handleStatusSetup(ctx: ExtensionCommandContext) {
+	const status = await buildStatusText();
+	if (await showTextPanel(ctx, "Agent Experience current settings", status.text)) return;
+	notify(ctx, status.text, status.enabled ? "info" : "warn");
+}
+
+function buildSetupOptions(config: { enabled: boolean; capture_enabled: boolean; consolidation_enabled: boolean; consolidation_model: string; selector_enabled: boolean }): string[] {
 	const captureActive = config.enabled && config.capture_enabled;
 	const anythingEnabled = config.enabled || config.capture_enabled || config.consolidation_enabled || config.selector_enabled;
 	return [
 		`${captureActive ? "[x]" : "[ ]"} Save chat examples locally`,
-		"Choose model for habit learning",
+		`Choose model for habit learning (${modelValueForSetup(config)})`,
 		"Analyze saved examples now",
 		"Review suggested habits",
 		`${config.selector_enabled ? "[x]" : "[ ]"} Use approved habits before replies`,
@@ -834,13 +910,19 @@ async function chooseLiveModel(ctx: ExtensionCommandContext, models: string[], r
 	return choice;
 }
 
+async function showTextPanel(ctx: ExtensionCommandContext, title: string, details: string): Promise<boolean> {
+	const ui = (ctx as { hasUI?: boolean; ui?: { custom?: ExtensionCommandContext["ui"]["custom"] } })?.ui;
+	if ((ctx as { hasUI?: boolean }).hasUI !== false && typeof ui?.custom === "function") {
+		await ui.custom<void>((_tui, _theme, _keybindings, done) => new TextPanelComponent(title, details, () => done()), DETAIL_PANEL_CUSTOM_OPTIONS);
+		return true;
+	}
+	return false;
+}
+
 async function chooseReviewActionInPanel(ctx: ExtensionCommandContext, title: string, details: string): Promise<SetupReviewAction | undefined> {
 	const ui = (ctx as { hasUI?: boolean; ui?: { custom?: ExtensionCommandContext["ui"]["custom"] } })?.ui;
 	if ((ctx as { hasUI?: boolean }).hasUI !== false && typeof ui?.custom === "function") {
-		return ui.custom<SetupReviewAction | undefined>((_tui, _theme, _keybindings, done) => new ReviewDecisionComponent(title, details, done), {
-			overlay: true,
-			overlayOptions: { width: "85%", minWidth: 70, maxHeight: "90%", anchor: "center", margin: 1 },
-		});
+		return ui.custom<SetupReviewAction | undefined>((_tui, _theme, _keybindings, done) => new ReviewDecisionComponent(title, details, done), DETAIL_PANEL_CUSTOM_OPTIONS);
 	}
 	notify(ctx, details, "info");
 	return chooseSetup(ctx, "What do you want to do with this suggestion?", ["Approve", "Reject", "Back to review list"], false) as Promise<SetupReviewAction | undefined>;
@@ -885,33 +967,26 @@ async function acquireAnalyzeLock(root: string) {
 	}
 }
 
+export function __formatAgentExperienceAnalyzeFailureForTest(error: unknown): string {
+	return formatAnalyzeFailure(error);
+}
+
 function formatAnalyzeFailure(error: unknown): string {
 	const raw = String((error as any)?.message || error);
 	const detail = redactText(raw).slice(0, 300);
 	if (/auth|api.?key|credential/i.test(raw)) return `Habit learning could not use the selected model. Choose another authenticated model in /experience setup. Detail: ${detail}`;
 	if (/invalid_json|truncated|format|schema|proposal|source_ref/i.test(raw)) return `The selected model returned output Pi could not verify. No suggestions were approved. Try Analyze again or choose another model. Detail: ${detail}`;
 	if (/timeout|abort/i.test(raw)) return `Habit learning took too long or was interrupted. No suggestions were approved. Try again later. Detail: ${detail}`;
+	if (/watermark would move backward/i.test(raw)) return `These saved examples were already analyzed. No suggestions were approved or changed. Next: open /experience setup and choose Review suggested habits, or capture more examples before analyzing again. Detail: ${detail}`;
 	return `Habit learning failed safely. No suggestions were approved. Detail: ${detail}`;
 }
 
-async function runAnalyzeNowJob(ctx: ExtensionCommandContext) {
+async function runAnalyzeNowJob(ctx: ExtensionCommandContext, preflight: { lock: { release: () => Promise<void> }; observations: ValidatedObservationRecord[] }) {
 	const paths = getAgentExperiencePaths();
 	const { config } = await readAgentExperienceConfig(paths);
 	const model = config.consolidation_model;
-	const lock = await acquireAnalyzeLock(paths.root);
-	if (!lock) return notify(ctx, "Analyze saved examples is already running. Pi remains usable; come back to /experience setup and choose Review suggested habits after it finishes.", "info");
-	let observations: ValidatedObservationRecord[];
-	try {
-		observations = await readValidatedObservationGeneration(paths.root, defaultObservationManifest(), getConfiguredUserId());
-	} catch (error: any) {
-		await lock.release();
-		const raw = String(error?.message || error);
-		return notify(ctx, `No readable saved examples yet. Turn on Save chat examples locally, have a normal conversation, then choose Analyze saved examples now. Detail: ${redactText(raw).slice(0, 300)}`, "warn");
-	}
-	if (observations.length < 1) {
-		await lock.release();
-		return notify(ctx, "No saved examples yet. Turn on Save chat examples locally, have a normal conversation, then choose Analyze saved examples now.", "warn");
-	}
+	const lock = preflight.lock;
+	const observations = preflight.observations;
 	const batch = observations;
 	const expected = expectedRangeFromObservations(batch, getConfiguredUserId());
 	const adapter = consolidationModelAdapter ?? createPiConsolidationModelAdapter(ctx);
@@ -924,17 +999,23 @@ async function runAnalyzeNowJob(ctx: ExtensionCommandContext) {
 		if (!result.ok) return notify(ctx, `Habit learning did not create suggestions: ${redactText(String(result.reason || "model output invalid"))}`, "warn");
 		const candidateIds = Array.isArray((result as any).result?.candidate_ids) ? (result as any).result.candidate_ids : [];
 		const pendingId = (result as any).result?.pending_review_id;
-		const proposalCount = Number((result as any).diff?.proposal_count ?? candidateIds.length ?? 0);
-		return notify(ctx, proposalCount > 0 ? [
+		const inserted = (result as any).result?.inserted || {};
+		const newSuggestionCount = Number(inserted.candidates || 0) + Number(inserted.pending_review || 0);
+		const modelProposalCount = Number((result as any).diff?.proposal_count ?? candidateIds.length ?? 0);
+		return notify(ctx, newSuggestionCount > 0 ? [
 			`Analyze saved examples finished: ${plural(batch.length, "saved example")} checked.`,
-			`Suggested habits created: ${proposalCount}`,
+			`New suggested habits created: ${newSuggestionCount}`,
 			candidateIds.length ? `Review ids: ${candidateIds.join(", ")}` : pendingId ? `Review item: ${pendingId}` : "Review list updated.",
 			"Next: open /experience setup and choose Review suggested habits.",
-		].filter(Boolean).join("\n") : [
+		].filter(Boolean).join("\n") : modelProposalCount > 0 ? [
+			`Analyze saved examples finished: ${plural(batch.length, "saved example")} checked.`,
+			"No new suggestions were created; these examples were already analyzed or matched existing suggestions.",
+			"Next: open /experience setup and choose Review suggested habits, or capture more examples before analyzing again.",
+		].join("\n") : [
 			`Analyze saved examples finished: ${plural(batch.length, "saved example")} checked.`,
 			"No repeated habit was strong enough to review yet.",
 			"A suggestion needs at least 3 supporting examples across 2 different days.",
-		].join("\n"), proposalCount > 0 ? "info" : "info");
+		].join("\n"), "info");
 	} catch (error: any) {
 		return notify(ctx, formatAnalyzeFailure(error), "warn");
 	} finally {
@@ -949,12 +1030,27 @@ async function handleAnalyzeNow(ctx: ExtensionCommandContext) {
 	if (!config.enabled) return notify(ctx, "Turn on Save chat examples locally in /experience setup before analyzing examples.", "warn");
 	if (!config.consolidation_enabled) return notify(ctx, "Choose a habit-learning model in /experience setup before analyzing examples.", "warn");
 	const model = config.consolidation_model;
-	if (!configuredModelAvailable(ctx, model) && !consolidationModelAdapter) {
-		return notify(ctx, `Choose an authenticated habit-learning model in /experience setup first. Current model is not available: ${redactText(model)}`, "warn");
+	if (!consolidationModelAdapter) {
+		const auth = await configuredModelAuthenticated(ctx, model);
+		if (!auth.ok) return notify(ctx, `Choose an authenticated habit-learning model in /experience setup first. Current model: ${redactText(model)}. Detail: ${auth.reason}`, "warn");
 	}
 	const jobKey = `${paths.root}:${getConfiguredUserId()}`;
 	if (analyzeJobs.has(jobKey)) return notify(ctx, "Analyze saved examples is already running. Pi remains usable; come back to /experience setup and choose Review suggested habits after it finishes.", "info");
-	const job = runAnalyzeNowJob(ctx).finally(() => analyzeJobs.delete(jobKey));
+	const lock = await acquireAnalyzeLock(paths.root);
+	if (!lock) return notify(ctx, "Analyze saved examples is already running. Pi remains usable; come back to /experience setup and choose Review suggested habits after it finishes.", "info");
+	let observations: ValidatedObservationRecord[];
+	try {
+		observations = await readValidatedObservationGeneration(paths.root, defaultObservationManifest(), getConfiguredUserId());
+	} catch (error: any) {
+		await lock.release();
+		const raw = String(error?.message || error);
+		return notify(ctx, `No readable saved examples yet. Turn on Save chat examples locally, have a normal conversation, then choose Analyze saved examples now. Detail: ${redactText(raw).slice(0, 300)}`, "warn");
+	}
+	if (observations.length < 1) {
+		await lock.release();
+		return notify(ctx, "No saved examples yet. Turn on Save chat examples locally, have a normal conversation, then choose Analyze saved examples now.", "warn");
+	}
+	const job = runAnalyzeNowJob(ctx, { lock, observations }).finally(() => analyzeJobs.delete(jobKey));
 	analyzeJobs.set(jobKey, job);
 	void job.catch((error) => notify(ctx, formatAnalyzeFailure(error), "warn"));
 	return notify(ctx, "Analyze saved examples started. Pi remains usable while the model works. I’ll post a message here when suggestions are ready, then use /experience setup → Review suggested habits.", "info");
@@ -1236,11 +1332,11 @@ async function handleSetup(ctx: ExtensionCommandContext, args: string[] = []) {
 			const options = buildSetupOptions(config);
 			const choice = await chooseSetup(ctx, "Agent Experience setup — choose what to configure", options, false);
 			if (!choice || choice === "Done") return notify(ctx, "Agent Experience setup closed.", "info");
-			if (choice === "Show current settings") await handleStatus(ctx);
+			if (choice === "Show current settings") await handleStatusSetup(ctx);
 			else if (choice === "Review suggested habits") await handleReviewSetup(ctx);
 			else if (choice === "Explain these settings") notify(ctx, setupHelpMessage(config), "info");
 			else if (choice === "Turn all experience features off") await handleOff(ctx);
-			else if (choice === "Choose model for habit learning") await handleSetupModel(ctx);
+			else if (choice.startsWith("Choose model for habit learning")) await handleSetupModel(ctx);
 			else if (choice === "Analyze saved examples now") await handleAnalyzeNow(ctx);
 			else if (choice.startsWith("Automatic schedule")) await handleSetupTimer(ctx);
 			else if (choice.includes("Use approved habits before replies")) await handleSetupUseHabitsToggle(ctx, !config.selector_enabled);
@@ -1262,7 +1358,7 @@ async function handleSetup(ctx: ExtensionCommandContext, args: string[] = []) {
 		else if (action === "review") await handleReviewSetup(ctx);
 		else if (action === "use") await handleSetupUseHabitsToggle(ctx, !config.selector_enabled);
 		else if (action === "schedule") await handleSetupTimer(ctx);
-		else if (action === "status") await handleStatus(ctx);
+		else if (action === "status") await handleStatusSetup(ctx);
 		else if (action === "help") notify(ctx, setupHelpMessage(config), "info");
 		else if (action === "off") await handleOff(ctx);
 		else notify(ctx, `Agent Experience setup ignored unknown action: ${redactText(String(action)).slice(0, 120)}\nNo config changed.`, "warn");

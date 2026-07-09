@@ -4,7 +4,7 @@ import { canonicalJson, sha256Hex } from "../storage/checksum.ts";
 import { ensurePrivateRoot, normalizeUserId, resolvePrivatePath } from "../storage/private-root.ts";
 import type { AgentExperienceConfig } from "../config.ts";
 import type { ValidatedObservationRecord } from "./observations.ts";
-import { validateModelOutputBatch, modelOutputToProposalBatch, insertModelOutputQuarantine, processValidatedModelOutput, type ValidatedModelOutputBatch } from "./model-output.ts";
+import { validateModelOutputBatch, validateModelOutputSourceRefs, modelOutputToProposalBatch, insertModelOutputQuarantine, processValidatedModelOutput, type ValidatedModelOutputBatch } from "./model-output.ts";
 
 export interface ConsolidationExpectedRange {
 	user_id: string;
@@ -91,6 +91,7 @@ export async function runConsolidationOnce(input: { root: string; db: any; userI
 		try {
 			output = validateModelOutputBatch(input.modelOutput, userId);
 			validateModelOutputExpectedRange(output, expected);
+			validateModelOutputSourceRefs(output, input.observations);
 		} catch (error: any) {
 			if (!input.dryRun) {
 				insertModelOutputQuarantine(input.db, { userId, fileGeneration: expected.file_generation, seqStart: expected.seq_start, seqEnd: expected.seq_end, reason: "read_range_mismatch", model: input.model, output: input.modelOutput, createdAt });

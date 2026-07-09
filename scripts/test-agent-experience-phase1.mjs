@@ -128,7 +128,7 @@ assert.equal(existsSync(paths.root), false, 'escaped setup menu must not create 
 assert.match(notes.at(-1).message, /closed/);
 assert.deepEqual(notes.find((note) => note.level === 'select').options, [
   '[ ] Save chat examples locally',
-  'Choose model for habit learning',
+  'Choose model for habit learning (openai-codex/gpt-5.5)',
   'Analyze saved examples now',
   'Review suggested habits',
   '[ ] Use approved habits before replies',

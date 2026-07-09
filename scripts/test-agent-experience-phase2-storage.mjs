@@ -95,6 +95,7 @@ const sensitive = {
 };
 const redacted = redactJson(sensitive);
 assert.equal(containsUnredactedSensitiveText(redacted), false, 'redacted JSON must contain no sensitive fixture text');
+assert.equal(redactJson({ source_refs: [{ file_generation: 'active', seq: 1, checksum: 'a'.repeat(64) }], file_path: '/home/example/private-file' }).source_refs[0].file_generation, 'active', 'source ref file_generation is audit evidence, not a filesystem path');
 assert.equal(containsUnredactedSensitiveText(redactText(JSON.stringify(sensitive))), false, 'redacted text must contain no sensitive fixture text');
 assert.equal(containsUnredactedSensitiveText('api_key=abcdefghijklmnopqrstuvwxyz'), true);
 assert.equal(containsUnredactedSensitiveText('api_key="abcdefghijklmnopqrstuvwxyz"'), true);

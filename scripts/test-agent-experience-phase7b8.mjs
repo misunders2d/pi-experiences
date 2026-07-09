@@ -174,6 +174,9 @@ try {
   assert.equal(dry.ok, true);
   assert.equal(dry.dry_run, true);
   assert.deepEqual(counts(storage.db), beforeDry, 'dry-run must make zero durable mutations');
+  const dryBadSource = await runConsolidationOnce({ root, db: storage.db, userId: 'owner', observations, modelOutput: modelOutput(observations, { batch_id: 'dry-bad-source', proposals: [{ ...modelOutput(observations).proposals[0], source_refs: observations.map((record) => ({ file_generation: record.file_generation, seq: record.seq, checksum: '0'.repeat(64) })) }] }), model: 'openai-codex/gpt-5.5', dryRun: true, now: '2026-07-08T03:01:00.000Z' });
+  assert.equal(dryBadSource.ok, false, 'dry-run must reject forged source ref checksums');
+  assert.match(dryBadSource.reason, /checksum/i);
 
   for (const [label, read] of [
     ['shrunk', { seq_start: 1, seq_end: 1, checksum: observations[0].checksum }],

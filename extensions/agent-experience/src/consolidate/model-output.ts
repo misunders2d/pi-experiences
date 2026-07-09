@@ -121,6 +121,17 @@ function validateRefs(value: unknown, expectedGeneration: string, seqStart: numb
 	return value.map((ref) => validateSourceRef(ref, expectedGeneration, seqStart, seqEnd));
 }
 
+export function validateModelOutputSourceRefs(output: ValidatedModelOutputBatch, observations: ValidatedObservationRecord[]): void {
+	const byKey = new Map(observations.map((record) => [`${record.file_generation}:${record.seq}`, record]));
+	for (const proposal of output.proposals) {
+		for (const ref of proposal.source_refs) {
+			const record = byKey.get(`${ref.file_generation}:${ref.seq}`);
+			if (!record) throw new Error("Model source ref missing observation");
+			if (record.user_id !== output.user_id || record.checksum !== ref.checksum) throw new Error("Model source ref checksum mismatch");
+		}
+	}
+}
+
 function validateProposal(value: unknown, seenIds: Set<string>, generation: string, seqStart: number, seqEnd: number): ValidatedModelProposal {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid model proposal");
 	const proposal = value as Record<string, unknown>;
@@ -311,6 +322,7 @@ function findCandidateKeyConflict(output: ValidatedModelOutputBatch): { candidat
 export function processValidatedModelOutput(input: { db: any; userId: string; output: ValidatedModelOutputBatch; observations: ValidatedObservationRecord[]; expectedRange?: { file_generation: string; seq_start: number; seq_end: number; read_checksum: string } }): ConsolidationResult | { user_id: string; file_generation: string; candidate_ids: []; evidence_ids: []; watermark_after: null; read_watermark_after?: unknown; pending_review_id?: string; inserted: { read_watermark?: 0 | 1; pending_review?: 0 | 1 } } {
 	const userId = normalizeUserId(input.userId);
 	if (input.output.user_id !== userId) throw new Error("Model output user mismatch");
+	validateModelOutputSourceRefs(input.output, input.observations);
 	if (input.expectedRange) {
 		if (input.output.file_generation !== input.expectedRange.file_generation || input.output.seq_start !== input.expectedRange.seq_start || input.output.seq_end !== input.expectedRange.seq_end || input.output.read_checksum !== input.expectedRange.read_checksum) throw new Error("Model output expected range mismatch");
 	}

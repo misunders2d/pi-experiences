@@ -56,7 +56,7 @@ AX_SELECTOR_MIN_OVERLAP_SCORE=1
 Law config:
 
 ```toml
-law_path = "law.md" # relative to ~/.agents/experience by default; absolute paths also work
+law_path = "law.md" # private-state relative path under ~/.agents/experience; absolute paths are rejected
 ```
 
 The selector and habit activation commands fail closed when the configured law file is missing. They do not resolve law from the current working directory.

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import agentExperienceExtension, { __buildAgentExperienceConsolidationSystemPromptForTest, __normalizeAgentExperienceConsolidationModelOutputForTest, __setAgentExperienceConsolidationAdapterForTest } from '../extensions/agent-experience/index.ts';
+import agentExperienceExtension, { __buildAgentExperienceConsolidationSystemPromptForTest, __formatAgentExperienceAnalyzeFailureForTest, __getAgentExperienceDetailPanelOptionsForTest, __normalizeAgentExperienceConsolidationModelOutputForTest, __setAgentExperienceConsolidationAdapterForTest } from '../extensions/agent-experience/index.ts';
 import { getAgentExperiencePaths, readAgentExperienceConfig, setAgentExperienceCaptureActive, setAgentExperienceConsolidationEnabled, setAgentExperienceConsolidationModel } from '../extensions/agent-experience/src/paths.ts';
 import { canonicalJson } from '../extensions/agent-experience/src/storage/checksum.ts';
 import { ensurePrivateRoot, resolvePrivatePath } from '../extensions/agent-experience/src/storage/private-root.ts';
@@ -72,6 +72,7 @@ const availableModel = { provider: 'openai-codex', id: 'gpt-5.5', name: 'GPT 5.5
 const slashModel = { provider: 'openrouter', id: 'openai/gpt-5', name: 'OpenRouter GPT 5', input: ['text'] };
 const unavailableModel = { provider: 'example', id: 'unauth', name: 'Unauthenticated', input: ['text'] };
 const extraAuthModels = Array.from({ length: 40 }, (_, index) => ({ provider: 'openrouter', id: `bulk-${index}`, name: `Bulk ${index}`, input: ['text'] }));
+let authHeadersAvailable = true;
 const modelRegistry = {
   getAvailable() { return [availableModel, slashModel, unavailableModel, ...extraAuthModels]; },
   find(provider, modelId) {
@@ -81,7 +82,7 @@ const modelRegistry = {
     return extraAuthModels.find((model) => model.provider === provider && model.id === modelId);
   },
   hasConfiguredAuth(model) { return model !== unavailableModel; },
-  async getApiKeyAndHeaders() { return { ok: true, apiKey: 'test-not-used' }; },
+  async getApiKeyAndHeaders() { return authHeadersAvailable ? { ok: true, apiKey: 'test-not-used' } : { ok: false }; },
 };
 const ctx = {
   cwd: process.cwd(),
@@ -117,7 +118,7 @@ const ctx = {
   },
 };
 
-setupChoices = ['[ ] Save chat examples locally', 'Choose model for habit learning', 'Done'];
+setupChoices = ['[ ] Save chat examples locally', 'Choose model for habit learning (openai-codex/gpt-5.5)', 'Done'];
 await commands.get('experience').handler('setup', ctx);
 let configResult = await readAgentExperienceConfig(paths);
 assert.equal(configResult.config.enabled, true);
@@ -126,18 +127,18 @@ assert.equal(configResult.config.consolidation_model, 'openai-codex/gpt-5.5');
 assert.equal(configResult.config.consolidation_enabled, true);
 assert.equal(configResult.config.timer_enabled, false);
 
-setupChoices = ['Choose model for habit learning', 'Search authenticated models', 'openrouter/openai/gpt-5', 'Choose model for habit learning', 'openai-codex/gpt-5.5', 'Done'];
+setupChoices = ['Choose model for habit learning (openai-codex/gpt-5.5)', 'Search authenticated models', 'openrouter/openai/gpt-5', 'Choose model for habit learning (openrouter/openai/gpt-5)', 'openai-codex/gpt-5.5', 'Done'];
 setupInputs = ['gpt-5'];
 await commands.get('experience').handler('setup', ctx);
 configResult = await readAgentExperienceConfig(paths);
 assert.equal(configResult.config.consolidation_model, 'openai-codex/gpt-5.5', 'model ids containing slash can be selected by search, then normal model can be restored');
 assert.ok(notes.some((note) => /Habit-learning model: openrouter\/openai\/gpt-5/.test(note.message || '')), 'OpenRouter slash model id should save successfully from searchable picker');
-setupChoices = ['Choose model for habit learning', 'Enter exact model id', 'Done'];
+setupChoices = ['Choose model for habit learning (openai-codex/gpt-5.5)', 'Enter exact model id', 'Done'];
 setupInputs = ['openrouter/openai/gpt-5'];
 await commands.get('experience').handler('setup', ctx);
 configResult = await readAgentExperienceConfig(paths);
 assert.equal(configResult.config.consolidation_model, 'openrouter/openai/gpt-5', 'exact model entry must support provider/model ids containing slash');
-setupChoices = ['Choose model for habit learning', 'Enter exact model id', 'Done'];
+setupChoices = ['Choose model for habit learning (openrouter/openai/gpt-5)', 'Enter exact model id', 'Done'];
 setupInputs = ['example/unauth'];
 await commands.get('experience').handler('setup', ctx);
 configResult = await readAgentExperienceConfig(paths);
@@ -150,6 +151,7 @@ ctx.ui.custom = async (factory) => {
   const initial = component.render(80).join('\n');
   if (/Agent Experience setup/.test(initial)) {
     assert.match(initial, /\[x\] ON|\[ \] OFF/, 'setup panel must show checkbox-style ON/OFF rows');
+    assert.match(initial, /Choose model for habit learning\s+openai-codex\/gpt-5\.5/, 'setup panel must show current habit-learning model instead of generic open');
     assert.match(initial, /Space\/Enter toggles/, 'setup panel must advertise Space toggles');
     const next = setupChoices.shift();
     value = next === 'Choose model for habit learning' ? 'model' : next === 'Done' ? 'done' : undefined;
@@ -178,6 +180,18 @@ setupChoices = ['Analyze saved examples now', 'Done'];
 await commands.get('experience').handler('setup', ctx);
 assert.ok(notes.some((note) => /Choose a habit-learning model/.test(note.message || '')), 'analyze must not run when model learning is disabled');
 await setAgentExperienceConsolidationModel('openai-codex/gpt-5.5', paths);
+notes.length = 0;
+authHeadersAvailable = false;
+setupChoices = ['Analyze saved examples now', 'Done'];
+await commands.get('experience').handler('setup', ctx);
+assert.ok(notes.some((note) => /Current model: openai-codex\/gpt-5\.5/.test(note.message || '') && /model auth unavailable/.test(note.message || '')), 'analyze must preflight real model auth before showing started');
+assert.ok(!notes.some((note) => /Analyze saved examples started/.test(note.message || '')), 'analyze must not show started when auth preflight fails');
+authHeadersAvailable = true;
+notes.length = 0;
+setupChoices = ['Analyze saved examples now', 'Done'];
+await commands.get('experience').handler('setup', ctx);
+assert.ok(notes.some((note) => /No readable saved examples|No saved examples/.test(note.message || '')), 'analyze must preflight saved examples before showing started');
+assert.ok(!notes.some((note) => /Analyze saved examples started/.test(note.message || '')), 'analyze must not show started when there are no saved examples');
 
 const r1 = makeObservation({ seq: 1, createdAt: '2026-07-08T08:00:00.000Z', user: 'please be concise', assistant: 'understood, concise answer' });
 const r2 = makeObservation({ seq: 2, previous: r1, createdAt: '2026-07-08T09:00:00.000Z', user: 'too much fluff, give evidence only', assistant: 'short evidence list' });
@@ -215,17 +229,13 @@ const liveSystemPrompt = __buildAgentExperienceConsolidationSystemPromptForTest(
 assert.match(liveSystemPrompt, /reusable behavioral essence/, 'live setup analyzer prompt must require generalized habits');
 assert.match(liveSystemPrompt, /one-off names such as Agent Experience/, 'live setup analyzer prompt must reject one-project habit labels');
 assert.match(liveSystemPrompt, /return no proposal/, 'live setup analyzer prompt must suppress project-specific-only patterns');
+assert.match(__formatAgentExperienceAnalyzeFailureForTest(new Error('Watermark would move backward')), /already analyzed/, 'stale duplicate analyze errors must be translated to human action');
+assert.equal(__getAgentExperienceDetailPanelOptionsForTest().overlay, false, 'review/status detail panels should replace the editor instead of overlaying image preview lines');
 assert.equal(__normalizeAgentExperienceConsolidationModelOutputForTest(strictRawOutput, strictNormalizeInput).proposals.length, 1);
-const weakOneOff = __normalizeAgentExperienceConsolidationModelOutputForTest({ ...strictRawOutput, proposals: [{ ...strictRawOutput.proposals[0], source_refs: [{ seq: 1 }] }] }, strictNormalizeInput);
+const weakOneOff = __normalizeAgentExperienceConsolidationModelOutputForTest({ ...strictRawOutput, proposals: [{ ...strictRawOutput.proposals[0], source_refs: [{ file_generation: 'active', seq: 1, checksum: r1.checksum }] }] }, strictNormalizeInput);
 assert.equal(weakOneOff.proposals.length, 0, 'one-off model suggestions must not become review candidates');
-const repairedMissingRefFields = __normalizeAgentExperienceConsolidationModelOutputForTest({ ...strictRawOutput, proposals: [{ ...strictRawOutput.proposals[0], source_refs: [{ seq: 1 }, { seq: 2 }, { seq: 3 }] }] }, strictNormalizeInput);
-assert.deepEqual(repairedMissingRefFields.proposals[0].source_refs, [
-  { file_generation: 'active', seq: 1, checksum: r1.checksum },
-  { file_generation: 'active', seq: 2, checksum: r2.checksum },
-  { file_generation: 'active', seq: 3, checksum: r3.checksum },
-], 'normalizer repairs source refs from local seq');
-const repairedWrongChecksum = __normalizeAgentExperienceConsolidationModelOutputForTest({ ...strictRawOutput, proposals: [{ ...strictRawOutput.proposals[0], source_refs: [{ file_generation: 'wrong-generation', seq: 1, checksum: 'wrong' }, { file_generation: 'wrong-generation', seq: 2, checksum: 'wrong' }, { file_generation: 'wrong-generation', seq: 3, checksum: 'wrong' }] }] }, strictNormalizeInput);
-assert.equal(repairedWrongChecksum.proposals[0].source_refs.length, 3, 'normalizer ignores model checksum/generation typos when seq is valid');
+assert.throws(() => __normalizeAgentExperienceConsolidationModelOutputForTest({ ...strictRawOutput, proposals: [{ ...strictRawOutput.proposals[0], source_refs: [{ seq: 1 }, { seq: 2 }, { seq: 3 }] }] }, strictNormalizeInput), /generation_mismatch|checksum_mismatch/, 'normalizer must reject missing model source ref generation/checksum');
+assert.throws(() => __normalizeAgentExperienceConsolidationModelOutputForTest({ ...strictRawOutput, proposals: [{ ...strictRawOutput.proposals[0], source_refs: [{ file_generation: 'wrong-generation', seq: 1, checksum: 'wrong' }, { file_generation: 'wrong-generation', seq: 2, checksum: 'wrong' }, { file_generation: 'wrong-generation', seq: 3, checksum: 'wrong' }] }] }, strictNormalizeInput), /generation_mismatch|checksum_mismatch/, 'normalizer must reject wrong model source ref generation/checksum');
 assert.throws(() => __normalizeAgentExperienceConsolidationModelOutputForTest({ ...strictRawOutput, proposals: [{ ...strictRawOutput.proposals[0], source_refs: [{ seq: 999 }] }] }, strictNormalizeInput), /invalid_source_ref/);
 
 __setAgentExperienceConsolidationAdapterForTest({
@@ -259,7 +269,7 @@ __setAgentExperienceConsolidationAdapterForTest({
 setupChoices = ['Analyze saved examples now', 'Done'];
 await commands.get('experience').handler('setup', ctx);
 assert.ok(notes.some((note) => /Analyze saved examples started/.test(note.message || '')), 'analyze-now must start without blocking setup');
-await waitForNote(/Suggested habits created: 1/, 'analyze-now must create one suggestion');
+await waitForNote(/New suggested habits created: 1/, 'analyze-now must create one suggestion');
 
 notes.length = 0;
 let reviewPanelSeen = false;
@@ -296,6 +306,28 @@ await commands.get('experience').handler('setup', ctx);
 configResult = await readAgentExperienceConfig(paths);
 assert.equal(configResult.config.selector_enabled, true);
 
+notes.length = 0;
+let statusPanelSeen = false;
+ctx.ui.custom = async (factory) => {
+  let value;
+  const component = await factory({ requestRender() {} }, {}, {}, (result) => { value = result; });
+  const rendered = component.render(100).join('\n');
+  if (/Agent Experience setup/.test(rendered)) {
+    const next = setupChoices.shift();
+    return next === 'Show current settings' ? 'status' : next === 'Done' ? 'done' : value;
+  }
+  assert.match(rendered, /Agent Experience current settings/, 'show current settings should open an in-panel status view');
+  assert.match(rendered, /Habit-learning model: openai-codex\/gpt-5\.5/, 'status panel should show current habit-learning model');
+  statusPanelSeen = true;
+  component.handleInput('\r');
+  return value;
+};
+setupChoices = ['Show current settings', 'Done'];
+await commands.get('experience').handler('setup', ctx);
+delete ctx.ui.custom;
+assert.equal(statusPanelSeen, true, 'show current settings must not post behind the setup overlay');
+assert.ok(!notes.some((note) => /^Experience:/.test(note.message || '')), 'show current settings from setup should stay in-panel, not chat history');
+
 let storage = await initExperienceStorage(paths.root, { allowInit: true, userId: 'owner' });
 let active;
 try {
@@ -310,6 +342,8 @@ notes.length = 0;
 setupChoices = ['Analyze saved examples now', 'Done'];
 await commands.get('experience').handler('setup', ctx);
 await waitForNote(/Analyze saved examples finished/, 'second analyze must finish');
+assert.ok(notes.some((note) => /No new suggestions were created/.test(note.message || '')), 'duplicate analyze must say no new suggestions, not created');
+assert.ok(!notes.some((note) => /New suggested habits created/.test(note.message || '')), 'duplicate analyze must not claim new suggestions were created');
 storage = await initExperienceStorage(paths.root, { allowInit: true, userId: 'owner' });
 try {
   const rows = storage.db.prepare("SELECT id, status, condition, behavior FROM habits WHERE user_id = 'owner'").all();

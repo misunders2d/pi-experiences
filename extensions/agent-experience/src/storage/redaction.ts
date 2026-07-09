@@ -15,7 +15,7 @@ export function redactText(input: string): string {
 
 export function redactJson<T>(input: T): T {
 	function visit(value: any, key = ""): any {
-		if (SENSITIVE_KEY.test(key)) return REDACTED;
+		if (key !== "file_generation" && SENSITIVE_KEY.test(key)) return REDACTED;
 		if (typeof value === "string") return redactText(value);
 		if (Array.isArray(value)) return value.map((item) => visit(item));
 		if (value && typeof value === "object") {
