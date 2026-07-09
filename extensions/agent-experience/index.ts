@@ -40,6 +40,7 @@ import { extractSingleFinalAssistantText } from "./src/capture/extract.ts";
 import { runSelectorRuntime, type SelectorModelAdapter } from "./src/selector.ts";
 import { createPiSelectorModelAdapter } from "./src/selector-model.ts";
 import { collectAgentExperienceMetrics, formatAgentExperienceMetrics } from "./src/metrics.ts";
+import type { AgentExperienceConfig } from "./src/config.ts";
 import { defaultObservationManifest, readValidatedObservationGeneration, type ValidatedObservationRecord } from "./src/consolidate/observations.ts";
 import { GENERALIZED_HABIT_INSTRUCTIONS } from "./src/consolidate/prompt.ts";
 import { expectedRangeFromObservations, runConsolidationOnce } from "./src/consolidate/runner.ts";
@@ -730,6 +731,12 @@ async function handleStatusSetup(ctx: ExtensionCommandContext) {
 	notify(ctx, status.text, status.enabled ? "info" : "warn");
 }
 
+async function handleHelpSetup(ctx: ExtensionCommandContext, config: AgentExperienceConfig) {
+	const message = setupHelpMessage(config);
+	if (await showTextPanel(ctx, "Agent Experience setup help", message)) return;
+	notify(ctx, message, "info");
+}
+
 function buildSetupOptions(config: { enabled: boolean; capture_enabled: boolean; consolidation_enabled: boolean; consolidation_model: string; selector_enabled: boolean }): string[] {
 	const captureActive = config.enabled && config.capture_enabled;
 	const anythingEnabled = config.enabled || config.capture_enabled || config.consolidation_enabled || config.selector_enabled;
@@ -1334,7 +1341,7 @@ async function handleSetup(ctx: ExtensionCommandContext, args: string[] = []) {
 			if (!choice || choice === "Done") return notify(ctx, "Agent Experience setup closed.", "info");
 			if (choice === "Show current settings") await handleStatusSetup(ctx);
 			else if (choice === "Review suggested habits") await handleReviewSetup(ctx);
-			else if (choice === "Explain these settings") notify(ctx, setupHelpMessage(config), "info");
+			else if (choice === "Explain these settings") await handleHelpSetup(ctx, config);
 			else if (choice === "Turn all experience features off") await handleOff(ctx);
 			else if (choice.startsWith("Choose model for habit learning")) await handleSetupModel(ctx);
 			else if (choice === "Analyze saved examples now") await handleAnalyzeNow(ctx);
@@ -1359,7 +1366,7 @@ async function handleSetup(ctx: ExtensionCommandContext, args: string[] = []) {
 		else if (action === "use") await handleSetupUseHabitsToggle(ctx, !config.selector_enabled);
 		else if (action === "schedule") await handleSetupTimer(ctx);
 		else if (action === "status") await handleStatusSetup(ctx);
-		else if (action === "help") notify(ctx, setupHelpMessage(config), "info");
+		else if (action === "help") await handleHelpSetup(ctx, config);
 		else if (action === "off") await handleOff(ctx);
 		else notify(ctx, `Agent Experience setup ignored unknown action: ${redactText(String(action)).slice(0, 120)}\nNo config changed.`, "warn");
 	}

@@ -328,6 +328,28 @@ delete ctx.ui.custom;
 assert.equal(statusPanelSeen, true, 'show current settings must not post behind the setup overlay');
 assert.ok(!notes.some((note) => /^Experience:/.test(note.message || '')), 'show current settings from setup should stay in-panel, not chat history');
 
+notes.length = 0;
+let helpPanelSeen = false;
+ctx.ui.custom = async (factory) => {
+  let value;
+  const component = await factory({ requestRender() {} }, {}, {}, (result) => { value = result; });
+  const rendered = component.render(100).join('\n');
+  if (/Agent Experience setup/.test(rendered) && /Explain these settings/.test(rendered)) {
+    const next = setupChoices.shift();
+    return next === 'Explain these settings' ? 'help' : next === 'Done' ? 'done' : value;
+  }
+  assert.match(rendered, /Agent Experience setup help/, 'explain settings should open an in-panel help view');
+  assert.match(rendered, /Use arrow keys/, 'help panel should contain setup help text');
+  helpPanelSeen = true;
+  component.handleInput('\r');
+  return value;
+};
+setupChoices = ['Explain these settings', 'Done'];
+await commands.get('experience').handler('setup', ctx);
+delete ctx.ui.custom;
+assert.equal(helpPanelSeen, true, 'explain settings must not post behind the setup overlay');
+assert.ok(!notes.some((note) => /Use arrow keys to move/.test(note.message || '')), 'explain settings from setup should stay in-panel, not chat history');
+
 let storage = await initExperienceStorage(paths.root, { allowInit: true, userId: 'owner' });
 let active;
 try {
