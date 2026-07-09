@@ -39,7 +39,7 @@ Canonical UX is one control panel:
 /experience setup
 ```
 
-The interactive setup menu uses arrow keys plus Enter. Rows say ON/OFF and the Enter action directly; model, analyze, review, status, and help are action rows; Done exits. From this one menu a normal user can save examples, choose a model, analyze saved examples, review suggestions, approve/reject, and enable approved-habit reminders.
+The interactive setup menu uses arrow keys plus Space/Enter. Checkbox rows show `[x]` for ON and `[ ]` for OFF; Space or Enter toggles checkbox rows and opens model/analyze/review/status/help action rows; Done exits. From this one menu a normal user can save examples, choose a model, analyze saved examples, review suggestions, approve/reject, and enable approved-habit reminders.
 
 Do not instruct normal users to type setup subcommands. If Pi does not render the interactive menu, tell the user to restart Pi so the latest extension UI loads, then run `/experience setup` again.
 

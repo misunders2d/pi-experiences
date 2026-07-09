@@ -3,7 +3,7 @@ import { readFile, rm, stat } from "node:fs/promises";
 import { completeSimple } from "@earendil-works/pi-ai/compat";
 import type { AssistantMessage, Model } from "@earendil-works/pi-ai/compat";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { decodeKittyPrintable, fuzzyFilter, Input, Key, matchesKey, truncateToWidth, wrapTextWithAnsi, type Component, type Focusable } from "@earendil-works/pi-tui";
+import { Box, decodeKittyPrintable, fuzzyFilter, Input, Key, matchesKey, SettingsList, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component, type Focusable, type SettingItem, type SettingsListTheme } from "@earendil-works/pi-tui";
 import {
 	getAgentExperiencePaths,
 	readAgentExperienceConfig,
@@ -66,6 +66,40 @@ const analyzeJobs = new Map<string, Promise<void>>();
 type SetupReviewAction = "Approve" | "Reject" | "Back to review list";
 
 type LiveModelSearchResult = { model?: string; exact?: true };
+type SetupAction = "save" | "model" | "analyze" | "review" | "use" | "schedule" | "status" | "help" | "off" | "done";
+
+const RESET = "\x1b[0m";
+const PANEL_BG = "\x1b[48;5;235m";
+const FG_ACCENT = "\x1b[38;5;81m";
+const FG_DIM = "\x1b[38;5;245m";
+const FG_WARN = "\x1b[38;5;220m";
+const BOLD = "\x1b[1m";
+
+function style(text: string, ...codes: string[]): string {
+	return `${codes.join("")}${text}${RESET}${PANEL_BG}`;
+}
+
+function panelBg(text: string): string {
+	return `${PANEL_BG}${text}${RESET}`;
+}
+
+function boxedLines(lines: string[], width: number, padding = 1): string[] {
+	const w = Math.max(40, width);
+	const inner = Math.max(20, w - padding * 2);
+	const pad = " ".repeat(padding);
+	const out = [panelBg(" ".repeat(w))];
+	for (const line of lines) {
+		const truncated = truncateToWidth(line, inner, "");
+		const visible = visibleWidth(truncated);
+		out.push(panelBg(pad + truncated + " ".repeat(Math.max(0, inner - visible)) + pad));
+	}
+	out.push(panelBg(" ".repeat(w)));
+	return out;
+}
+
+function checkboxValue(value: boolean): string {
+	return value ? "[x] ON" : "[ ] OFF";
+}
 
 function truncateLine(value: string, width: number): string {
 	return truncateToWidth(value, Math.max(1, width));
@@ -91,6 +125,49 @@ function modelSearchMatches(models: string[], query: string, limit = 25): string
 	const seen = new Set(direct);
 	const fuzzy = fuzzyFilter(models.filter((model) => !seen.has(model)), clean, (model) => model);
 	return [...direct, ...fuzzy].slice(0, limit);
+}
+
+const setupSettingsTheme: SettingsListTheme = {
+	cursor: style("→ ", FG_ACCENT, BOLD),
+	label: (text, selected) => selected ? style(text, FG_ACCENT, BOLD) : text,
+	value: (text, selected) => selected ? style(text, FG_WARN, BOLD) : text,
+	description: (text) => style(text, FG_DIM),
+	hint: (text) => style(text, FG_DIM),
+};
+
+function buildSetupSettingItems(config: { enabled: boolean; capture_enabled: boolean; consolidation_enabled: boolean; selector_enabled: boolean }): SettingItem[] {
+	const captureActive = config.enabled && config.capture_enabled;
+	const anythingEnabled = config.enabled || config.capture_enabled || config.consolidation_enabled || config.selector_enabled;
+	return [
+		{ id: "save", label: "Save chat examples locally", currentValue: checkboxValue(captureActive), values: ["[ ] OFF", "[x] ON"], description: "Space/Enter toggles local redacted example capture." },
+		{ id: "model", label: "Choose model for habit learning", currentValue: "open", values: ["open"], description: "Space/Enter opens live typeahead model search. Type 5.5, codex, glm, etc." },
+		{ id: "analyze", label: "Analyze saved examples now", currentValue: "open", values: ["open"], description: "Starts nonblocking analysis. No habits are auto-approved." },
+		{ id: "review", label: "Review suggested habits", currentValue: "open", values: ["open"], description: "Inspect each suggestion in a boxed panel, then approve/reject/back." },
+		{ id: "use", label: "Use approved habits before replies", currentValue: checkboxValue(config.selector_enabled), values: ["[ ] OFF", "[x] ON"], description: "Space/Enter toggles approved-habit reminders. Suggestions still require review first." },
+		{ id: "schedule", label: "Automatic schedule", currentValue: "Phase 2 / off", values: ["Phase 2 / off"], description: "No timer is installed or enabled by setup." },
+		{ id: "status", label: "Show current settings", currentValue: "open", values: ["open"], description: "Show current Agent Experience status." },
+		{ id: "help", label: "Explain these settings", currentValue: "open", values: ["open"], description: "Show setup help." },
+		...(anythingEnabled ? [{ id: "off", label: "Turn all experience features off", currentValue: "open", values: ["open"], description: "Stops capture and runtime gates. Existing local records stay." } satisfies SettingItem] : []),
+		{ id: "done", label: "Done", currentValue: "close", values: ["close"], description: "Close setup." },
+	];
+}
+
+class SetupSettingsComponent implements Component {
+	private readonly box: Box;
+	private readonly list: SettingsList;
+
+	constructor(config: { enabled: boolean; capture_enabled: boolean; consolidation_enabled: boolean; selector_enabled: boolean }, done: (result: SetupAction | undefined) => void) {
+		this.box = new Box(2, 1, panelBg);
+		this.box.addChild(new Text(style("Agent Experience setup", FG_ACCENT, BOLD), 0, 0));
+		this.box.addChild(new Text(style("Space/Enter toggles checkbox rows or opens action rows. Esc closes.", FG_DIM), 0, 0));
+		this.box.addChild({ render: () => [""], invalidate() {} });
+		this.list = new SettingsList(buildSetupSettingItems(config), 10, setupSettingsTheme, (id) => done(id as SetupAction), () => done("done"), { enableSearch: false });
+		this.box.addChild(this.list);
+	}
+
+	render(width: number): string[] { return this.box.render(width); }
+	handleInput(data: string): void { this.list.handleInput(data); }
+	invalidate(): void { this.box.invalidate(); }
 }
 
 class LiveModelSearchComponent implements Component, Focusable {
@@ -143,7 +220,7 @@ class LiveModelSearchComponent implements Component, Focusable {
 			if (this.matches.length > 15) lines.push(truncateLine(`  … ${this.matches.length - 15} more. Keep typing to narrow.`, w));
 		}
 		lines.push("", truncateLine("↑/↓ move · Enter select · Ctrl+E exact id · Esc cancel", w));
-		return lines;
+		return boxedLines(lines, w);
 	}
 
 	handleInput(data: string): void {
@@ -197,15 +274,18 @@ class ReviewDecisionComponent implements Component {
 			const prefix = i === this.selectedIndex ? "→ " : "  ";
 			lines.push(truncateLine(`${prefix}${this.actions[i]}`, w));
 		}
-		lines.push("", truncateLine("↑/↓ choose action · Enter run · PgUp/PgDn scroll · A approve · R reject · Esc back", w));
-		return lines;
+		lines.push("", truncateLine("↑/↓ choose action · Space/Enter run · 1/2/3 · A approve · R reject · Esc back", w));
+		return boxedLines(lines, w);
 	}
 
 	handleInput(data: string): void {
 		if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c"))) return this.done("Back to review list");
 		if (matchesKey(data, "a")) return this.done("Approve");
 		if (matchesKey(data, "r")) return this.done("Reject");
-		if (matchesKey(data, Key.enter)) return this.done(this.actions[this.selectedIndex]);
+		if (matchesKey(data, Key.enter) || matchesKey(data, Key.space) || data === " ") return this.done(this.actions[this.selectedIndex]);
+		if (data === "1") return this.done("Approve");
+		if (data === "2") return this.done("Reject");
+		if (data === "3") return this.done("Back to review list");
 		if (matchesKey(data, Key.up)) {
 			this.selectedIndex = this.selectedIndex === 0 ? this.actions.length - 1 : this.selectedIndex - 1;
 			return;
@@ -566,11 +646,11 @@ function buildSetupOptions(config: { enabled: boolean; capture_enabled: boolean;
 	const captureActive = config.enabled && config.capture_enabled;
 	const anythingEnabled = config.enabled || config.capture_enabled || config.consolidation_enabled || config.selector_enabled;
 	return [
-		captureActive ? "Save chat examples locally: ON — Enter to turn off" : "Save chat examples locally: OFF — Enter to turn on",
+		`${captureActive ? "[x]" : "[ ]"} Save chat examples locally`,
 		"Choose model for habit learning",
 		"Analyze saved examples now",
 		"Review suggested habits",
-		config.selector_enabled ? "Use approved habits before replies: ON — Enter to turn off" : "Use approved habits before replies: OFF — Enter to turn on",
+		`${config.selector_enabled ? "[x]" : "[ ]"} Use approved habits before replies`,
 		"Automatic schedule: Phase 2 / off (explain)",
 		"Show current settings",
 		"Explain these settings",
@@ -582,7 +662,7 @@ function buildSetupOptions(config: { enabled: boolean; capture_enabled: boolean;
 function setupControlsMessage(): string {
 	return [
 		"Agent Experience setup controls — no config changed yet.",
-		"Use arrow keys to move. Press Enter to run the highlighted row. Space is not used by this menu.",
+		"Use arrow keys to move. Press Space or Enter to toggle checkbox rows or open action rows.",
 		"Run /experience setup in the Pi TUI. Everything is done from that one menu.",
 		"If no menu appears, restart Pi so the latest extension UI loads, then run /experience setup again.",
 		"No typed setup subcommands are required for normal use.",
@@ -597,7 +677,7 @@ function setupHelpMessage(config: { enabled: boolean; capture_enabled: boolean; 
 	const anythingEnabled = config.enabled || config.capture_enabled || config.consolidation_enabled || config.selector_enabled;
 	return [
 		"Agent Experience setup help:",
-		"Use arrow keys to move. Press Enter to run the highlighted row. Space is not used by this menu. Choose Done to exit.",
+		"Use arrow keys to move. Press Space or Enter to toggle checkbox rows or open action rows. Choose Done to exit.",
 		"Save chat examples locally: turn this on first to start saving examples. It stores redacted completed user/assistant pairs under ~/.agents/experience. It does not store raw full prompts or injected text.",
 		"Choose model for habit learning: opens a model picker inside setup. You do not type a model command.",
 		"Analyze saved examples now: runs from this setup menu, reads saved redacted examples, calls the chosen model once, and creates suggested habits for review.",
@@ -1019,11 +1099,14 @@ async function handleSetupUseHabitsToggle(ctx: ExtensionCommandContext, enable: 
 	return handleSelector(enable ? "on" : "off", ctx);
 }
 
-async function showSetupPanel(_ctx: ExtensionCommandContext): Promise<string | undefined> {
-	// Use Pi's built-in select menu for setup. The custom TUI renderer looked nicer,
-	// but cursor movement/input focus was unreliable in real sessions, making setup unusable.
-	// Returning undefined forces the stable selectable-menu path below.
-	return undefined;
+async function showSetupPanel(ctx: ExtensionCommandContext): Promise<SetupAction | undefined> {
+	const ui = (ctx as { hasUI?: boolean; ui?: { custom?: ExtensionCommandContext["ui"]["custom"] } })?.ui;
+	if ((ctx as { hasUI?: boolean }).hasUI === false || typeof ui?.custom !== "function") return undefined;
+	const { config } = await readAgentExperienceConfig(getAgentExperiencePaths());
+	return ui.custom<SetupAction | undefined>((_tui, _theme, _keybindings, done) => new SetupSettingsComponent(config, done), {
+		overlay: true,
+		overlayOptions: { width: "80%", minWidth: 72, maxHeight: "90%", anchor: "center", margin: 1 },
+	});
 }
 
 async function handleSetupDirect(args: string[], ctx: ExtensionCommandContext): Promise<boolean> {
@@ -1147,8 +1230,8 @@ async function handleSetup(ctx: ExtensionCommandContext, args: string[] = []) {
 			else if (choice === "Choose model for habit learning") await handleSetupModel(ctx);
 			else if (choice === "Analyze saved examples now") await handleAnalyzeNow(ctx);
 			else if (choice.startsWith("Automatic schedule")) await handleSetupTimer(ctx);
-			else if (choice.startsWith("Use approved habits before replies:")) await handleSetupUseHabitsToggle(ctx, !config.selector_enabled);
-			else if (choice.startsWith("Save chat examples locally:")) {
+			else if (choice.includes("Use approved habits before replies")) await handleSetupUseHabitsToggle(ctx, !config.selector_enabled);
+			else if (choice.includes("Save chat examples locally")) {
 				if (config.enabled && config.capture_enabled) captureBuffer.clearAll();
 				const { config: updated, path } = await setAgentExperienceCaptureActive(!(config.enabled && config.capture_enabled));
 				notify(ctx, [`Save chat examples locally: ${updated.enabled && updated.capture_enabled ? "ON" : "OFF"}`, `Config file: ${path}`].join("\n"), "info");
@@ -1168,6 +1251,8 @@ async function handleSetup(ctx: ExtensionCommandContext, args: string[] = []) {
 		else if (action === "schedule") await handleSetupTimer(ctx);
 		else if (action === "status") await handleStatus(ctx);
 		else if (action === "help") notify(ctx, setupHelpMessage(config), "info");
+		else if (action === "off") await handleOff(ctx);
+		else notify(ctx, `Agent Experience setup ignored unknown action: ${redactText(String(action)).slice(0, 120)}\nNo config changed.`, "warn");
 	}
 }
 
@@ -1458,7 +1543,7 @@ function usage(topic = "") {
 			"Agent Experience setup:",
 			"/experience setup                         # the one normal-user setup panel",
 			"Inside that menu: save examples, choose model, analyze saved examples, review suggestions, approve/reject, and use approved habits.",
-			"Use arrow keys and Enter on menu rows. No typed setup subcommands are required for normal use.",
+			"Use arrow keys plus Space/Enter on menu rows. No typed setup subcommands are required for normal use. Checkbox rows show [x]/[ ].",
 			"Automatic schedule is Phase 2/off. Analyze saved examples from the setup menu when you want suggestions.",
 		].join("\n");
 	}

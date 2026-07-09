@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import agentExperienceExtension, { __normalizeAgentExperienceConsolidationModelOutputForTest, __setAgentExperienceConsolidationAdapterForTest } from '../extensions/agent-experience/index.ts';
-import { getAgentExperiencePaths, readAgentExperienceConfig, setAgentExperienceConsolidationEnabled, setAgentExperienceConsolidationModel } from '../extensions/agent-experience/src/paths.ts';
+import { getAgentExperiencePaths, readAgentExperienceConfig, setAgentExperienceCaptureActive, setAgentExperienceConsolidationEnabled, setAgentExperienceConsolidationModel } from '../extensions/agent-experience/src/paths.ts';
 import { canonicalJson } from '../extensions/agent-experience/src/storage/checksum.ts';
 import { ensurePrivateRoot, resolvePrivatePath } from '../extensions/agent-experience/src/storage/private-root.ts';
 import { observationChecksumForTest, observationPairRefForTest } from '../extensions/agent-experience/src/storage/observations.ts';
@@ -117,7 +117,7 @@ const ctx = {
   },
 };
 
-setupChoices = ['Save chat examples locally: OFF — Enter to turn on', 'Choose model for habit learning', 'Done'];
+setupChoices = ['[ ] Save chat examples locally', 'Choose model for habit learning', 'Done'];
 await commands.get('experience').handler('setup', ctx);
 let configResult = await readAgentExperienceConfig(paths);
 assert.equal(configResult.config.enabled, true);
@@ -148,6 +148,14 @@ ctx.ui.custom = async (factory) => {
   let value;
   const component = await factory({ requestRender() {} }, {}, {}, (result) => { resolved = true; value = result; });
   const initial = component.render(80).join('\n');
+  if (/Agent Experience setup/.test(initial)) {
+    assert.match(initial, /\[x\] ON|\[ \] OFF/, 'setup panel must show checkbox-style ON/OFF rows');
+    assert.match(initial, /Space\/Enter toggles/, 'setup panel must advertise Space toggles');
+    const next = setupChoices.shift();
+    value = next === 'Choose model for habit learning' ? 'model' : next === 'Done' ? 'done' : undefined;
+    resolved = true;
+    return value;
+  }
   assert.match(initial, /Recommended authenticated models/, 'live model picker should start with recommendations');
   assert.doesNotMatch(initial, /bulk-39/, 'live model picker must not dump all models before typing');
   for (const ch of '5.5') component.handleInput(ch);
@@ -254,9 +262,16 @@ ctx.ui.custom = async (factory) => {
   let value;
   const component = await factory({ requestRender() {} }, {}, {}, (result) => { resolved = true; value = result; });
   const rendered = component.render(100).join('\n');
+  if (/Agent Experience setup/.test(rendered)) {
+    const next = setupChoices.shift();
+    value = next === 'Review suggested habits' ? 'review' : next === 'Done' ? 'done' : undefined;
+    resolved = true;
+    return value;
+  }
   assert.match(rendered, /Suggested habit/, 'review details must render inside the focused review panel');
   assert.match(rendered, /When:/, 'review panel must include full habit details');
   assert.match(rendered, /Action:/, 'review panel must include approve/reject/back actions');
+  assert.match(rendered, /48;5;235/, 'review panel must render with a solid background');
   reviewPanelSeen = true;
   component.handleInput('a');
   assert.equal(resolved, true, 'review panel keyboard shortcut should choose approve');
@@ -270,7 +285,7 @@ assert.ok(notes.some((note) => /Approved suggestion/.test(note.message || '')), 
 assert.ok(!notes.some((note) => /Suggested habit\n|Suggested habits waiting for review|When:/.test(note.message || '')), 'review details must not be dumped into chat history notifications');
 assert.ok(notes.some((note) => /safety file/i.test(note.title || '') || /Safety file/i.test(note.message || '')), 'first-run approval must repair missing safety file inside setup');
 
-setupChoices = ['Use approved habits before replies: OFF — Enter to turn on', 'Done'];
+setupChoices = ['[ ] Use approved habits before replies', 'Done'];
 await commands.get('experience').handler('setup', ctx);
 configResult = await readAgentExperienceConfig(paths);
 assert.equal(configResult.config.selector_enabled, true);
@@ -300,6 +315,24 @@ try {
 const beforeResult = await handlers.get('before_agent_start')({ prompt: `${active.condition} ${active.behavior}`, systemPrompt: 'base' }, ctx);
 assert.match(beforeResult.systemPrompt, /Agent Experience reminders|approved habits|Answer concisely/i, 'before_agent_start should inject approved habit reminder');
 assert.doesNotMatch(beforeResult.systemPrompt, /please be concise|too much fluff|again: concise/, 'selector injection must not include raw saved examples');
+
+const offTestOn = await setAgentExperienceCaptureActive(true, paths);
+assert.equal(offTestOn.config.enabled && offTestOn.config.capture_enabled, true, 'test precondition: capture on before custom off action');
+ctx.ui.custom = async (factory) => {
+  let value;
+  const component = await factory({ requestRender() {} }, {}, {}, (result) => { value = result; });
+  const rendered = component.render(100).join('\n');
+  assert.match(rendered, /Space\/Enter toggles/, 'custom setup panel should advertise Space/Enter checkbox behavior');
+  const next = setupChoices.shift();
+  return next === 'Turn all experience features off' ? 'off' : next === 'Done' ? 'done' : value;
+};
+setupChoices = ['Turn all experience features off', 'Done'];
+await commands.get('experience').handler('setup', ctx);
+delete ctx.ui.custom;
+configResult = await readAgentExperienceConfig(paths);
+assert.equal(configResult.config.enabled, false, 'custom setup off action must turn master experience off');
+assert.equal(configResult.config.capture_enabled, false, 'custom setup off action must turn capture off');
+assert.equal(configResult.config.selector_enabled, false, 'custom setup off action must turn approved-habit reminders off');
 
 __setAgentExperienceConsolidationAdapterForTest(undefined);
 await rm(temp, { recursive: true, force: true });

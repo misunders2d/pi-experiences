@@ -145,7 +145,7 @@ The normal UX is one control panel:
 /experience setup
 ```
 
-The interactive `/experience setup` menu uses arrow keys plus Enter. Rows say ON/OFF and the Enter action directly, for example `Save chat examples locally: OFF — Enter to turn on`. From that one menu a normal user can save examples, choose a model from live typeahead search or exact model entry, analyze saved examples now, review suggestions, approve/reject, use approved habits before replies, see status, and read explanations.
+The interactive `/experience setup` menu uses arrow keys plus Space/Enter. Checkbox rows show `[x]` for ON and `[ ]` for OFF; Space or Enter toggles checkbox rows and opens action rows. From that one menu a normal user can save examples, choose a model from live typeahead search or exact model entry, analyze saved examples now, review suggestions, approve/reject, use approved habits before replies, see status, and read explanations.
 
 No typed setup subcommands are required for normal use. If the panel does not render, restart Pi so the latest extension UI loads and run `/experience setup` again.
 
