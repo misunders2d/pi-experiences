@@ -410,6 +410,12 @@ export function selectActiveHabitsForReview(db: any, input: { userId: string }) 
 	return db.prepare("SELECT id, user_id, status, condition, behavior, checksum FROM habits WHERE user_id = ? AND status = 'active' ORDER BY id").all(normalizeUserId(input.userId));
 }
 
+export function listApprovedHabitsForSetup(db: any, input: { userId: string }) {
+	return db.prepare("SELECT id, user_id, status, condition, behavior, polarity, confidence_bp, activation, staleness, data_json, checksum, created_at, updated_at FROM habits WHERE user_id = ? AND status IN ('active','disabled') ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END, updated_at DESC, id")
+		.all(normalizeUserId(input.userId))
+		.map((row: any) => ({ ...row, data: parseJson(row.data_json) }));
+}
+
 export function recheckActiveHabitsForLaw(db: any, input: { userId: string; law: LawSnapshot; now: string }) {
 	const userId = normalizeUserId(input.userId);
 	let result: any;

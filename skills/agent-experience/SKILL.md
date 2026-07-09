@@ -49,6 +49,7 @@ Human setup procedure:
 4. Choose **Choose model for habit learning**. Type to filter live; the current model is visible and marked `(current)` when present. Ctrl+E allows exact `provider/model` entry.
 5. Choose **Analyze saved examples now**. It starts one nonblocking model job and returns control to Pi.
 6. Choose **Review suggested habits**. Inspect the boxed focused panel and choose Approve / Reject / Back with ↑/↓ + Space/Enter or `1`/`2`/`3`.
+7. Choose **Review approved habits** to browse actual active/disabled approved habits, inspect details, and disable or re-enable one without typing IDs/checksums.
 7. Optionally toggle **Use approved habits before replies** to `[x] ON`.
 
 Agent/operator procedure:
@@ -88,6 +89,8 @@ Normal users review from the setup menu:
 ```
 
 Then choose **Review suggested habits**, inspect a suggestion in a focused review panel, and choose Approve or Reject. Review details are not dumped into chat history. Checksums protect stale review actions internally. No review path auto-approves habits.
+
+Use **Review approved habits** for actual approved habits only: it lists `active` and `disabled` habits, excludes candidates/pending suggestions, shows When/Do/status/confidence/evidence count/created/updated, and offers Disable or Re-enable. The normal UI must not expose habit IDs or checksums.
 
 Candidate habits must generalize reusable behavior, not copy a project-specific label. Durable tool/task categories are allowed when they define the repeated situation, but one-off project/package names, versions, file paths, hashes, and screenshots are not. Prefer `When preparing an npm package release, verify the real end-to-end install/update path before calling it done` over `When working on Agent Experience, do the setup flow`.
 

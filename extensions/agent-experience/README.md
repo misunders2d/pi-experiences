@@ -22,7 +22,8 @@ Human setup procedure:
 4. Choose **Choose model for habit learning**. Type to filter live, e.g. `5.5`; the current model is visible and marked `(current)`.
 5. Choose **Analyze saved examples now**. It starts one nonblocking model job.
 6. Choose **Review suggested habits**. Inspect details in the focused panel, then Approve / Reject / Back.
-7. Optionally toggle **Use approved habits before replies** to `[x] ON`.
+7. Choose **Review approved habits** to browse actual active/disabled approved habits and disable or re-enable one without typing IDs or checksums.
+8. Optionally toggle **Use approved habits before replies** to `[x] ON`.
 
 Agent/operator setup rules:
 
@@ -110,6 +111,8 @@ Normal users review from the same setup menu:
 
 Then choose **Review suggested habits**, inspect a suggestion in a focused review panel, and choose Approve or Reject. Review details are not dumped into chat history. Checksums protect stale review actions internally. Review never auto-approves habits.
 
+Use **Review approved habits** to browse only actual approved habits (`active` or `disabled`). It does not show candidates or pending suggestions. Select a habit to see When/Do/status/confidence/evidence count/created/updated, then disable an active habit or re-enable a disabled one. Internal IDs and checksums remain hidden.
+
 Candidate habits must generalize the reusable behavioral essence. Durable tool/task categories are allowed when they define the repeated situation, but one-off project/package names, versions, file paths, hashes, and screenshots are not. Prefer `When preparing an npm package release, verify the real end-to-end install/update path before calling it done` over `When working on Agent Experience, do the setup flow`.
 
 Rejecting a candidate archives that exact normalized condition/behavior/polarity. The exact same identity is preserved as rejected/archived on later merges. A materially different or more generalized candidate can still appear later if it again passes the repeated-evidence threshold.
@@ -122,7 +125,7 @@ Normal users run habit learning from the setup menu:
 /experience setup
 ```
 
-Then choose **Choose model for habit learning**, **Analyze saved examples now**, and **Review suggested habits** from the menu.
+Then choose **Choose model for habit learning**, **Analyze saved examples now**, **Review suggested habits**, and **Review approved habits** from the menu.
 
 The package bin remains advanced maintainer/test plumbing:
 

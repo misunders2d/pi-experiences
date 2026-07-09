@@ -131,6 +131,7 @@ assert.deepEqual(notes.find((note) => note.level === 'select').options, [
   'Choose model for habit learning (openai-codex/gpt-5.5)',
   'Analyze saved examples now',
   'Review suggested habits',
+  'Review approved habits',
   '[ ] Use approved habits before replies',
   'Automatic schedule: Phase 2 / off (explain)',
   'Show current settings',

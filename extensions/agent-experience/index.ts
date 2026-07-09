@@ -26,6 +26,7 @@ import {
 	enableHabit,
 	explainHabit,
 	generateHabitsReport,
+	listApprovedHabitsForSetup,
 	listPendingReviewItems,
 	readConfiguredLawSnapshot,
 	rejectCandidateHabit,
@@ -66,11 +67,12 @@ let consolidationModelAdapter: ConsolidationModelAdapter | undefined;
 const analyzeJobs = new Map<string, Promise<void>>();
 
 type SetupReviewAction = "Approve" | "Reject" | "Back to review list";
+type SetupHabitAction = "Disable habit" | "Re-enable habit" | "Back to habit list";
 
 const DETAIL_PANEL_CUSTOM_OPTIONS = { overlay: false } as const;
 
 type LiveModelSearchResult = { model?: string; exact?: true };
-type SetupAction = "save" | "model" | "analyze" | "review" | "use" | "schedule" | "status" | "help" | "off" | "done";
+type SetupAction = "save" | "model" | "analyze" | "review" | "habits" | "use" | "schedule" | "status" | "help" | "off" | "done";
 
 const RESET = "\x1b[0m";
 const PANEL_BG = "\x1b[48;5;235m";
@@ -151,6 +153,7 @@ function buildSetupSettingItems(config: { enabled: boolean; capture_enabled: boo
 		{ id: "model", label: "Choose model for habit learning", currentValue: modelValueForSetup(config), values: [modelValueForSetup(config)], description: "Space/Enter opens live typeahead model search. Type 5.5, codex, glm, etc." },
 		{ id: "analyze", label: "Analyze saved examples now", currentValue: "open", values: ["open"], description: "Starts nonblocking analysis. No habits are auto-approved." },
 		{ id: "review", label: "Review suggested habits", currentValue: "open", values: ["open"], description: "Inspect each suggestion in a boxed panel, then approve/reject/back." },
+		{ id: "habits", label: "Review approved habits", currentValue: "open", values: ["open"], description: "Browse active/disabled habits, then disable or re-enable one." },
 		{ id: "use", label: "Use approved habits before replies", currentValue: checkboxValue(config.selector_enabled), values: ["[ ] OFF", "[x] ON"], description: "Space/Enter toggles approved-habit reminders. Suggestions still require review first." },
 		{ id: "schedule", label: "Automatic schedule", currentValue: "Phase 2 / off", values: ["Phase 2 / off"], description: "No timer is installed or enabled by setup." },
 		{ id: "status", label: "Show current settings", currentValue: "open", values: ["open"], description: "Show current Agent Experience status." },
@@ -243,6 +246,78 @@ class LiveModelSearchComponent implements Component, Focusable {
 		if (matchesKey(data, Key.enter)) {
 			const model = this.matches[this.selectedIndex];
 			if (model) return this.done({ model });
+			return;
+		}
+		if (matchesKey(data, Key.up)) {
+			if (this.matches.length) this.selectedIndex = this.selectedIndex === 0 ? this.matches.length - 1 : this.selectedIndex - 1;
+			return;
+		}
+		if (matchesKey(data, Key.down)) {
+			if (this.matches.length) this.selectedIndex = this.selectedIndex === this.matches.length - 1 ? 0 : this.selectedIndex + 1;
+			return;
+		}
+		this.input.handleInput(data);
+		this.refresh();
+	}
+
+	invalidate(): void { this.input.invalidate(); }
+}
+
+class ApprovedHabitSearchComponent implements Component, Focusable {
+	private input = new Input();
+	private selectedIndex = 0;
+	private matches: any[];
+	private focusedValue = false;
+	private readonly habits: any[];
+	private readonly done: (result: any | undefined) => void;
+
+	constructor(habits: any[], done: (result: any | undefined) => void) {
+		this.habits = habits;
+		this.done = done;
+		this.matches = approvedHabitSearchMatches(habits, "");
+	}
+
+	get focused(): boolean { return this.focusedValue; }
+	set focused(value: boolean) {
+		this.focusedValue = value;
+		this.input.focused = value;
+	}
+
+	private refresh() {
+		this.matches = approvedHabitSearchMatches(this.habits, this.input.getValue());
+		this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.matches.length - 1));
+	}
+
+	render(width: number): string[] {
+		const w = Math.max(60, width);
+		const query = this.input.getValue().trim();
+		const lines = [
+			truncateLine("Review approved habits", w),
+			truncateLine("Type to filter active/disabled habits. Enter selects. Esc returns to setup.", w),
+			"",
+			truncateLine("Search:", w),
+			...this.input.render(w),
+			"",
+		];
+		if (!this.matches.length) {
+			lines.push(truncateLine(query ? `No approved habits match “${redactText(query).slice(0, 40)}”.` : "No approved habits found.", w));
+		} else {
+			lines.push(truncateLine(query ? `${this.matches.length} matching approved habit(s):` : `${this.matches.length} approved habit(s):`, w));
+			for (let i = 0; i < Math.min(this.matches.length, 15); i++) {
+				const prefix = i === this.selectedIndex ? "→ " : "  ";
+				lines.push(truncateLine(`${prefix}${approvedHabitListLabel(this.matches[i], i)}`, w));
+			}
+			if (this.matches.length > 15) lines.push(truncateLine(`  … ${this.matches.length - 15} more. Keep typing to narrow.`, w));
+		}
+		lines.push("", truncateLine("↑/↓ move · Enter select · Esc back", w));
+		return boxedLines(lines, w);
+	}
+
+	handleInput(data: string): void {
+		if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c"))) return this.done(undefined);
+		if (matchesKey(data, Key.enter)) {
+			const habit = this.matches[this.selectedIndex];
+			if (habit) return this.done(habit);
 			return;
 		}
 		if (matchesKey(data, Key.up)) {
@@ -400,6 +475,64 @@ class ReviewDecisionComponent implements Component {
 		}
 		const printable = data.length === 1 ? data : decodeKittyPrintable(data);
 		if (printable?.toLowerCase() === "b") return this.done("Back to review list");
+	}
+
+	invalidate(): void {}
+}
+
+class ApprovedHabitDecisionComponent implements Component {
+	private selectedIndex = 0;
+	private scroll = 0;
+	private readonly actions: SetupHabitAction[];
+	private readonly done: (result: SetupHabitAction | undefined) => void;
+	private readonly title: string;
+	private readonly details: string;
+
+	constructor(title: string, details: string, actions: SetupHabitAction[], done: (result: SetupHabitAction | undefined) => void) {
+		this.title = title;
+		this.details = details;
+		this.actions = actions;
+		this.done = done;
+	}
+
+	render(width: number): string[] {
+		const w = Math.max(50, width);
+		const detailLines = wrapPanelText(this.details, Math.max(30, w - 2));
+		const maxDetail = 18;
+		const start = Math.max(0, Math.min(this.scroll, Math.max(0, detailLines.length - maxDetail)));
+		const visible = detailLines.slice(start, start + maxDetail);
+		const lines = [truncateLine(this.title, w), truncateLine("Approved habit details stay here. IDs/checksums stay hidden.", w), ""];
+		for (const line of visible) lines.push(truncateLine(line, w));
+		if (detailLines.length > maxDetail) lines.push(truncateLine(`… lines ${start + 1}-${Math.min(start + maxDetail, detailLines.length)} of ${detailLines.length}; PgUp/PgDn scroll`, w));
+		lines.push("", "Action:");
+		for (let i = 0; i < this.actions.length; i++) {
+			const prefix = i === this.selectedIndex ? "→ " : "  ";
+			lines.push(truncateLine(`${prefix}${this.actions[i]}`, w));
+		}
+		lines.push("", truncateLine("↑/↓ choose action · Space/Enter run · 1/2 · Esc back", w));
+		return boxedLines(lines, w);
+	}
+
+	handleInput(data: string): void {
+		if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c"))) return this.done("Back to habit list");
+		if (matchesKey(data, Key.enter) || matchesKey(data, Key.space) || data === " ") return this.done(this.actions[this.selectedIndex]);
+		if (data === "1" && this.actions[0]) return this.done(this.actions[0]);
+		if (data === "2" && this.actions[1]) return this.done(this.actions[1]);
+		if (matchesKey(data, Key.up)) {
+			this.selectedIndex = this.selectedIndex === 0 ? this.actions.length - 1 : this.selectedIndex - 1;
+			return;
+		}
+		if (matchesKey(data, Key.down)) {
+			this.selectedIndex = this.selectedIndex === this.actions.length - 1 ? 0 : this.selectedIndex + 1;
+			return;
+		}
+		if (matchesKey(data, Key.pageUp)) {
+			this.scroll = Math.max(0, this.scroll - 8);
+			return;
+		}
+		if (matchesKey(data, Key.pageDown)) {
+			this.scroll = Math.min(this.scroll + 8, 10_000);
+		}
 	}
 
 	invalidate(): void {}
@@ -788,6 +921,7 @@ function buildSetupOptions(config: { enabled: boolean; capture_enabled: boolean;
 		`Choose model for habit learning (${modelValueForSetup(config)})`,
 		"Analyze saved examples now",
 		"Review suggested habits",
+		"Review approved habits",
 		`${config.selector_enabled ? "[x]" : "[ ]"} Use approved habits before replies`,
 		"Automatic schedule: Phase 2 / off (explain)",
 		"Show current settings",
@@ -824,6 +958,7 @@ function setupHelpMessage(config: { enabled: boolean; capture_enabled: boolean; 
 			: `Use approved habits before replies: lets Pi add only human-approved habits as reminders before future replies. Current mode may call ${config.selector_model} with bounded redacted selector payloads.`,
 		"Automatic schedule: Phase 2 / off in this release. Setup will not install, enable, or start a timer.",
 		"Review suggested habits: opens the list of proposed habits for you to approve or reject. Nothing is auto-approved.",
+		"Review approved habits: opens actual active/disabled approved habits so you can inspect, disable, or re-enable one without typing ids or checksums.",
 		anythingEnabled
 			? "Turn all experience features off: stops capture and all runtime gates. Existing local records are preserved."
 			: "When a setting is on, a Turn all experience features off row appears here to stop all runtime gates.",
@@ -1176,6 +1311,126 @@ function formatReviewDiffForHuman(diff: any): string {
 	return ["Possible duplicate suggestions:", "", ...groups.map(([group, ids]) => `${group}: ${(ids as any[]).join(", ")}`), "", "Open /experience setup and review these suggestions before approving."].join("\n");
 }
 
+function approvedHabitSearchText(habit: any): string {
+	return [habit?.status, habit?.condition, habit?.behavior].map((part) => String(part || "").toLowerCase()).join(" ");
+}
+
+function approvedHabitSearchMatches(habits: any[], query: string): any[] {
+	const clean = query.trim().toLowerCase();
+	if (!clean) return habits.slice(0, 50);
+	const terms = clean.split(/\s+/).filter(Boolean);
+	const direct = habits.filter((habit) => terms.every((term) => approvedHabitSearchText(habit).includes(term)));
+	const seen = new Set(direct);
+	const fuzzy = fuzzyFilter(habits.filter((habit) => !seen.has(habit)), clean, (habit) => approvedHabitSearchText(habit));
+	return [...direct, ...fuzzy].slice(0, 50);
+}
+
+function approvedHabitListLabel(habit: any, index: number): string {
+	const status = habit?.status === "disabled" ? "disabled" : "active";
+	const condition = redactText(String(habit?.condition || "Whenever this habit applies")).slice(0, 80);
+	const behavior = redactText(String(habit?.behavior || "Apply the approved behavior")).slice(0, 90);
+	return `Habit #${index + 1} [${status}] When ${condition} → Do ${behavior}`;
+}
+
+function approvedHabitTitle(habit: any, index: number): string {
+	return `Approved habit #${index + 1} — ${habit?.status === "disabled" ? "disabled" : "active"}`;
+}
+
+function approvedHabitEvidenceCount(habit: any): number | undefined {
+	const data = habit?.data || {};
+	if (Array.isArray(data.source_refs)) return data.source_refs.length;
+	if (Array.isArray(data.activation_decision?.eligibility?.dates)) return Number(data.activation_decision?.eligibility?.unique_observations || 0) || undefined;
+	return undefined;
+}
+
+function formatApprovedHabitForHuman(habit: any): string {
+	const status = habit?.status === "disabled" ? "disabled" : "active";
+	const confidence = typeof habit?.confidence_bp === "number" ? `${Math.round(habit.confidence_bp / 100)}%` : undefined;
+	const evidence = approvedHabitEvidenceCount(habit);
+	const lines = ["Approved habit", "", `Status: ${status}`];
+	if (habit?.condition) lines.push(`When: ${redactText(String(habit.condition)).slice(0, 600)}`);
+	if (habit?.behavior) lines.push(`Do: ${redactText(String(habit.behavior)).slice(0, 600)}`);
+	if (typeof habit?.polarity === "number") lines.push(`Type: ${habit.polarity < 0 ? "avoidance" : "preference"}`);
+	if (confidence) lines.push(`Confidence: ${confidence}`);
+	if (evidence !== undefined) lines.push(`Evidence examples: ${evidence}`);
+	if (habit?.created_at) lines.push(`Created: ${redactText(String(habit.created_at)).slice(0, 80)}`);
+	if (habit?.updated_at) lines.push(`Updated: ${redactText(String(habit.updated_at)).slice(0, 80)}`);
+	lines.push("", status === "active" ? "Choose Disable habit to stop using this approved habit before replies." : "Choose Re-enable habit to use this approved habit before replies again.");
+	return lines.join("\n");
+}
+
+function setupHabitActions(habit: any): SetupHabitAction[] {
+	return [habit?.status === "disabled" ? "Re-enable habit" : "Disable habit", "Back to habit list"];
+}
+
+function formatSetupHabitActionForHuman(action: SetupHabitAction): string {
+	if (action === "Disable habit") return "Habit disabled. It stays in history but will not be used before replies.";
+	if (action === "Re-enable habit") return "Habit re-enabled. It can be used before replies when approved-habit reminders are on.";
+	return "Back to approved habits.";
+}
+
+async function chooseApprovedHabitInPanel(ctx: ExtensionCommandContext, habits: any[]): Promise<any | undefined> {
+	const ui = (ctx as { hasUI?: boolean; ui?: { custom?: ExtensionCommandContext["ui"]["custom"] } })?.ui;
+	if ((ctx as { hasUI?: boolean }).hasUI !== false && typeof ui?.custom === "function") {
+		return ui.custom<any | undefined>((_tui, _theme, _keybindings, done) => new ApprovedHabitSearchComponent(habits, done), {
+			overlay: true,
+			overlayOptions: { width: "80%", minWidth: 70, maxHeight: "80%", anchor: "center", margin: 1 },
+		});
+	}
+	const labels = habits.map((habit, index) => approvedHabitListLabel(habit, index));
+	const choice = await chooseSetup(ctx, `Review approved habits — ${plural(habits.length, "habit")}`, [...labels, "Back to setup"], false);
+	if (!choice || choice === "Back to setup") return undefined;
+	return habits[labels.indexOf(choice)];
+}
+
+async function chooseApprovedHabitActionInPanel(ctx: ExtensionCommandContext, title: string, details: string, actions: SetupHabitAction[]): Promise<SetupHabitAction | undefined> {
+	const ui = (ctx as { hasUI?: boolean; ui?: { custom?: ExtensionCommandContext["ui"]["custom"] } })?.ui;
+	if ((ctx as { hasUI?: boolean }).hasUI !== false && typeof ui?.custom === "function") {
+		return ui.custom<SetupHabitAction | undefined>((_tui, _theme, _keybindings, done) => new ApprovedHabitDecisionComponent(title, details, actions, done), DETAIL_PANEL_CUSTOM_OPTIONS);
+	}
+	notify(ctx, details, "info");
+	return chooseSetup(ctx, "What do you want to do with this approved habit?", actions, false) as Promise<SetupHabitAction | undefined>;
+}
+
+async function handleApprovedHabitsSetup(ctx: ExtensionCommandContext) {
+	const paths = getAgentExperiencePaths();
+	if (!(await fileExists(resolvePrivatePath(paths.root, "ledger.sqlite")))) return notify(ctx, "No approved habits yet. Choose Analyze saved examples now, then Review suggested habits and approve one first.", "info");
+	while (true) {
+		let habits: any[];
+		try {
+			habits = await withExistingReviewStorage(async (storage) => listApprovedHabitsForSetup(storage.db, { userId: storage.userId }));
+		} catch (error) {
+			return notify(ctx, formatReviewReadError(error), "warn");
+		}
+		if (!habits.length) return notify(ctx, "No approved habits yet. Approve a suggested habit first; candidates stay under Review suggested habits.", "info");
+		const selected = await chooseApprovedHabitInPanel(ctx, habits);
+		if (!selected) return;
+		const refreshed = await withExistingReviewStorage(async (storage) => listApprovedHabitsForSetup(storage.db, { userId: storage.userId }))
+			.then((rows) => rows.find((row: any) => row.id === selected.id));
+		if (!refreshed) {
+			notify(ctx, "That habit changed or is no longer approved. Reopening the approved-habit list.", "warn");
+			continue;
+		}
+		const index = habits.findIndex((habit) => habit.id === refreshed.id);
+		const action = await chooseApprovedHabitActionInPanel(ctx, approvedHabitTitle(refreshed, Math.max(0, index)), formatApprovedHabitForHuman(refreshed), setupHabitActions(refreshed));
+		if (!action || action === "Back to habit list") continue;
+		try {
+			const now = new Date().toISOString();
+			if (action === "Re-enable habit" && !(await ensureLawFileForSetup(ctx))) continue;
+			await withReviewStorage(async (storage) => {
+				const current = listApprovedHabitsForSetup(storage.db, { userId: storage.userId }).find((row: any) => row.id === refreshed.id);
+				if (!current) throw new Error("Approved habit changed or disappeared");
+				if (action === "Disable habit") return disableHabit(storage.db, { userId: storage.userId, habitId: refreshed.id, checksum: refreshed.checksum, now });
+				return enableHabit(storage.db, { userId: storage.userId, habitId: refreshed.id, checksum: refreshed.checksum, law: await readConfiguredLawForRoot(storage.root), now });
+			});
+			notify(ctx, formatSetupHabitActionForHuman(action), "info");
+		} catch (error: any) {
+			const raw = String(error?.message || error);
+			notify(ctx, `Approved-habit action failed safely: ${redactText(raw).slice(0, 500)}`, "warn");
+		}
+	}
+}
+
 async function handleReviewSetup(ctx: ExtensionCommandContext) {
 	const paths = getAgentExperiencePaths();
 	if (!(await fileExists(resolvePrivatePath(paths.root, "ledger.sqlite")))) return notify(ctx, "No review list yet. Choose Analyze saved examples now first.", "info");
@@ -1329,6 +1584,11 @@ async function handleSetupDirect(args: string[], ctx: ExtensionCommandContext): 
 		case "learn-now":
 			await handleAnalyzeNow(ctx);
 			return true;
+		case "browse-habits":
+		case "review-habits":
+		case "approved-habit-list":
+			await handleApprovedHabitsSetup(ctx);
+			return true;
 		case "suggest":
 		case "habits":
 		case "consolidation":
@@ -1394,6 +1654,7 @@ async function handleSetup(ctx: ExtensionCommandContext, args: string[] = []) {
 			if (!choice || choice === "Done") return notify(ctx, "Agent Experience setup closed.", "info");
 			if (choice === "Show current settings") await handleStatusSetup(ctx);
 			else if (choice === "Review suggested habits") await handleReviewSetup(ctx);
+			else if (choice === "Review approved habits") await handleApprovedHabitsSetup(ctx);
 			else if (choice === "Explain these settings") await handleHelpSetup(ctx, config);
 			else if (choice === "Turn all experience features off") await handleOff(ctx);
 			else if (choice.startsWith("Choose model for habit learning")) await handleSetupModel(ctx);
@@ -1416,6 +1677,7 @@ async function handleSetup(ctx: ExtensionCommandContext, args: string[] = []) {
 		} else if (action === "model") await handleSetupModel(ctx);
 		else if (action === "analyze") { await handleAnalyzeNow(ctx); return; }
 		else if (action === "review") await handleReviewSetup(ctx);
+		else if (action === "habits") await handleApprovedHabitsSetup(ctx);
 		else if (action === "use") await handleSetupUseHabitsToggle(ctx, !config.selector_enabled);
 		else if (action === "schedule") await handleSetupTimer(ctx);
 		else if (action === "status") await handleStatusSetup(ctx);
@@ -1711,7 +1973,7 @@ function usage(topic = "") {
 		return [
 			"Agent Experience setup:",
 			"/experience setup                         # the one normal-user setup panel",
-			"Inside that menu: save examples, choose model, analyze saved examples, review suggestions, approve/reject, and use approved habits.",
+			"Inside that menu: save examples, choose model, analyze saved examples, review suggestions, review approved habits, disable/re-enable habits, and use approved habits.",
 			"Use arrow keys plus Space/Enter on menu rows. No typed setup subcommands are required for normal use. Checkbox rows show [x]/[ ].",
 			"Automatic schedule is Phase 2/off. Analyze saved examples from the setup menu when you want suggestions.",
 		].join("\n");
@@ -1721,6 +1983,7 @@ function usage(topic = "") {
 			"Agent Experience review:",
 			"Open /experience setup and choose Review suggested habits.",
 			"The setup menu shows suggestions in plain English and lets you approve or reject them.",
+			"Use Review approved habits in the same setup menu to browse actual active/disabled habits and disable or re-enable one without typing ids/checksums.",
 			"Review keeps checksum/stale-state protection. It never auto-approves habits.",
 		].join("\n");
 	}

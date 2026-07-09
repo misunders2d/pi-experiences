@@ -9,7 +9,7 @@ import { getAgentExperiencePaths, readAgentExperienceConfig, setAgentExperienceC
 import { canonicalJson } from '../extensions/agent-experience/src/storage/checksum.ts';
 import { ensurePrivateRoot, resolvePrivatePath } from '../extensions/agent-experience/src/storage/private-root.ts';
 import { observationChecksumForTest, observationPairRefForTest } from '../extensions/agent-experience/src/storage/observations.ts';
-import { initExperienceStorage } from '../extensions/agent-experience/src/storage/sqlite.ts';
+import { initExperienceStorage, insertStorageRecord } from '../extensions/agent-experience/src/storage/sqlite.ts';
 
 function makeObservation({ seq, previous = null, createdAt, user, assistant }) {
   const base = {
@@ -369,13 +369,122 @@ assert.ok(!notes.some((note) => /Use arrow keys to move/.test(note.message || ''
 let storage = await initExperienceStorage(paths.root, { allowInit: true, userId: 'owner' });
 let active;
 try {
-  const rows = storage.db.prepare("SELECT id, condition, behavior FROM habits WHERE user_id = 'owner' AND status = 'active'").all();
+  const rows = storage.db.prepare("SELECT id, condition, behavior, checksum FROM habits WHERE user_id = 'owner' AND status = 'active'").all();
   assert.equal(rows.length, 1, 'approved eligible habit should be active');
   active = rows[0];
   assert.match(active.behavior, /concrete evidence/);
+  insertStorageRecord(storage.db, 'habits', {
+    id: 'candidate-hidden-from-approved-browser',
+    userId: 'owner',
+    data: {
+      record_kind: 'habit_candidate',
+      schema_version: 1,
+      status: 'candidate',
+      condition: 'When candidate suggestions exist',
+      behavior: 'This candidate must not appear in approved habits browser',
+      polarity: 1,
+      confidence_bp: 9100,
+      source_refs: [{ file_generation: 'active', seq: 1, checksum: r1.checksum }, { file_generation: 'active', seq: 2, checksum: r2.checksum }, { file_generation: 'active', seq: 3, checksum: r3.checksum }],
+    },
+    now: '2026-07-09T09:05:00.000Z',
+  });
 } finally {
   storage.db.close();
 }
+
+notes.length = 0;
+let approvedHabitListSeen = false;
+let approvedHabitDetailSeen = false;
+let approvedHabitActionDone = false;
+ctx.ui.custom = async (factory) => {
+  let value;
+  const component = await factory({ requestRender() {} }, {}, {}, (result) => { value = result; });
+  const rendered = component.render(110).join('\n');
+  assert.doesNotMatch(rendered, new RegExp(active.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), 'approved habits UI must not expose habit id');
+  assert.doesNotMatch(rendered, new RegExp(active.checksum.slice(0, 16)), 'approved habits UI must not expose checksum');
+  assert.doesNotMatch(rendered, /source_refs|prompt_hash/, 'approved habits UI must not expose internal source refs or prompt hashes');
+  if (/Agent Experience setup/.test(rendered)) {
+    assert.match(rendered, /Review approved habits/, 'setup panel must include approved habit browser row');
+    const next = setupChoices.shift();
+    return next === 'Review approved habits' ? 'habits' : next === 'Done' ? 'done' : value;
+  }
+  if (/Review approved habits/.test(rendered)) {
+    if (approvedHabitActionDone) return undefined;
+    assert.match(rendered, /\[active\]/, 'approved habit browser must show active habits');
+    assert.match(rendered, /Answer concisely and cite concrete e/, 'approved habit browser must show actual approved habit');
+    assert.doesNotMatch(rendered, /candidate must not appear/, 'approved habit browser must exclude candidate suggestions');
+    approvedHabitListSeen = true;
+    component.handleInput('\r');
+    return value;
+  }
+  assert.match(rendered, /Approved habit #/, 'approved habit detail panel should open after selecting a habit');
+  assert.match(rendered, /Status: active/, 'approved habit detail panel must show active status');
+  assert.match(rendered, /When:/, 'approved habit detail panel must show condition');
+  assert.match(rendered, /Do:/, 'approved habit detail panel must show behavior');
+  assert.match(rendered, /Disable habit/, 'active habit detail panel must offer disable action');
+  approvedHabitDetailSeen = true;
+  approvedHabitActionDone = true;
+  component.handleInput(' ');
+  return value;
+};
+setupChoices = ['Review approved habits', undefined, 'Done'];
+await commands.get('experience').handler('setup', ctx);
+delete ctx.ui.custom;
+assert.equal(approvedHabitListSeen, true, 'setup must open approved habits list panel');
+assert.equal(approvedHabitDetailSeen, true, 'setup must open approved habit detail/action panel');
+assert.ok(notes.some((note) => /Habit disabled/.test(note.message || '')), 'setup approved-habit action must disable active habit');
+assert.ok(!notes.some((note) => String(note.message || '').includes(active.id) || String(note.message || '').includes(active.checksum.slice(0, 16))), 'approved-habit notifications must not expose id/checksum');
+storage = await initExperienceStorage(paths.root, { allowInit: true, userId: 'owner' });
+try {
+  const rows = storage.db.prepare("SELECT id, status FROM habits WHERE user_id = 'owner' AND id = ?").all(active.id);
+  assert.equal(rows[0].status, 'disabled', 'setup approved-habit action must persist disabled status');
+} finally {
+  storage.db.close();
+}
+
+notes.length = 0;
+let disabledHabitListSeen = false;
+let reenableDetailSeen = false;
+let reenableActionDone = false;
+ctx.ui.custom = async (factory) => {
+  let value;
+  const component = await factory({ requestRender() {} }, {}, {}, (result) => { value = result; });
+  const rendered = component.render(110).join('\n');
+  assert.doesNotMatch(rendered, new RegExp(active.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), 'approved habits re-enable UI must not expose habit id');
+  assert.doesNotMatch(rendered, new RegExp(active.checksum.slice(0, 16)), 'approved habits re-enable UI must not expose old checksum');
+  if (/Agent Experience setup/.test(rendered)) {
+    const next = setupChoices.shift();
+    return next === 'Review approved habits' ? 'habits' : next === 'Done' ? 'done' : value;
+  }
+  if (/Review approved habits/.test(rendered)) {
+    if (reenableActionDone) return undefined;
+    assert.match(rendered, /\[disabled\]/, 'approved habit browser must include disabled habits');
+    disabledHabitListSeen = true;
+    component.handleInput('\r');
+    return value;
+  }
+  assert.match(rendered, /Status: disabled/, 'approved habit detail panel must show disabled status');
+  assert.match(rendered, /Re-enable habit/, 'disabled habit detail panel must offer re-enable action');
+  reenableDetailSeen = true;
+  reenableActionDone = true;
+  component.handleInput(' ');
+  return value;
+};
+setupChoices = ['Review approved habits', undefined, 'Done'];
+await commands.get('experience').handler('setup', ctx);
+delete ctx.ui.custom;
+assert.equal(disabledHabitListSeen, true, 'setup must list disabled approved habits');
+assert.equal(reenableDetailSeen, true, 'setup must open disabled habit detail/action panel');
+assert.ok(notes.some((note) => /Habit re-enabled/.test(note.message || '')), 'setup approved-habit action must re-enable disabled habit');
+storage = await initExperienceStorage(paths.root, { allowInit: true, userId: 'owner' });
+try {
+  const rows = storage.db.prepare("SELECT id, status FROM habits WHERE user_id = 'owner' AND id = ?").all(active.id);
+  assert.equal(rows[0].status, 'active', 'setup approved-habit action must persist active status after re-enable');
+  storage.db.prepare("UPDATE habits SET status = 'archived' WHERE user_id = 'owner' AND id = 'candidate-hidden-from-approved-browser'").run();
+} finally {
+  storage.db.close();
+}
+
 notes.length = 0;
 setupChoices = ['Analyze saved examples now', 'Done'];
 await commands.get('experience').handler('setup', ctx);

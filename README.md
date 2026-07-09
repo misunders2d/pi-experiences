@@ -160,9 +160,10 @@ No typed setup subcommands are required for normal use. If the panel does not re
    - Use Ctrl+E only when you need to enter an exact `provider/model` id.
 5. Choose **Analyze saved examples now**. This starts one nonblocking model job and returns control to Pi.
 6. After analysis finishes, choose **Review suggested habits**.
+7. Choose **Review approved habits** to browse actual active/disabled approved habits and disable or re-enable one without typing IDs/checksums.
    - Full details appear in a focused review panel, not in chat history.
    - Use ↑/↓ then Space/Enter, or `1`/`2`/`3`, to Approve / Reject / Back.
-7. Optionally toggle **Use approved habits before replies** to `[x] ON`. This uses only approved active habits and remains off by default.
+8. Optionally toggle **Use approved habits before replies** to `[x] ON`. This uses only approved active habits and remains off by default.
 
 ### Agent/operator procedure
 
@@ -221,7 +222,7 @@ The extension is designed around human review.
 capture redacted pairs -> analyze saved examples now -> proposed suggestions -> human review -> active habits -> optional approved-habit reminders
 ```
 
-The **Analyze saved examples now** row inside `/experience setup` can create suggestions from already saved examples using the configured Pi model. Then use **Review suggested habits** inside the same setup menu to inspect them in a focused review panel, then approve or reject them. Normal users do not need typed review commands.
+The **Analyze saved examples now** row inside `/experience setup` can create suggestions from already saved examples using the configured Pi model. Then use **Review suggested habits** inside the same setup menu to inspect them in a focused review panel, then approve or reject them. Use **Review approved habits** to browse only actual active/disabled approved habits, inspect details, and disable or re-enable one. Normal users do not need typed review commands, IDs, or checksums.
 
 Checksums are still used internally so stale review actions fail closed. Advanced/backcompat review commands exist for maintainers, but they are not the normal path.
 
