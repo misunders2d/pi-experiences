@@ -77,7 +77,7 @@ process.env.AX_USER_ID = 'owner';
 const paths = getAgentExperiencePaths();
 const { commands, handlers } = makePi();
 assert.deepEqual([...commands.keys()], ['experience']);
-assert.deepEqual([...handlers.keys()].sort(), ['agent_end', 'before_agent_start', 'input', 'session_shutdown']);
+assert.deepEqual([...handlers.keys()].sort(), ['agent_end', 'agent_settled', 'before_agent_start', 'context', 'input', 'session_shutdown']);
 assert.equal(existsSync(paths.root), false, 'import/load must not create state');
 await commands.get('experience').handler('status', ctx());
 assert.equal(existsSync(paths.root), false, 'status must not create state');

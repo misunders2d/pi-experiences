@@ -31,20 +31,31 @@ def send(fd,data,pause=.18): os.write(fd,data); drain(fd,pause)
 pid,fd=pty.fork()
 if pid==0:
     env={**os.environ,'AX_STATE_ROOT':str(state),'AX_USER_ID':'owner','TERM':'xterm-256color'}
-    os.chdir(work); os.execvpe('pi',['pi','--no-extensions','--no-skills','-e',str(package)],env)
+    os.chdir(work); os.execvpe('pi',['pi','--no-extensions','--no-skills','--thinking','high','-e',str(package)],env)
 fcntl.ioctl(fd,termios.TIOCSWINSZ,struct.pack('HHHH',42,120,0,0))
 try:
     drain(fd,2); mark=len(raw)
     send(fd,b'Please provide steering smoke status.\r',.2)
-    wait(fd,r'Habit steering\s*[·.]\s*1 approved habit',timeout=30,start=mark)
+    wait(fd,r'Steered by habit\s*[·.]\s*When asked for steering smoke status',timeout=30,start=mark)
     collapsed=text(mark)
-    assert 'When: When asked for steering smoke status' not in collapsed, 'steering entry must start collapsed'
-    assert 'Do: Answer with a concise steering smoke status' not in collapsed, 'steering entry must start collapsed'
+    prompt_pos=collapsed.rfind('Please provide steering smoke status.')
+    marker_pos=collapsed.rfind('Steered by habit')
+    assert prompt_pos>=0 and marker_pos>prompt_pos, 'response marker must render after the triggering user prompt'
+    assert 'Do: Answer exactly “Steering smoke OK.”' not in collapsed, 'steering entry must start collapsed'
+    assert 'When asked for status or progress' not in collapsed, 'weaker generic habit must not appear in response marker'
+    assert 'When doing nontrivial code review' not in collapsed, 'behavior-token false match must not appear in response marker'
+    wait(fd,r'(Thinking|Working)\.{0,3}',timeout=12,start=marker_pos)
+    active=text(mark)
+    assert active.find('Thinking',marker_pos)>marker_pos or active.find('Working',marker_pos)>marker_pos, 'marker must render before response work starts'
+    wait(fd,r'Steering smoke OK\.',timeout=60,start=marker_pos)
+    answered=text(mark)
+    answer_pos=answered.find('Steering smoke OK.',marker_pos)
+    assert answer_pos>marker_pos, 'the response receiving hidden habit guidance must render after its marker'
     send(fd,b'\x0f',.3)  # app.tools.expand (Ctrl+O)
     wait(fd,r'When: When asked for steering smoke status',timeout=12,start=mark)
-    wait(fd,r'Do: Answer with a concise steering smoke status',timeout=12,start=mark)
+    wait(fd,r'Do: Answer exactly [“\"]Steering smoke OK\.[”\"]',timeout=12,start=mark)
     visible=text(mark)
-    marker=visible.find('Habit steering')
+    marker=visible.rfind('Steered by habit')
     assert marker>=0
     assert visible.find('When: When asked for steering smoke status',marker)>marker
     assert not re.search(r'steering-smoke-approved-habit|confidence_bp|checksum|source_refs|prompt_hash|provider|model',visible,re.I), 'visible marker leaked internals'

@@ -54,8 +54,8 @@ const humanReadme=readme.slice(0,technicalOpenIndex);
 const technicalReadme=readme.slice(technicalSummaryIndex,technicalCloseIndex);
 assert.match(humanReadme,/situation and action separately/i,'normal-user duplicate explanation must preserve separate-field behavior');
 assert.match(humanReadme,/not globally against one another/i,'normal-user duplicate explanation must preserve approved-only candidate policy');
-for(const phrase of ['exact `When:` \/ `Do:` wording','later, explicit confirmation','bypasses only that repetition threshold','numbered plain-language items','◇ Habit steering','No marker means no habit guidance was injected','not an LLM message']) assert.match(humanReadme,new RegExp(phrase,'i'),`README conversational/transparency contract missing: ${phrase}`);
-for(const phrase of ['one short-lived draft and one numbered review snapshot','no raw conversation or confirmation utterance','If it is unavailable, no candidate','expire after 15 minutes','agent_experience.habit_steering','Custom entries do not participate in LLM context','non-TUI modes suppress']) assert.match(technicalReadme,new RegExp(phrase,'i'),`README technical conversational/transparency contract missing: ${phrase}`);
+for(const phrase of ['exact `When:` \/ `Do:` wording','later, explicit confirmation','bypasses only that repetition threshold','numbered plain-language items','◇ Steered by habit','No marker means that response received no habit guidance','not an LLM message']) assert.match(humanReadme,new RegExp(phrase,'i'),`README conversational/transparency contract missing: ${phrase}`);
+for(const phrase of ['one short-lived draft and one numbered review snapshot','no raw conversation or confirmation utterance','If it is unavailable, no candidate','expire after 15 minutes','agent_experience.habit_steering','durable marker does not participate in LLM context','non-TUI modes suppress']) assert.match(technicalReadme,new RegExp(phrase,'i'),`README technical conversational/transparency contract missing: ${phrase}`);
 for(const phrase of ['lower of separate condition and behavior cosine scores','Review threshold: 5,500 basis points','candidate-to-candidate semantic routing is excluded','obsolete pending scoring-method relations','every pending relation involving it','keep-separate decisions survive scoring/cache method upgrades'])assert.match(technicalReadme,new RegExp(phrase,'i'),`README dedupe correction contract missing: ${phrase}`);
 const extensionReadme=await readFile(join(root,'extensions/agent-experience/README.md'),'utf8');
 const experienceSkill=await readFile(join(root,'skills/agent-experience/SKILL.md'),'utf8');
@@ -66,10 +66,10 @@ for(const [name,text] of [['extension README',extensionReadme],['public skill',e
   assert.match(text,/exact `When:` \/ `Do:`/is,`${name} must document exact conversational habit drafting`);
   assert.match(text,/later user (?:input )?turn|later user message/is,`${name} must preserve two-turn confirmation`);
   assert.match(text,/bypasses only (?:the )?repe(?:at|tit)/is,`${name} must preserve direct-declaration evidence boundary`);
-  assert.match(text,/◇ Habit steering/is,`${name} must document visible per-answer habit steering`);
-  assert.match(text,/No marker means no habit guidance was injected/is,`${name} must define marker absence semantics`);
+  assert.match(text,/◇ Steered by habit/is,`${name} must document exact response-specific habit steering`);
+  assert.match(text,/No marker means that response received no habit guidance/is,`${name} must define marker absence semantics`);
   assert.match(text,/never enters? LLM context|does not participate in LLM context/is,`${name} must keep steering provenance out of model context`);
-  assert.match(text,/non-TUI/is,`${name} must preserve fail-closed interface visibility`);
+  assert.match(text,/non-TUI|interface is not the Pi TUI/is,`${name} must preserve fail-closed interface visibility`);
 }
 
 const steeringSource=await readFile(join(root,'extensions/agent-experience/src/steering-note.ts'),'utf8');

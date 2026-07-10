@@ -187,7 +187,7 @@ try {
 
   const { commands, handlers } = makePi();
   const notes = [];
-  const ctx = { cwd: liveCwd, ui: { notify(message, level) { notes.push({ message, level }); } } };
+  const ctx = { cwd: liveCwd, mode: 'tui', sessionManager: { getSessionId: () => 'phase7a-main', getSessionFile: () => join(temp, 'phase7a-main.jsonl') }, ui: { notify(message, level) { notes.push({ message, level }); } } };
   await commands.get('experience').handler('enable', ctx);
   assert.equal((await readAgentExperienceConfig(getAgentExperiencePaths())).config.selector_enabled, false, 'selector disabled default after master enable');
   await commands.get('experience').handler('selector on', ctx);
@@ -196,23 +196,21 @@ try {
   insertStorageRecord(storage.db, 'habits', { id: 'hook-active', userId: 'owner', data: habitData({ condition: 'hook adapter prompt', behavior: 'use production adapter guidance', law_hash: realLaw.hash }), now: '2026-07-08T02:00:00.000Z' });
   storage.db.prepare('DELETE FROM selector_hit_log').run();
   __setAgentExperienceSelectorAdapterForTest({ async select({ candidateIds, signal }) { assert.ok(signal instanceof AbortSignal); return { schema_version: 1, selected: [{ id: candidateIds[0], confidence_bp: 9500 }] }; } });
-  const hookResult = await handlers.get('before_agent_start')({ prompt: 'hook adapter prompt', systemPrompt: 'base' }, {
-    cwd: liveCwd,
-    mode: 'tui',
-    ui: ctx.ui,
-    modelRegistry: fakeRegistry(),
-  });
-  assert.ok(hookResult?.systemPrompt);
-  assert.match(hookResult.systemPrompt, /Agent Experience generated guidance/);
-  assert.equal('message' in hookResult, false);
+  const hookCtx = { ...ctx, modelRegistry: fakeRegistry() };
+  const hookResult = await handlers.get('before_agent_start')({ prompt: 'hook adapter prompt', systemPrompt: 'base' }, hookCtx);
+  assert.equal(hookResult, undefined, 'before_agent_start prepares steering but must not modify the system prompt');
+  const contextResult = await handlers.get('context')({ messages: [{ role: 'user', content: [{ type: 'text', text: 'hook adapter prompt' }], timestamp: Date.now() }] }, hookCtx);
+  assert.equal(contextResult.messages.at(-1).customType, 'agent_experience.habit_guidance');
+  assert.match(contextResult.messages.at(-1).content, /Agent Experience approved habit guidance/);
+  assert.match(contextResult.messages.at(-1).content, /Do: use production adapter guidance/);
 
   const noLedgerRoot = join(temp, 'no-ledger-state');
   process.env.AX_STATE_ROOT = noLedgerRoot;
   const noLedger = makePi();
-  const noLedgerCtx = { cwd: liveCwd, ui: { notify() {} } };
+  const noLedgerCtx = { cwd: liveCwd, mode: 'tui', sessionManager: { getSessionId: () => 'phase7a-no-ledger', getSessionFile: () => join(temp, 'phase7a-no-ledger.jsonl') }, ui: { notify() {} } };
   await noLedger.commands.get('experience').handler('enable', noLedgerCtx);
   await noLedger.commands.get('experience').handler('selector on', noLedgerCtx);
-  const noLedgerResult = await noLedger.handlers.get('before_agent_start')({ prompt: 'no ledger', systemPrompt: 'base' }, { cwd: liveCwd, mode: 'tui', ui: noLedgerCtx.ui, modelRegistry: fakeRegistry({ auth: { ok: false, error: 'SECRET should not matter' } }) });
+  const noLedgerResult = await noLedger.handlers.get('before_agent_start')({ prompt: 'no ledger', systemPrompt: 'base' }, { ...noLedgerCtx, modelRegistry: fakeRegistry({ auth: { ok: false, error: 'SECRET should not matter' } }) });
   assert.equal(noLedgerResult, undefined);
   assert.equal(existsSync(join(noLedgerRoot, 'ledger.sqlite')), false, 'selector hook must not initialize storage on missing ledger');
   process.env.AX_STATE_ROOT = join(temp, 'state');

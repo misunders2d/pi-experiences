@@ -93,6 +93,7 @@ const modelRegistry = {
 const ctx = {
   cwd: process.cwd(),
   mode: 'tui',
+  sessionManager: { getSessionId: () => 'phase9-main', getSessionFile: () => join(temp, 'phase9-main.jsonl') },
   hasUI: true,
   modelRegistry,
   model: availableModel,
@@ -645,9 +646,14 @@ try {
 } finally {
   storage.db.close();
 }
-const beforeResult = await handlers.get('before_agent_start')({ prompt: `${active.condition} ${active.behavior}`, systemPrompt: 'base' }, ctx);
-assert.match(beforeResult.systemPrompt, /Agent Experience reminders|approved habits|Answer concisely/i, 'before_agent_start should inject approved habit reminder');
-assert.doesNotMatch(beforeResult.systemPrompt, /please be concise|too much fluff|again: concise/, 'selector injection must not include raw saved examples');
+const activePrompt = `${active.condition} ${active.behavior}`;
+const beforeResult = await handlers.get('before_agent_start')({ prompt: activePrompt, systemPrompt: 'base' }, ctx);
+assert.equal(beforeResult, undefined, 'before_agent_start must not inject response guidance above the user prompt');
+const activeContext = await handlers.get('context')({ messages: [{ role: 'user', content: [{ type: 'text', text: activePrompt }], timestamp: Date.now() }] }, ctx);
+const activeGuidance = activeContext.messages.at(-1);
+assert.equal(activeGuidance.customType, 'agent_experience.habit_guidance');
+assert.match(activeGuidance.content, /approved habit guidance|Answer concisely/i, 'response context should receive approved habit guidance only after marker commit');
+assert.doesNotMatch(activeGuidance.content, /please be concise|too much fluff|again: concise/, 'selector injection must not include raw saved examples');
 
 const offTestOn = await setAgentExperienceCaptureActive(true, paths);
 assert.equal(offTestOn.config.enabled && offTestOn.config.capture_enabled, true, 'test precondition: capture on before custom off action');

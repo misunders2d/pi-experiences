@@ -125,7 +125,7 @@ Launch the real Pi TUI in a disposable Pi config/package root that references th
 
 Also exercise the conversational tools in a fresh session: exact draft display, same-turn confirmation rejection, later-turn save, corrected-draft replacement, numbered suggestion/duplicate listing, explicit decision application, stale-list refresh, and idempotent retry.
 
-Seed one active approved habit, enable reminders, and submit a matching prompt. Verify a muted `◇ Habit steering · 1 approved habit` entry appears before the assistant answer, collapsed by default; expansion shows exact approved `When:` / `Do:` wording; an unrelated prompt shows no marker. Verify non-TUI, renderer failure, malformed wording, and append failure suppress injection.
+Seed one specific approved habit plus weaker generic and behavior-only decoys, enable reminders, and submit a matching prompt. Verify the user prompt renders first, then a muted `◇ Steered by habit · <exact selected condition>` entry, then response work/answer. The collapsed marker must identify each selected condition rather than show a generic count; expansion shows every exact approved `When:` / `Do:` pair. Weaker-overlap and behavior-only decoys must not appear. An unrelated prompt shows no marker. Verify tool-loop calls retain guidance without duplicate markers, a new user message cannot inherit it, and non-TUI/renderer/malformed/append failures suppress guidance.
 
 Verify all visible UI/tool results contain no habit IDs, checksums, duplicate thresholds, local-model identifiers, provider endpoints, source refs, private paths, API-key instructions, audit fields, or required advanced subcommands.
 
@@ -158,10 +158,12 @@ Release evidence must include:
 - semantic-unavailable declaration creates no candidate/relation; clean activation and duplicate-block routing are atomic;
 - conversational review exposes numbered sanitized wording only, revalidates hidden snapshots, and rejects stale or same-turn mutation;
 - retry/correction/expiry/session-isolation behavior creates no duplicate or replaced-draft habit;
-- actual TUI selector injection appends exactly one `agent_experience.habit_steering` entry before prompt modification;
-- collapsed/expanded/malformed steering rendering is subtle, exact, and safe; no-selection emits no marker;
-- provenance stores approved wording/count/time only and never enters LLM context;
-- non-TUI, renderer/build/append failure produces no habit injection and only a static sanitized diagnostic.
+- actual TUI steering renders and persists in order: triggering user message → one `agent_experience.habit_steering` entry → assistant response;
+- collapsed rendering identifies every exact selected condition; expanded/malformed rendering stays safe; no-selection emits no marker;
+- instant matching uses condition tokens only, removes common stopwords, and keeps only the strongest overlap tier while preserving genuine ties;
+- durable provenance stores approved wording/count/time only and never enters LLM context; separate transient guidance enters only the marked response;
+- tool-loop context receives the same guidance without duplicate markers, and a new user message cannot inherit it;
+- non-TUI, renderer/build/append failure produces no habit guidance and only a static sanitized diagnostic.
 
 ## Release gate
 

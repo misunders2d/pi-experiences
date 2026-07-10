@@ -48,15 +48,26 @@ function normalizeText(value: unknown): string {
 	return String(value ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().replace(/\s+/g, " ");
 }
 
+const SELECTOR_STOPWORDS = new Set([
+	"a", "an", "and", "are", "as", "ask", "asked", "asks", "at", "be", "been", "being", "but", "by",
+	"can", "could", "did", "do", "does", "for", "from", "had", "has", "have", "how", "i", "if", "in", "into",
+	"is", "it", "me", "my", "of", "on", "or", "our", "please", "reply", "request", "respond", "that", "the",
+	"their", "them", "then", "there", "these", "they", "this", "those", "to", "us", "user", "users", "was",
+	"we", "were", "what", "when", "whenever", "where", "which", "while", "who", "why", "will", "with", "would",
+	"you", "your",
+]);
+
 function tokens(value: unknown): Set<string> {
-	return new Set(normalizeText(value).split(" ").filter((token) => token.length >= 3).slice(0, 80));
+	return new Set(normalizeText(value).split(" ").filter((token) => token.length >= 3 && !SELECTOR_STOPWORDS.has(token)).slice(0, 80));
 }
 
 export function lexicalOverlapScore(prompt: string, candidate: SelectorCandidate): number {
 	const promptTokens = tokens(prompt);
-	const habitTokens = tokens(`${candidate.condition} ${candidate.behavior}`);
+	// Applicability comes from When/condition wording. Behavior text describes what
+	// to do after selection and must never make an otherwise unrelated habit match.
+	const conditionTokens = tokens(candidate.condition);
 	let overlap = 0;
-	for (const token of habitTokens) if (promptTokens.has(token)) overlap += 1;
+	for (const token of conditionTokens) if (promptTokens.has(token)) overlap += 1;
 	return overlap;
 }
 
@@ -143,10 +154,13 @@ export function selectInstantSelectorCandidates(candidates: SelectorCandidate[],
 	const max = Math.max(0, Math.min(3, Math.trunc(input.maxHabits)));
 	const minOverlap = Math.max(1, Math.trunc(input.minOverlapScore));
 	const minConfidence = Math.max(0, Math.min(10000, Math.trunc(input.minConfidenceBp)));
-	return candidates
+	const ranked = candidates
 		.map((candidate) => ({ candidate, overlap: lexicalOverlapScore(input.prompt, candidate) }))
 		.filter((item) => item.overlap >= minOverlap && item.candidate.confidence_bp >= minConfidence)
-		.sort((a, b) => (b.overlap - a.overlap) || b.candidate.confidence_bp - a.candidate.confidence_bp || b.candidate.activation - a.candidate.activation || a.candidate.id.localeCompare(b.candidate.id))
+		.sort((a, b) => (b.overlap - a.overlap) || b.candidate.confidence_bp - a.candidate.confidence_bp || b.candidate.activation - a.candidate.activation || a.candidate.id.localeCompare(b.candidate.id));
+	const highestOverlap = ranked[0]?.overlap ?? 0;
+	return ranked
+		.filter((item) => item.overlap === highestOverlap)
 		.slice(0, max)
 		.map((item) => ({ id: item.candidate.id, confidence_bp: item.candidate.confidence_bp }));
 }
@@ -188,11 +202,12 @@ export function parseSelectorModelOutput(output: unknown, input: { candidateIds:
 
 export function buildInjectionMessage(candidates: SelectorCandidate[], selected: Array<{ id: string; confidence_bp: number }>): string {
 	const byId = new Map(candidates.map((candidate) => [candidate.id, candidate]));
-	const lines = ["Agent Experience generated guidance (bounded; not policy/law):"];
+	const lines = ["Agent Experience approved habit guidance (bounded; not policy/law):"];
 	for (const item of selected.slice(0, 3)) {
 		const candidate = byId.get(item.id);
 		if (!candidate) continue;
-		lines.push(`- When ${candidate.condition}: ${candidate.behavior} (confidence_bp=${item.confidence_bp})`);
+		lines.push(`- When: ${candidate.condition}`);
+		lines.push(`  Do: ${candidate.behavior}`);
 	}
 	const text = lines.join("\n").slice(0, 2000);
 	if (containsUnredactedSensitiveText(text)) throw new Error("Injected selector guidance contains sensitive text");

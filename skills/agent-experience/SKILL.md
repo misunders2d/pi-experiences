@@ -161,17 +161,17 @@ Minimized evidence, provenance, integrity checks, and review audit remain. Redac
 
 ## Approved-habit reminders and steering provenance
 
-Reminders are off by default. Default instant mode uses local lexical/no-network matching. Only active same-user approved habits can be selected.
+Reminders are off by default. Default instant mode uses local lexical/no-network matching against meaningful condition tokens only, never behavior text or common stopwords. It selects only the strongest overlap tier; several genuinely tied habits may apply. Only active same-user approved habits can be selected.
 
-Never steer invisibly. For every actual TUI injection, Pi must place a muted collapsed marker immediately before the answer:
+Never show a generic “habits active” state and never steer invisibly. For every actual TUI injection, Pi must place response-specific provenance after the triggering user message and immediately before that response. Each collapsed line identifies one exact selected condition:
 
 ```text
-◇ Habit steering · N approved habit(s)
+◇ Steered by habit · When I ask for cobalt status
 ```
 
-Expanded rendering shows the exact approved `When:` / `Do:` wording selected. No marker means no habit guidance was injected. The marker is a durable custom Pi session entry and never enters LLM context. It may retain selected approved wording for traceability, but never raw prompts, IDs, checksums, confidence, model/provider details, source refs, raw examples, paths, or audit data.
+Expanded rendering shows every exact approved `When:` / `Do:` pair selected for that response. No marker means that response received no habit guidance. The marker is a durable custom Pi session entry and never enters LLM context. It may retain selected approved wording for traceability, but never raw prompts, IDs, checksums, confidence, model/provider details, source refs, raw examples, paths, or audit data.
 
-If the interface is not the Pi TUI, or marker registration/build/append fails, suppress habit injection and emit only the static sanitized diagnostic. Never fall back to hidden steering or `sendMessage`.
+Only after marker append succeeds may a separate non-persisted guidance message enter that response's model context. Reuse it across the same tool loop without another marker; never let a new user message inherit prior steering. If the interface is not the Pi TUI, or marker registration/build/append fails, suppress habit guidance and emit only the static sanitized diagnostic. Never fall back to hidden steering or `sendMessage`.
 
 Never inject from suggestions, disabled/dormant/suppressed/archived habits, evidence, quarantine, reports, or raw observations. Selector hit logs do not persist raw prompt/session/injected text; `prompt_hash` remains `omitted`; the separate provenance marker stores approved wording only.
 
@@ -210,7 +210,7 @@ Maintainer invariants:
 - conversational drafts/review snapshots are same-user/session, in-memory, bounded, 15-minute, and lost safely on restart;
 - direct declarations create no row when semantic preparation is unavailable and otherwise create/block/activate in one SQLite writer transaction;
 - semantic activation revalidates in one SQLite writer transaction;
-- each actual TUI injection appends one `agent_experience.habit_steering` custom entry before prompt modification; non-TUI/unrenderable/unappendable provenance suppresses injection;
+- each actual TUI injection appends one `agent_experience.habit_steering` custom entry after the triggering user message; only then may transient guidance enter that response's context;
 - duplicate scoring uses the lower of separate condition/behavior scores at 5,500 review / 7,000 strong basis points;
 - normal scans compare active/disabled approved habits only and never candidate-to-candidate pairs;
 - scan cap is 100 current habits / 4,950 pairs;

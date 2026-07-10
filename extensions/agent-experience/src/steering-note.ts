@@ -80,17 +80,19 @@ export function validateHabitSteeringEntry(value: unknown): HabitSteeringEntryDa
 export function formatHabitSteeringEntry(value: unknown, expanded: boolean): string {
 	try {
 		const entry = validateHabitSteeringEntry(value);
-		const noun = entry.count === 1 ? "approved habit" : "approved habits";
-		const lines = [`◇ Habit steering · ${entry.count} ${noun}`];
-		if (expanded) {
-			entry.habits.forEach((habit, index) => {
-				lines.push(`${index + 1}. When: ${habit.condition}`);
-				lines.push(`   Do: ${habit.behavior}`);
-			});
+		const lines: string[] = [];
+		for (const habit of entry.habits) {
+			if (expanded) {
+				lines.push("◇ Steered by habit");
+				lines.push(`  When: ${habit.condition}`);
+				lines.push(`  Do: ${habit.behavior}`);
+			} else {
+				lines.push(`◇ Steered by habit · ${habit.condition}`);
+			}
 		}
 		return lines.join("\n");
 	} catch {
-		return "◇ Habit steering · details unavailable";
+		return "◇ Steering provenance unavailable";
 	}
 }
 

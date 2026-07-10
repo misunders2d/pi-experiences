@@ -34,7 +34,7 @@ const fakePi = {
 agentExperienceExtension(fakePi);
 assert.deepEqual([...commands.keys()], ['experience'], 'extension should register only /experience command');
 assert.deepEqual([...tools.keys()].sort(), ['agent_experience_apply_review', 'agent_experience_confirm_habit', 'agent_experience_draft_habit', 'agent_experience_list_review'], 'extension should register only the four conversational Agent Experience tools');
-assert.deepEqual([...handlers.keys()].sort(), ['agent_end', 'before_agent_start', 'input', 'session_shutdown'], 'extension may register capture lifecycle plus fail-closed selector hook');
+assert.deepEqual([...handlers.keys()].sort(), ['agent_end', 'agent_settled', 'before_agent_start', 'context', 'input', 'session_shutdown'], 'extension may register capture lifecycle plus response-specific fail-closed selector hooks');
 
 const plainSetupLeakPattern = /capture=|learning=|guidance=|consolidation=|timer=|break_in=|selector=|selector_mode=|pre-injection/i;
 const paths = getAgentExperiencePaths();

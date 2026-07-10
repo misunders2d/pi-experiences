@@ -14,12 +14,14 @@ import {
   countDailySelectorInjections,
   insertSelectorHitLog,
   isValidSelectorHitLog,
+  lexicalOverlapScore,
   measureSelectorLatency,
   parseSelectorModelOutput,
   preNarrowSelectorCandidates,
   promoteApprovedPendingCandidates,
   runSelectorRuntime,
   selectActiveSelectorSnapshot,
+  selectInstantSelectorCandidates,
 } from '../extensions/agent-experience/src/selector.ts';
 import { getAgentExperiencePaths, readAgentExperienceConfig } from '../extensions/agent-experience/src/paths.ts';
 import { buildHabitSteeringEntry, formatHabitSteeringEntry, HABIT_STEERING_ENTRY_TYPE } from '../extensions/agent-experience/src/steering-note.ts';
@@ -87,11 +89,28 @@ const steeringEntry = buildHabitSteeringEntry({ candidates: [steeringCandidate],
 assert.deepEqual(Object.keys(steeringEntry).sort(), ['count', 'created_at', 'habits', 'schema_version']);
 assert.deepEqual(steeringEntry.habits, [{ condition: steeringCandidate.condition, behavior: steeringCandidate.behavior }]);
 assert.doesNotMatch(JSON.stringify(steeringEntry), /selected-internal-id|confidence|checksum|provider|source|prompt/i);
-assert.equal(formatHabitSteeringEntry(steeringEntry, false), '◇ Habit steering · 1 approved habit');
-assert.match(formatHabitSteeringEntry(steeringEntry, true), /When: When reporting status\n   Do: Use concise evidence/);
-assert.equal(formatHabitSteeringEntry({ broken: true }, true), '◇ Habit steering · details unavailable');
+assert.equal(formatHabitSteeringEntry(steeringEntry, false), '◇ Steered by habit · When reporting status');
+assert.equal(formatHabitSteeringEntry(steeringEntry, true), '◇ Steered by habit\n  When: When reporting status\n  Do: Use concise evidence');
+assert.equal(formatHabitSteeringEntry({ broken: true }, true), '◇ Steering provenance unavailable');
 assert.throws(() => buildHabitSteeringEntry({ candidates: [{ ...steeringCandidate, behavior: 'Email user@example.invalid' }], selected: [{ id: steeringCandidate.id }], createdAt: '2026-07-08T00:00:00.000Z' }), /sensitive/i);
 assert.throws(() => buildHabitSteeringEntry({ candidates: [{ ...steeringCandidate, behavior: 'x'.repeat(1001) }], selected: [{ id: steeringCandidate.id }], createdAt: '2026-07-08T00:00:00.000Z' }), /wording/i);
+const secondSteeringCandidate = { ...steeringCandidate, id: 'second-internal-id', condition: 'When discussing security', behavior: 'State material risks' };
+const multiSteeringEntry = buildHabitSteeringEntry({ candidates: [steeringCandidate, secondSteeringCandidate], selected: [{ id: steeringCandidate.id }, { id: secondSteeringCandidate.id }], createdAt: '2026-07-08T00:00:00.000Z' });
+assert.equal(formatHabitSteeringEntry(multiSteeringEntry, false), '◇ Steered by habit · When reporting status\n◇ Steered by habit · When discussing security');
+assert.doesNotMatch(formatHabitSteeringEntry(multiSteeringEntry, false), /2 approved habits|habit steering/i, 'collapsed marker must identify exact habits, not show an opaque count');
+
+const cobaltCandidates = [
+  { ...steeringCandidate, id: 'generic-status', condition: 'When a user asks for status or progress', behavior: 'Reply with short status' },
+  { ...steeringCandidate, id: 'unrelated-review', condition: 'When doing nontrivial code review', behavior: 'Use the cobalt model reviewer' },
+  { ...steeringCandidate, id: 'cobalt-specific', condition: 'When I ask for cobalt status', behavior: 'Answer Cobalt OK' },
+];
+assert.deepEqual(cobaltCandidates.map((candidate) => lexicalOverlapScore("yo, what's the cobalt status?", candidate)), [1, 0, 2], 'applicability must use meaningful condition tokens only');
+assert.deepEqual(selectInstantSelectorCandidates(cobaltCandidates, { prompt: "yo, what's the cobalt status?", maxHabits: 3, minOverlapScore: 1, minConfidenceBp: 7500 }).map((item) => item.id), ['cobalt-specific'], 'instant mode must select only the strongest overlap tier');
+const tiedCandidates = [
+  { ...steeringCandidate, id: 'tie-a', condition: 'When discussing cobalt status', behavior: 'Be concise' },
+  { ...steeringCandidate, id: 'tie-b', condition: 'When auditing cobalt status', behavior: 'State risk' },
+];
+assert.deepEqual(selectInstantSelectorCandidates(tiedCandidates, { prompt: 'audit cobalt status', maxHabits: 3, minOverlapScore: 1, minConfidenceBp: 7500 }).map((item) => item.id), ['tie-a', 'tie-b'], 'genuinely tied top-tier habits may both apply');
 
 const temp = await mkdtemp(join(tmpdir(), 'agent-experience-phase6-'));
 process.env.AX_STATE_ROOT = join(temp, 'state');
@@ -142,8 +161,9 @@ try {
   assert.throws(() => parseSelectorModelOutput({ schema_version: 1, selected: [{ id: 'active-1', confidence_bp: 100 }] }, { candidateIds: narrowedA.map((row) => row.id), maxSelected: 3, minConfidenceBp: 7500 }), /below/);
 
   const injectedText = buildInjectionMessage(snapshot, [{ id: 'active-1', confidence_bp: 9000 }]);
-  assert.match(injectedText, /Agent Experience generated guidance/);
-  assert.match(injectedText, /use concise summaries/);
+  assert.match(injectedText, /Agent Experience approved habit guidance/);
+  assert.match(injectedText, /Do: use concise summaries/);
+  assert.doesNotMatch(injectedText, /confidence_bp/);
   assert.doesNotMatch(injectedText, /pending row|quarantine|habits-report|other user/);
 
   const config = { ...DEFAULT_AGENT_EXPERIENCE_CONFIG, enabled: true, selector_enabled: true, selector_daily_budget: 1, selector_min_confidence_bp: 7500, selector_max_habits: 3, selector_staleness_max: 0.8 };
@@ -198,7 +218,8 @@ try {
   assert.deepEqual([...commands.keys()], ['experience']);
   assert.ok(renderers.has(HABIT_STEERING_ENTRY_TYPE), 'extension must register the TUI-only steering provenance renderer');
   const notes = [];
-  const ctx = { cwd: liveCwd, mode: 'tui', ui: { notify(message, level) { notes.push({ message, level }); } } };
+  const mainSessionManager = { getSessionId: () => 'phase6-main', getSessionFile: () => join(temp, 'phase6-main.jsonl') };
+  const ctx = { cwd: liveCwd, mode: 'tui', sessionManager: mainSessionManager, ui: { notify(message, level) { notes.push({ message, level }); } } };
   await commands.get('experience').handler('enable', ctx);
   let readConfig = await readAgentExperienceConfig(getAgentExperiencePaths());
   assert.equal(readConfig.config.selector_enabled, false, 'master enable must not enable selector');
@@ -211,45 +232,96 @@ try {
   insertStorageRecord(storage.db, 'habits', { id: 'hook-active', userId: 'owner', data: habitData({ status: 'active', active: true, condition: 'hook prompt', behavior: 'use hook guidance', law_hash: realLaw.hash, confidence_bp: 9500 }), now: '2026-07-08T03:00:00.000Z' });
   __setAgentExperienceSelectorAdapterForTest({ async select({ candidateIds }) { return { schema_version: 1, selected: [{ id: candidateIds[0], confidence_bp: 9500 }] }; } });
   const beforeStatus = storage.db.prepare("SELECT status FROM habits WHERE id = 'hook-active'").get().status;
-  const hookResult = await handlers.get('before_agent_start')({ prompt: 'hook prompt please', systemPrompt: 'base system prompt' }, { cwd: liveCwd, mode: 'tui', ui: ctx.ui });
-  operations.push('returned');
-  assert.deepEqual(operations, ['append', 'returned'], 'steering provenance must append before the injected system prompt is returned');
+  const hookResult = await handlers.get('before_agent_start')({ prompt: 'hook prompt please', systemPrompt: 'base system prompt' }, ctx);
+  operations.push('prepared');
+  assert.equal(hookResult, undefined, 'selector preparation must not modify system prompt or append provenance before the user message');
+  assert.deepEqual(operations, ['prepared']);
+  assert.equal(entries.length, 0, 'marker must wait for the response-specific context boundary');
   assert.equal(storage.db.prepare("SELECT status FROM habits WHERE id = 'hook-active'").get().status, beforeStatus, 'selector hook must not mutate habit status');
-  assert.ok(hookResult?.systemPrompt, 'selector hook should append generated guidance to systemPrompt when enabled and selected');
-  assert.equal('message' in hookResult, false, 'selector hook must not return session-history message injection');
-  assert.match(hookResult.systemPrompt, /base system prompt/);
-  assert.match(hookResult.systemPrompt, /Agent Experience generated guidance/);
-  assert.doesNotMatch(hookResult.systemPrompt, /pending row|quarantine|habits-report|other user|candidate-1/);
-  assert.equal(entries.length, 1, 'one actual injection must append exactly one provenance entry');
+  const userContext = [{ role: 'user', content: [{ type: 'text', text: 'hook prompt please' }], timestamp: Date.now() }];
+  const otherSessionCtx = { ...ctx, sessionManager: { getSessionId: () => 'phase6-other', getSessionFile: () => join(temp, 'phase6-other.jsonl') } };
+  assert.equal(await handlers.get('context')({ messages: userContext }, otherSessionCtx), undefined, 'same prompt in another session must not inherit or consume pending steering');
+  assert.equal(entries.length, 0);
+  const previousUserId = process.env.AX_USER_ID;
+  try {
+    process.env.AX_USER_ID = 'phase6-other-user';
+    assert.equal(await handlers.get('context')({ messages: userContext }, ctx), undefined, 'same prompt and session under another user must not inherit or consume pending steering');
+    assert.equal(entries.length, 0);
+  } finally {
+    if (previousUserId === undefined) delete process.env.AX_USER_ID;
+    else process.env.AX_USER_ID = previousUserId;
+  }
+  const contextResult = await handlers.get('context')({ messages: userContext }, ctx);
+  operations.push('context-returned');
+  assert.deepEqual(operations, ['prepared', 'append', 'context-returned'], 'marker must append after user persistence and before guided context is returned');
+  assert.equal(entries.length, 1, 'one steered response must append exactly one provenance entry');
   assert.equal(entries[0].type, HABIT_STEERING_ENTRY_TYPE);
   assert.deepEqual(entries[0].data.habits, [{ condition: 'hook prompt', behavior: 'use hook guidance' }]);
   assert.doesNotMatch(JSON.stringify(entries[0]), /hook-active|"confidence|"checksum|"provider|"source_ref|"prompt_hash|"audit/i, 'session provenance must contain approved wording only');
+  assert.equal(contextResult.messages.length, userContext.length + 1);
+  const hiddenGuidance = contextResult.messages.at(-1);
+  assert.equal(hiddenGuidance.role, 'custom');
+  assert.equal(hiddenGuidance.customType, 'agent_experience.habit_guidance');
+  assert.equal(hiddenGuidance.display, false);
+  assert.match(hiddenGuidance.content, /When: hook prompt/);
+  assert.match(hiddenGuidance.content, /Do: use hook guidance/);
+  assert.doesNotMatch(JSON.stringify(hiddenGuidance), /schema_version|created_at|hook-active|confidence_bp|checksum|prompt_hash|provider/i, 'model guidance must not contain marker metadata or internals');
+  const toolLoopContext = [...userContext, { role: 'assistant', content: [{ type: 'toolCall', id: 't1', name: 'read', arguments: {} }], timestamp: Date.now() }, { role: 'toolResult', toolCallId: 't1', toolName: 'read', content: [{ type: 'text', text: 'ok' }], isError: false, timestamp: Date.now() }];
+  const toolLoopResult = await handlers.get('context')({ messages: toolLoopContext }, ctx);
+  assert.equal(entries.length, 1, 'tool-loop contexts must not append duplicate response markers');
+  assert.equal(toolLoopResult.messages.at(-1).customType, 'agent_experience.habit_guidance', 'tool-loop provider calls must retain the same selected guidance');
+  await handlers.get('agent_end')({ messages: [] }, ctx);
+  const retryContext = await handlers.get('context')({ messages: userContext }, ctx);
+  assert.equal(retryContext.messages.at(-1).customType, 'agent_experience.habit_guidance', 'automatic retry context must retain response steering until agent_settled');
+  assert.equal(entries.length, 1, 'automatic retries must not append duplicate markers');
+  const followUpResult = await handlers.get('context')({ messages: [...toolLoopContext, { role: 'user', content: [{ type: 'text', text: 'different queued follow-up' }], timestamp: Date.now() }] }, ctx);
+  assert.equal(followUpResult, undefined, 'a new queued user message must never inherit the previous response steering');
+  assert.equal(entries.length, 1);
+
   const entryCountBeforeNoSelection = entries.length;
-  const noSelectionResult = await handlers.get('before_agent_start')({ prompt: 'words with no matching habit', systemPrompt: 'base' }, { cwd: liveCwd, mode: 'tui', ui: ctx.ui });
+  const noSelectionResult = await handlers.get('before_agent_start')({ prompt: 'words with no matching habit', systemPrompt: 'base' }, ctx);
   assert.equal(noSelectionResult, undefined);
-  assert.equal(entries.length, entryCountBeforeNoSelection, 'an unsteered answer must append no marker');
+  assert.equal(await handlers.get('context')({ messages: [{ role: 'user', content: [{ type: 'text', text: 'words with no matching habit' }] }] }, ctx), undefined);
+  assert.equal(entries.length, entryCountBeforeNoSelection, 'an unsteered answer must append no marker and inject no hidden guidance');
   __setAgentExperienceSelectorAdapterForTest(undefined);
+
+  const overwritten = makePi();
+  const overwrittenCtx = { cwd: liveCwd, mode: 'tui', sessionManager: { getSessionId: () => 'phase6-overwrite', getSessionFile: () => join(temp, 'phase6-overwrite.jsonl') }, ui: { notify() {} } };
+  await overwritten.handlers.get('before_agent_start')({ prompt: 'hook prompt please', systemPrompt: 'base' }, overwrittenCtx);
+  await overwritten.handlers.get('before_agent_start')({ prompt: 'hook prompt now', systemPrompt: 'base' }, overwrittenCtx);
+  assert.equal(await overwritten.handlers.get('context')({ messages: userContext }, overwrittenCtx), undefined, 'older same-session context must not consume a newer pending turn');
+  const overwrittenResult = await overwritten.handlers.get('context')({ messages: [{ role: 'user', content: [{ type: 'text', text: 'hook prompt now' }] }] }, overwrittenCtx);
+  assert.equal(overwrittenResult.messages.at(-1).customType, 'agent_experience.habit_guidance');
+  assert.deepEqual(overwritten.entries.at(-1).data.habits, [{ condition: 'hook prompt', behavior: 'use hook guidance' }]);
 
   const appendFailure = makePi({ appendError: true });
   const appendFailureNotes = [];
-  const appendFailureResult = await appendFailure.handlers.get('before_agent_start')({ prompt: 'hook prompt please', systemPrompt: 'base' }, { cwd: liveCwd, mode: 'tui', ui: { notify(message, level) { appendFailureNotes.push({ message, level }); } } });
-  assert.equal(appendFailureResult, undefined, 'append failure must suppress habit guidance');
+  const appendFailureCtx = { cwd: liveCwd, mode: 'tui', sessionManager: { getSessionId: () => 'phase6-append-failure', getSessionFile: () => join(temp, 'phase6-append-failure.jsonl') }, ui: { notify(message, level) { appendFailureNotes.push({ message, level }); } } };
+  const appendFailureResult = await appendFailure.handlers.get('before_agent_start')({ prompt: 'hook prompt please', systemPrompt: 'base' }, appendFailureCtx);
+  assert.equal(appendFailureResult, undefined);
+  const appendFailureContext = await appendFailure.handlers.get('context')({ messages: userContext }, appendFailureCtx);
+  assert.equal(appendFailureContext, undefined, 'append failure must leave model context unchanged and suppress guidance');
   assert.equal(appendFailure.entries.length, 0);
-  assert.ok(appendFailureNotes.some((note) => /visual provenance marker could not be recorded/.test(note.message)));
+  assert.ok(appendFailureNotes.some((note) => /provenance marker could not be recorded/.test(note.message)));
   assert.doesNotMatch(JSON.stringify(appendFailureNotes), /hook prompt|hook guidance|provider|model|checksum/i, 'provenance failure diagnostic must be static and sanitized');
+  assert.equal(await appendFailure.handlers.get('context')({ messages: userContext }, appendFailureCtx), undefined, 'failed provenance must clear transient steering state');
 
   const rendererFailure = makePi({ rendererError: true });
   const rendererFailureNotes = [];
+  const rendererFailureCtx = { cwd: liveCwd, mode: 'tui', sessionManager: { getSessionId: () => 'phase6-renderer-failure', getSessionFile: () => join(temp, 'phase6-renderer-failure.jsonl') }, ui: { notify(message, level) { rendererFailureNotes.push({ message, level }); } } };
   const logsBeforeRendererFailure = storage.db.prepare('SELECT COUNT(*) count FROM selector_hit_log').get().count;
-  const rendererFailureResult = await rendererFailure.handlers.get('before_agent_start')({ prompt: 'hook prompt please', systemPrompt: 'base' }, { cwd: liveCwd, mode: 'tui', ui: { notify(message, level) { rendererFailureNotes.push({ message, level }); } } });
+  const rendererFailureResult = await rendererFailure.handlers.get('before_agent_start')({ prompt: 'hook prompt please', systemPrompt: 'base' }, rendererFailureCtx);
   assert.equal(rendererFailureResult, undefined, 'unrenderable provenance must suppress habit guidance before selection');
+  assert.equal(await rendererFailure.handlers.get('context')({ messages: userContext }, rendererFailureCtx), undefined);
   assert.equal(storage.db.prepare('SELECT COUNT(*) count FROM selector_hit_log').get().count, logsBeforeRendererFailure, 'renderer-unavailable path must not run selector or log an injection');
-  assert.ok(rendererFailureNotes.some((note) => /visual provenance marker is unavailable/.test(note.message)));
+  assert.ok(rendererFailureNotes.some((note) => /response-specific visual provenance is unavailable/.test(note.message)));
 
   const nonTui = makePi();
+  const nonTuiCtx = { cwd: liveCwd, mode: 'rpc', sessionManager: { getSessionId: () => 'phase6-rpc', getSessionFile: () => join(temp, 'phase6-rpc.jsonl') }, ui: { notify() {} } };
   const logsBeforeNonTui = storage.db.prepare('SELECT COUNT(*) count FROM selector_hit_log').get().count;
-  const nonTuiResult = await nonTui.handlers.get('before_agent_start')({ prompt: 'hook prompt please', systemPrompt: 'base' }, { cwd: liveCwd, mode: 'rpc', ui: { notify() {} } });
+  const nonTuiResult = await nonTui.handlers.get('before_agent_start')({ prompt: 'hook prompt please', systemPrompt: 'base' }, nonTuiCtx);
   assert.equal(nonTuiResult, undefined, 'non-TUI interfaces must not receive invisible habit steering');
+  assert.equal(await nonTui.handlers.get('context')({ messages: userContext }, nonTuiCtx), undefined);
   assert.equal(storage.db.prepare('SELECT COUNT(*) count FROM selector_hit_log').get().count, logsBeforeNonTui);
   assert.equal(nonTui.entries.length, 0);
 
@@ -277,11 +349,11 @@ try {
   missingLawStorage.db.close();
   const missingLaw = makePi();
   const missingLawNotes = [];
-  const missingLawCtx = { cwd: liveCwd, ui: { notify(message, level) { missingLawNotes.push({ message, level }); } } };
+  const missingLawCtx = { cwd: liveCwd, mode: 'tui', sessionManager: { getSessionId: () => 'phase6-missing-law', getSessionFile: () => join(temp, 'phase6-missing-law.jsonl') }, ui: { notify(message, level) { missingLawNotes.push({ message, level }); } } };
   await missingLaw.commands.get('experience').handler('enable', missingLawCtx);
   await missingLaw.commands.get('experience').handler('selector on', missingLawCtx);
   __setAgentExperienceSelectorAdapterForTest({ async select() { throw new Error('selector must not run without configured law'); } });
-  const missingLawResult = await missingLaw.handlers.get('before_agent_start')({ prompt: 'hook prompt please', systemPrompt: 'base' }, { cwd: liveCwd, mode: 'tui', ui: missingLawCtx.ui });
+  const missingLawResult = await missingLaw.handlers.get('before_agent_start')({ prompt: 'hook prompt please', systemPrompt: 'base' }, missingLawCtx);
   assert.equal(missingLawResult, undefined, 'selector hook must fail closed when configured law file is missing');
   const missingLawWarning = missingLawNotes.find((note) => /safety file is missing/.test(note.message) && note.level === 'warn');
   assert.ok(missingLawWarning, 'missing safety file must emit one bounded visible diagnostic');
@@ -289,14 +361,14 @@ try {
   assert.doesNotMatch(missingLawWarning.message, /setup use-habits off|law file missing|selector skipped/i);
   assert.equal((await readAgentExperienceConfig(getAgentExperiencePaths())).config.selector_enabled, false, 'missing safety file turns reminders off to stop repeated warnings');
   const missingLawNoteCount = missingLawNotes.length;
-  await missingLaw.handlers.get('before_agent_start')({ prompt: 'hook prompt again', systemPrompt: 'base' }, { cwd: liveCwd, mode: 'tui', ui: missingLawCtx.ui });
+  await missingLaw.handlers.get('before_agent_start')({ prompt: 'hook prompt again', systemPrompt: 'base' }, missingLawCtx);
   assert.equal(missingLawNotes.length, missingLawNoteCount, 'disabled selector must not keep warning every turn');
   await missingLaw.commands.get('experience').handler('selector on', missingLawCtx);
   const schemaMismatchStorage = await initExperienceStorage(missingLawRoot, { allowInit: true, userId: 'owner' });
   schemaMismatchStorage.db.exec('PRAGMA user_version = 999');
   schemaMismatchStorage.db.close();
   await writeFile(join(missingLawRoot, 'law.md'), 'configured law after missing-law diagnostic\n');
-  await missingLaw.handlers.get('before_agent_start')({ prompt: 'hook prompt after schema mismatch', systemPrompt: 'base' }, { cwd: liveCwd, mode: 'tui', ui: missingLawCtx.ui });
+  await missingLaw.handlers.get('before_agent_start')({ prompt: 'hook prompt after schema mismatch', systemPrompt: 'base' }, missingLawCtx);
   assert.ok(missingLawNotes.length > missingLawNoteCount, 'distinct selector runtime diagnostics must not be suppressed by the first error');
   assert.ok(missingLawNotes.some((note) => /newer than this extension|schema mismatch/.test(note.message)), 'schema mismatch must emit its own diagnostic');
   __setAgentExperienceSelectorAdapterForTest(undefined);
@@ -305,10 +377,10 @@ try {
   process.env.AX_STATE_ROOT = noLedgerRoot;
   const noLedger = makePi();
   const noLedgerNotes = [];
-  const noLedgerCtx = { cwd: liveCwd, ui: { notify(message, level) { noLedgerNotes.push({ message, level }); } } };
+  const noLedgerCtx = { cwd: liveCwd, mode: 'tui', sessionManager: { getSessionId: () => 'phase6-no-ledger', getSessionFile: () => join(temp, 'phase6-no-ledger.jsonl') }, ui: { notify(message, level) { noLedgerNotes.push({ message, level }); } } };
   await noLedger.commands.get('experience').handler('enable', noLedgerCtx);
   await noLedger.commands.get('experience').handler('selector on', noLedgerCtx);
-  const noLedgerResult = await noLedger.handlers.get('before_agent_start')({ prompt: 'nothing stored yet', systemPrompt: 'base' }, { cwd: liveCwd, mode: 'tui', ui: noLedgerCtx.ui });
+  const noLedgerResult = await noLedger.handlers.get('before_agent_start')({ prompt: 'nothing stored yet', systemPrompt: 'base' }, noLedgerCtx);
   assert.equal(noLedgerResult, undefined, 'selector hook must fail closed when ledger is absent');
   assert.equal(existsSync(join(noLedgerRoot, 'ledger.sqlite')), false, 'selector hook must not initialize storage on missing ledger');
   process.env.AX_STATE_ROOT = join(temp, 'state');

@@ -2538,6 +2538,13 @@ function usage(topic = "") {
 
 export default function agentExperienceExtension(pi: ExtensionAPI) {
 	registerAgentExperienceConversationalTools(pi);
+	const HABIT_GUIDANCE_CUSTOM_TYPE = "agent_experience.habit_guidance";
+	type PendingSteeringRun = { prompt: string; entry: HabitSteeringEntryData; guidance: string; markerCommitted: boolean; userMessageCount?: number };
+	const pendingSteeringRuns = new Map<string, PendingSteeringRun>();
+	const steeringScopeFromContext = (ctx: Pick<ExtensionContext, "sessionManager"> | { sessionManager?: ExtensionContext["sessionManager"] }): string | undefined => {
+		const key = captureKeyFromContext(ctx);
+		return key ? `${key.userId}\u0000${key.sessionId}\u0000${key.sessionFile}` : undefined;
+	};
 	let steeringRendererReady = false;
 	try {
 		if (typeof pi.registerEntryRenderer === "function") {
@@ -2604,6 +2611,18 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 	});
 
 	pi.on("before_agent_start", async (event, ctx) => {
+		// Every normal user turn replaces prior transient steering state in this
+		// exact user/session scope. Approved wording is persisted only in the later
+		// custom marker entry, never in this in-memory key.
+		const steeringScope = steeringScopeFromContext(ctx);
+		if (steeringScope) pendingSteeringRuns.delete(steeringScope);
+		if (!steeringScope) {
+			notifyDedupedDiagnostic(ctx, selectorDiagnosticsShown, {
+				key: "selector-runtime:steering-session-scope-unavailable",
+				message: "Agent Experience habit steering was suppressed because response-specific session scope is unavailable. No habit guidance was injected.",
+			});
+			return;
+		}
 		const paths = getAgentExperiencePaths();
 		let config: Awaited<ReturnType<typeof readAgentExperienceConfig>>["config"];
 		try {
@@ -2618,7 +2637,7 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 		if (ctx.mode !== "tui" || !steeringRendererReady || typeof pi.appendEntry !== "function") {
 			notifyDedupedDiagnostic(ctx, selectorDiagnosticsShown, {
 				key: "selector-runtime:steering-provenance-unavailable",
-				message: "Agent Experience habit steering was suppressed because the visual provenance marker is unavailable in this interface. No habit guidance was injected.",
+				message: "Agent Experience habit steering was suppressed because response-specific visual provenance is unavailable in this interface. No habit guidance was injected.",
 			});
 			return;
 		}
@@ -2631,20 +2650,22 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 			const now = new Date().toISOString();
 			const result = await runSelectorRuntime(storage.db, { userId: storage.userId, prompt, config, law, now, adapter });
 			if (!result.injected || !result.message) return;
-			const basePrompt = String((event as { systemPrompt?: unknown }).systemPrompt ?? "");
-			const systemPrompt = `${basePrompt}\n\n${result.message}`;
 			try {
-				const entry = buildHabitSteeringEntry({ candidates: result.candidates, selected: result.selected, createdAt: now });
-				pi.appendEntry(HABIT_STEERING_ENTRY_TYPE, entry);
-			} catch {
-				notifyDedupedDiagnostic(ctx, selectorDiagnosticsShown, {
-					key: "selector-runtime:steering-provenance-append-failed",
-					message: "Agent Experience habit steering was suppressed because its visual provenance marker could not be recorded. No habit guidance was injected.",
+				pendingSteeringRuns.set(steeringScope, {
+					prompt,
+					entry: buildHabitSteeringEntry({ candidates: result.candidates, selected: result.selected, createdAt: now }),
+					guidance: result.message,
+					markerCommitted: false,
 				});
-				return;
+			} catch {
+				pendingSteeringRuns.delete(steeringScope);
+				notifyDedupedDiagnostic(ctx, selectorDiagnosticsShown, {
+					key: "selector-runtime:steering-provenance-build-failed",
+					message: "Agent Experience habit steering was suppressed because response-specific provenance could not be prepared. No habit guidance was injected.",
+				});
 			}
-			return { systemPrompt };
 		} catch (error: any) {
+			pendingSteeringRuns.delete(steeringScope);
 			const raw = String(error?.message || error);
 			if (/law file missing/i.test(raw)) {
 				try {
@@ -2662,10 +2683,59 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 				return;
 			}
 			notifyDedupedDiagnostic(ctx, selectorDiagnosticsShown, diagnosticFor("selector-runtime", error));
-			return;
 		} finally {
 			storage?.db.close();
 		}
+	});
+
+	pi.on("context", async (event, ctx) => {
+		const steeringScope = steeringScopeFromContext(ctx);
+		if (!steeringScope) return;
+		const state = pendingSteeringRuns.get(steeringScope);
+		if (!state) return;
+		if (ctx.mode !== "tui" || !steeringRendererReady || typeof pi.appendEntry !== "function") {
+			pendingSteeringRuns.delete(steeringScope);
+			notifyDedupedDiagnostic(ctx, selectorDiagnosticsShown, {
+				key: "selector-runtime:steering-context-provenance-unavailable",
+				message: "Agent Experience habit steering was suppressed because response-specific visual provenance became unavailable. No habit guidance was injected.",
+			});
+			return;
+		}
+		const userMessages = event.messages.filter((message: any) => message?.role === "user");
+		const latestUser = userMessages.at(-1) as any;
+		const latestText = Array.isArray(latestUser?.content)
+			? latestUser.content.filter((part: any) => part?.type === "text").map((part: any) => String(part.text ?? "")).join("")
+			: String(latestUser?.content ?? "");
+		if (!latestUser || latestText !== state.prompt || (state.userMessageCount !== undefined && state.userMessageCount !== userMessages.length)) {
+			// A committed response must stop at a changed user message. An uncommitted
+			// pending selection may coexist briefly with an older context callback;
+			// leave it for its exact prompt rather than letting the old callback consume it.
+			if (state.markerCommitted) pendingSteeringRuns.delete(steeringScope);
+			return;
+		}
+		state.userMessageCount ??= userMessages.length;
+		if (!state.markerCommitted) {
+			try {
+				pi.appendEntry(HABIT_STEERING_ENTRY_TYPE, state.entry);
+				state.markerCommitted = true;
+			} catch {
+				pendingSteeringRuns.delete(steeringScope);
+				notifyDedupedDiagnostic(ctx, selectorDiagnosticsShown, {
+					key: "selector-runtime:steering-provenance-append-failed",
+					message: "Agent Experience habit steering was suppressed because its response-specific provenance marker could not be recorded. No habit guidance was injected.",
+				});
+				return;
+			}
+		}
+		return {
+			messages: [...event.messages, {
+				role: "custom",
+				customType: HABIT_GUIDANCE_CUSTOM_TYPE,
+				content: state.guidance,
+				display: false,
+				timestamp: Date.now(),
+			}],
+		};
 	});
 
 	pi.on("input", async (event, ctx) => {
@@ -2701,6 +2771,8 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 	});
 
 	pi.on("agent_end", async (event, ctx) => {
+		// Keep transient guidance across Pi's automatic retry boundary. agent_settled,
+		// session shutdown, a changed user-message count, or the next normal prompt clears it.
 		const { paths, active } = await getEffectiveCapture();
 		const key = captureKeyFromContext(ctx);
 		if (!active) {
@@ -2722,7 +2794,14 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 		}
 	});
 
+	pi.on("agent_settled", async (_event, ctx) => {
+		const steeringScope = steeringScopeFromContext(ctx);
+		if (steeringScope) pendingSteeringRuns.delete(steeringScope);
+	});
+
 	pi.on("session_shutdown", async (_event, ctx) => {
+		const steeringScope = steeringScopeFromContext(ctx);
+		if (steeringScope) pendingSteeringRuns.delete(steeringScope);
 		const { paths, active } = await getEffectiveCapture();
 		const key = captureKeyFromContext(ctx);
 		if (!active || !key) {

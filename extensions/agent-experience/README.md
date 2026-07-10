@@ -115,17 +115,17 @@ Shared locks carry random token, PID, hostname, and creation time. Live locks bl
 
 ## Selector/reminders and visible steering provenance
 
-Approved-habit reminders are off by default. Default instant mode is lexical, local, and no-network. Only active same-user approved habits are candidates.
+Approved-habit reminders are off by default. Default instant mode is lexical, local, and no-network. It matches meaningful condition tokens only, ignores behavior text/common stopwords, and keeps only the strongest overlap tier; genuinely tied habits may all apply. Only active same-user approved habits are candidates.
 
-A habit may steer a TUI answer only when Pi can first append the muted custom session entry:
+A habit may steer one specific TUI response only when Pi can append response-adjacent provenance after the triggering user message and before provider context is returned:
 
 ```text
-◇ Habit steering · N approved habit(s)
+◇ Steered by habit · When I ask for cobalt status
 ```
 
-It appears immediately before the answer. Expanded rendering shows the exact selected approved `When:` / `Do:` wording. No marker means no habit guidance was injected. The entry is durable local session provenance and does not participate in LLM context. It stores no raw prompt, internal ID, checksum, confidence, provider/model, source ref, raw example, path, or audit payload. Non-TUI modes and renderer/build/append failures suppress steering rather than hide it.
+Each selected condition gets an exact collapsed line; expanded rendering shows every selected approved `When:` / `Do:` pair. No marker means that response received no habit guidance. The entry is durable local session provenance and does not participate in LLM context. A separate non-persisted hidden guidance message enters only that response's provider context and is repeated across its tool loop without adding markers. The entry stores no raw prompt, internal ID, checksum, confidence, provider/model, source ref, raw example, path, or audit payload. New user messages cannot inherit old steering. Non-TUI modes and renderer/build/append failures suppress steering rather than hide it.
 
-Selector hit logs still persist no raw prompts or injected guidance; `prompt_hash` remains `omitted`. The configured law file is synchronously revalidated at activation. Current law checking combines freshness/integrity with a deterministic dangerous-pattern denylist; it is not full semantic interpretation of law text.
+Selector hit logs still persist no raw prompts or injected guidance; `prompt_hash` remains `omitted`. The response-adjacent marker is authoritative proof that guidance reached that response. The configured law file is synchronously revalidated at activation. Current law checking combines freshness/integrity with a deterministic dangerous-pattern denylist; it is not full semantic interpretation of law text.
 
 ## State layout
 

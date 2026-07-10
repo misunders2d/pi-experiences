@@ -183,15 +183,15 @@ Potential duplicates are never silently merged. **Resolve duplicate habits** sho
 
 ## See when a habit steers an answer
 
-Approved-habit reminders never steer invisibly. When the selector actually injects one or more approved habits for the upcoming answer, Pi places a muted, collapsed provenance line immediately before that answer:
+Approved-habit reminders never steer invisibly. When one or more approved habits actually enter the model context for one specific answer, Pi places a muted marker between the triggering prompt and that answer. Every collapsed line identifies the exact selected condition instead of showing a generic enabled state or opaque count:
 
 ```text
-◇ Habit steering · 1 approved habit
+◇ Steered by habit · When I ask for cobalt status
 ```
 
-Expand the line to see the exact approved `When:` / `Do:` wording selected for that reply. No marker means no habit guidance was injected.
+If several habits genuinely apply, each selected condition gets its own line. Expand the marker to see every exact approved `When:` / `Do:` pair applied to that response. No marker means that response received no habit guidance.
 
-The marker is a local Pi session entry, not an LLM message, so it does not itself influence the answer. For traceability, the session entry retains only the selected approved wording, count, and time—never the raw prompt, IDs, checksums, confidence scores, provider/model details, source references, raw examples, private paths, or audit payloads. v0.1.31 enables reminders only in the Pi TUI where this pre-answer marker is guaranteed visible; other interfaces fail closed rather than steering without provenance.
+The marker is a local Pi session entry, not an LLM message, so it does not itself influence the answer. For traceability, the session entry retains only the selected approved wording, count, and time—never the raw prompt, IDs, checksums, confidence scores, provider/model details, source references, raw examples, private paths, or audit payloads. v0.1.31 enables reminders only in the Pi TUI where this response-specific marker is guaranteed visible; other interfaces fail closed rather than steering without provenance.
 
 ## Local duplicate prevention
 
@@ -407,11 +407,11 @@ Habit declaration, approval, re-enable, and promotion prepare local vectors outs
 
 Reminder injection is off by default.
 
-Default `instant` mode is local lexical/no-network matching. Only active, same-user, fresh approved habits are candidates. Pending, disabled, dormant, suppressed, archived, evidence, quarantine, report, and raw observation rows are excluded.
+Default `instant` mode is local lexical/no-network matching. It scores meaningful tokens from each habit condition only—never behavior text or common stopwords—and selects only the strongest overlap tier, capped by configuration. Several genuinely tied habits may apply. Only active, same-user, fresh approved habits are candidates. Pending, disabled, dormant, suppressed, archived, evidence, quarantine, report, and raw observation rows are excluded.
 
-Every actual TUI injection first appends a durable custom session entry of type `agent_experience.habit_steering`. Collapsed rendering is one muted count line; expanded rendering shows only the selected approved condition/behavior wording. Custom entries do not participate in LLM context. Entry construction/renderer/append failure, malformed or sensitive wording, and non-TUI modes suppress the injection with a static sanitized diagnostic. The final prompt and validated entry are built before synchronous append; only a successful append permits prompt modification. A process crash in the tiny append-to-return window is the only irreducible false-marker case, while hidden steering remains prohibited.
+`before_agent_start` prepares a validated transient selection but neither changes the system prompt nor appends provenance above the user message. At the first provider-context boundary, after Pi has persisted the triggering user message, the extension appends one durable `agent_experience.habit_steering` entry. Only a successful append allows a separate non-persisted `agent_experience.habit_guidance` message into that response's LLM context. Tool-loop calls reuse the same guidance without adding another marker; a new user message cannot inherit it. Collapsed rendering identifies every selected condition; expanded rendering shows exact selected condition/behavior wording. The durable marker does not participate in LLM context. Entry construction/renderer/append failure, malformed or sensitive wording, and non-TUI modes suppress guidance with a static sanitized diagnostic.
 
-Optional advanced smart matching is separately configured and fails closed on unavailable authentication, timeout, or malformed output. Selector hit logs never persist raw prompts, sessions, or injected guidance; `prompt_hash` is deliberately `omitted`. The trace entry is separate, contains no prompt, and stores selected approved wording only.
+Optional advanced smart matching is separately configured and fails closed on unavailable authentication, timeout, or malformed output. Selector hit logs never persist raw prompts, sessions, or injected guidance; `prompt_hash` is deliberately `omitted`. Selector logs describe the bounded selection attempt; the response-adjacent durable marker is authoritative proof that guidance reached that response. The marker contains no prompt and stores selected approved wording only.
 
 Timers remain Phase 2/off. The package does not install or enable bundled timer templates.
 
