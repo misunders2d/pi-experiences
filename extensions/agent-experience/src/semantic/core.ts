@@ -2,7 +2,13 @@ import { sha256Hex } from "../storage/checksum.ts";
 import { LOCAL_EMBEDDING_DIMENSIONS, LOCAL_EMBEDDING_MODEL, LOCAL_EMBEDDING_PROVIDER, LOCAL_EMBEDDING_REVIEW_THRESHOLD_BP, LOCAL_EMBEDDING_STRONG_THRESHOLD_BP, LOCAL_EMBEDDING_TIMEOUT_MS } from "./local-model-manifest.ts";
 import type { SemanticDedupePolicy } from "./types.ts";
 
+// Legacy whole-habit cache input. Retained so unchanged historical
+// kept-separate decisions remain provable across scoring-method upgrades.
 export const SEMANTIC_EMBEDDING_INPUT_VERSION = "habit_embedding_input_v1";
+export const SEMANTIC_CONDITION_EMBEDDING_INPUT_VERSION = "habit_condition_embedding_input_v1";
+export const SEMANTIC_BEHAVIOR_EMBEDDING_INPUT_VERSION = "habit_behavior_embedding_input_v1";
+export const SEMANTIC_DUPLICATE_METHOD_VERSION = "habit_dedupe_field_min_v1";
+export const SEMANTIC_WORDING_IDENTITY_VERSION = "habit_wording_identity_v1";
 
 export function normalizeSemanticText(value: unknown): string {
 	return String(value ?? "").trim().replace(/\s+/g, " ").toLowerCase();
@@ -12,8 +18,27 @@ export function habitEmbeddingInputV1(input: { condition: string | null; behavio
 	return `${normalizeSemanticText(input.condition)}\n${normalizeSemanticText(input.behavior)}`;
 }
 
-export function embeddingInputChecksum(text: string): string {
-	return sha256Hex(`${SEMANTIC_EMBEDDING_INPUT_VERSION}\n${text}`);
+export function habitConditionEmbeddingInputV1(input: { condition: string | null }): string {
+	return `condition: ${normalizeSemanticText(input.condition)}`;
+}
+
+export function habitBehaviorEmbeddingInputV1(input: { behavior: string | null }): string {
+	return `behavior: ${normalizeSemanticText(input.behavior)}`;
+}
+
+export function habitFieldEmbeddingInputsV1(input: { condition: string | null; behavior: string | null }): { condition: string; behavior: string } {
+	return {
+		condition: habitConditionEmbeddingInputV1(input),
+		behavior: habitBehaviorEmbeddingInputV1(input),
+	};
+}
+
+export function embeddingInputChecksum(text: string, version = SEMANTIC_EMBEDDING_INPUT_VERSION): string {
+	return sha256Hex(`${version}\n${text}`);
+}
+
+export function semanticWordingIdentityChecksum(input: { condition: string | null; behavior: string | null; polarity: number }): string {
+	return sha256Hex(`${SEMANTIC_WORDING_IDENTITY_VERSION}\n${normalizeSemanticText(input.condition)}\n${normalizeSemanticText(input.behavior)}\n${Number(input.polarity) === -1 ? -1 : 1}`);
 }
 
 export function normalizedVector(vector: Float32Array | number[]): Float32Array {
@@ -66,6 +91,11 @@ export function cosineBp(a: Float32Array, b: Float32Array): number {
 	const cosine = cosineSimilarity(a, b);
 	if (!Number.isFinite(cosine)) throw new Error("Invalid embedding cosine");
 	return Math.trunc(cosine * 10000);
+}
+
+export function effectiveFieldSimilarityBp(conditionSimilarityBp: number, behaviorSimilarityBp: number): number {
+	if (!Number.isFinite(conditionSimilarityBp) || !Number.isFinite(behaviorSimilarityBp)) throw new Error("Invalid field similarity");
+	return Math.max(-10000, Math.min(10000, Math.trunc(Math.min(conditionSimilarityBp, behaviorSimilarityBp))));
 }
 
 export function classifySimilarityBp(similarityBp: number, policy: Pick<SemanticDedupePolicy, "reviewThresholdBp" | "strongThresholdBp">): "none" | "review" | "strong" {

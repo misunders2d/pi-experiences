@@ -6,11 +6,11 @@ import { Readable } from 'node:stream';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { parseAgentExperienceConfig } from '../extensions/agent-experience/src/config.ts';
-import { cosineBp, habitEmbeddingInputV1 } from '../extensions/agent-experience/src/semantic/core.ts';
+import { cosineBp, effectiveFieldSimilarityBp, habitBehaviorEmbeddingInputV1, habitConditionEmbeddingInputV1 } from '../extensions/agent-experience/src/semantic/core.ts';
 import { createEmbeddingAdapterFromConfig, semanticPolicyFromConfig } from '../extensions/agent-experience/src/semantic/config.ts';
 import { createLocalEmbeddingAdapter } from '../extensions/agent-experience/src/semantic/local-adapter.ts';
 import { ensureLocalEmbeddingAssets, getLocalEmbeddingAssetStatus, removeLocalEmbeddingAssets } from '../extensions/agent-experience/src/semantic/local-model.ts';
-import { LOCAL_EMBEDDING_ASSETS, LOCAL_EMBEDDING_DOWNLOAD_BYTES, LOCAL_EMBEDDING_MAX_MANAGED_BYTES, LOCAL_EMBEDDING_REVIEW_THRESHOLD_BP } from '../extensions/agent-experience/src/semantic/local-model-manifest.ts';
+import { LOCAL_EMBEDDING_ASSETS, LOCAL_EMBEDDING_DOWNLOAD_BYTES, LOCAL_EMBEDDING_MAX_MANAGED_BYTES, LOCAL_EMBEDDING_REVIEW_THRESHOLD_BP, LOCAL_EMBEDDING_STRONG_THRESHOLD_BP } from '../extensions/agent-experience/src/semantic/local-model-manifest.ts';
 
 assert.equal(LOCAL_EMBEDDING_DOWNLOAD_BYTES, 148_618_669, 'public about-150-MB wording must match the exact pinned asset manifest');
 assert.ok(LOCAL_EMBEDDING_DOWNLOAD_BYTES > 100_000_000 && LOCAL_EMBEDDING_DOWNLOAD_BYTES < LOCAL_EMBEDDING_MAX_MANAGED_BYTES, 'pinned local assets must stay within managed footprint cap');
@@ -96,20 +96,27 @@ try {
   assert.equal(cleanedEntries.some((name) => name.startsWith('.staging-') || name.startsWith('.invalid-') || name === 'multilingual-minilm-l12-int8-v0'), false, 'ready-cache checks must clean crash/obsolete artifacts before they can accumulate beyond the footprint cap');
   assert.equal(fetchCount, LOCAL_EMBEDDING_ASSETS.length, 'stale artifact cleanup must not redownload a valid cache');
 
+  const codeReview = {condition:'When reviewing code',behavior:'Identify concrete risks and recommend fixes.'};
+  const handoff = {condition:'When a long-running task must continue in another session',behavior:'Record completed work, current status, unresolved blockers, and the exact next action so another agent can resume safely.'};
   const fixtures = [
-    ['positive-en', {condition:'When reviewing code',behavior:'Identify concrete risks and recommend fixes.'}, {condition:'During a code review',behavior:'Find specific failure modes and propose corrections.'}, true],
-    ['positive-ru', {condition:'При проверке кода',behavior:'Находить конкретные риски и предлагать исправления.'}, {condition:'Во время ревью программы',behavior:'Выявлять точные сценарии отказа и рекомендовать изменения.'}, true],
-    ['positive-cross-ru', {condition:'When reviewing code',behavior:'Identify concrete risks and recommend fixes.'}, {condition:'При проверке кода',behavior:'Находить конкретные риски и предлагать исправления.'}, true],
-    ['positive-cross-es', {condition:'When reviewing code',behavior:'Identify concrete risks and recommend fixes.'}, {condition:'Al revisar código',behavior:'Identificar riesgos concretos y recomendar correcciones.'}, true],
-    ['positive-cross-de', {condition:'When reviewing code',behavior:'Identify concrete risks and recommend fixes.'}, {condition:'Bei der Codeprüfung',behavior:'Konkrete Risiken erkennen und Korrekturen empfehlen.'}, true],
-    ['positive-cross-fr', {condition:'When reviewing code',behavior:'Identify concrete risks and recommend fixes.'}, {condition:'Lors de la revue du code',behavior:'Identifier les risques concrets et recommander des corrections.'}, true],
-    ['positive-cross-zh', {condition:'When reviewing code',behavior:'Identify concrete risks and recommend fixes.'}, {condition:'审查代码时',behavior:'识别具体风险并提出修复建议。'}, true],
-    ['positive-es', {condition:'Antes de publicar un paquete',behavior:'Ejecutar todas las pruebas y verificar el artefacto instalable.'}, {condition:'Al preparar una versión de software',behavior:'Completar la validación y probar el paquete final.'}, true],
-    ['negative-en', {condition:'When reviewing code',behavior:'Identify concrete risks and recommend fixes.'}, {condition:'When preparing breakfast',behavior:'Choose fresh seasonal fruit.'}, false],
-    ['negative-ru', {condition:'При проверке кода',behavior:'Находить конкретные риски и предлагать исправления.'}, {condition:'Перед поездкой',behavior:'Проверять прогноз погоды и брать подходящую одежду.'}, false],
-    ['negative-cross', {condition:'When exposing user controls',behavior:'Keep one setup panel as the complete normal-user surface.'}, {condition:'При закрытии месяца',behavior:'Сверять банковские операции с бухгалтерским отчетом.'}, false],
+    ['positive-code-en', codeReview, {condition:'During a code review',behavior:'Find specific failure modes and propose corrections.'}, true],
+    ['positive-code-ru', codeReview, {condition:'При проверке кода',behavior:'Находить конкретные риски и предлагать исправления.'}, true],
+    ['positive-code-es', codeReview, {condition:'Al revisar código',behavior:'Identificar riesgos concretos y recomendar correcciones.'}, true],
+    ['positive-release-es', {condition:'Antes de publicar un paquete',behavior:'Ejecutar todas las pruebas y verificar el artefacto instalable.'}, {condition:'Al preparar una versión de software',behavior:'Completar la validación y probar el paquete final.'}, true],
+    ['positive-handoff-conservative-false-negative', handoff, {condition:'At a context boundary during unfinished work',behavior:'Write a durable checkpoint covering what is done, what remains blocked, and where execution should continue.'}, true],
+    ['positive-status-ru', {condition:'When reporting progress on ongoing work',behavior:'State whether work is done or blocked, give minimal evidence, and name the next action.'}, {condition:'При сообщении о ходе текущей работы',behavior:'Указать, завершена ли работа или заблокирована, привести краткие доказательства и назвать следующий шаг.'}, true],
+    ['positive-code-de', codeReview, {condition:'Bei der Codeprüfung',behavior:'Konkrete Risiken erkennen und Korrekturen empfehlen.'}, true],
+    ['positive-code-fr', codeReview, {condition:'Lors de la revue du code',behavior:'Identifier les risques concrets et recommander des corrections.'}, true],
+    ['positive-code-zh', codeReview, {condition:'审查代码时',behavior:'识别具体风险并提出修复建议。'}, true],
+    ['negative-breakfast', codeReview, {condition:'When preparing breakfast',behavior:'Choose fresh seasonal fruit.'}, false],
+    ['negative-same-release-condition', {condition:'When preparing a software release',behavior:'Run the full validation suite and verify the installable package.'}, {condition:'When preparing a software release',behavior:'Write a concise public announcement and social media summary for users.'}, false],
+    ['negative-identical-status-action', {condition:'When reporting task progress',behavior:'State current status and the next action.'}, {condition:'When checking live service health',behavior:'State current status and the next action.'}, false],
+    ['negative-release-security', {condition:'When preparing a software release',behavior:'Run tests and verify the installable artifact.'}, {condition:'When reviewing security-sensitive code',behavior:'Identify concrete attack paths and recommend mitigations.'}, false],
+    ['negative-setup-release', {condition:'When exposing user controls',behavior:'Keep one setup panel as the complete normal-user surface.'}, {condition:'When preparing a software release',behavior:'Run all checks against the final installable package.'}, false],
+    ['negative-handoff-live-status', handoff, {condition:'When checking live service status',behavior:'Report the current state and immediate next action.'}, false],
+    ['negative-cross-month-close', {condition:'When exposing user controls',behavior:'Keep one setup panel as the complete normal-user surface.'}, {condition:'При закрытии месяца',behavior:'Сверять банковские операции с бухгалтерским отчетом.'}, false],
   ];
-  const texts = fixtures.flatMap(([, left, right]) => [habitEmbeddingInputV1(left), habitEmbeddingInputV1(right)]);
+  const texts = fixtures.flatMap(([, left, right]) => [habitConditionEmbeddingInputV1(left), habitBehaviorEmbeddingInputV1(left), habitConditionEmbeddingInputV1(right), habitBehaviorEmbeddingInputV1(right)]);
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => { throw new Error('offline test forbids network'); };
   const adapter = createLocalEmbeddingAdapter(root, {idleMs: 100});
@@ -117,11 +124,25 @@ try {
     const vectors = await adapter.embed(texts);
     assert.equal(vectors.length, texts.length);
     assert.ok(vectors.every((vector) => vector.length === 384));
+    let expectedDuplicates = 0;
+    let routedExpectedDuplicates = 0;
+    let strongExpectedDuplicates = 0;
     fixtures.forEach(([name,,, duplicate], index) => {
-      const score = cosineBp(vectors[index * 2], vectors[index * 2 + 1]);
-      if (duplicate) assert.ok(score >= LOCAL_EMBEDDING_REVIEW_THRESHOLD_BP, `${name} duplicate score ${score} must reach calibrated threshold`);
-      else assert.ok(score < LOCAL_EMBEDDING_REVIEW_THRESHOLD_BP, `${name} non-duplicate score ${score} must remain below calibrated threshold`);
+      const base = index * 4;
+      const conditionScore = cosineBp(vectors[base], vectors[base + 2]);
+      const behaviorScore = cosineBp(vectors[base + 1], vectors[base + 3]);
+      const score = effectiveFieldSimilarityBp(conditionScore, behaviorScore);
+      if (duplicate) {
+        expectedDuplicates += 1;
+        if (score >= LOCAL_EMBEDDING_REVIEW_THRESHOLD_BP) routedExpectedDuplicates += 1;
+        if (score >= LOCAL_EMBEDDING_STRONG_THRESHOLD_BP) strongExpectedDuplicates += 1;
+        if (name === 'positive-handoff-conservative-false-negative') assert.ok(score < LOCAL_EMBEDDING_REVIEW_THRESHOLD_BP, `${name} score ${score} documents intentional precision-first false negative`);
+        else assert.ok(score >= LOCAL_EMBEDDING_REVIEW_THRESHOLD_BP, `${name} effective duplicate score ${score} (${conditionScore}/${behaviorScore}) must reach calibrated threshold`);
+      } else assert.ok(score < LOCAL_EMBEDDING_REVIEW_THRESHOLD_BP, `${name} effective distinct score ${score} (${conditionScore}/${behaviorScore}) must remain below calibrated threshold`);
     });
+    assert.equal(expectedDuplicates, 9);
+    assert.equal(routedExpectedDuplicates, 8, 'precision-first field rule must route eight of nine representative paraphrases');
+    assert.ok(strongExpectedDuplicates >= 5, 'strong threshold must remain reserved for closely aligned multilingual paraphrases');
     await assert.rejects(() => adapter.embed([`when text is too long\n${'token '.repeat(300)}`]), /128_tokens/);
     assert.equal(adapter.isWorkerActive(), true);
     await new Promise((resolve) => setTimeout(resolve, 250));

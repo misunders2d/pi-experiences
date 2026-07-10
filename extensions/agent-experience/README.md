@@ -64,11 +64,15 @@ Duplicate prevention is fully local and extension-managed.
 - cancellation cleanup, corruption fail-closed, upgrade staging, and setup removal;
 - single-threaded bounded worker, 128-token input cap, maximum 64 texts per local request, and 30-second idle unload.
 
-Only normalized `condition + "\n" + behavior` enters local inference. Raw examples, source refs, evidence summaries, residual JSON, paths, checksums, audit text, credentials, and tokens do not.
+Normalized condition and behavior wording enter local inference as two independent inputs. Raw examples, source refs, evidence summaries, residual JSON, paths, checksums, audit text, credentials, and tokens do not.
 
-Scans are capped at 100 habits / 4,950 pairs, batched, cancellable, progress-visible, snapshot-revalidated, and committed in one transaction. Failure leaves pre-scan semantic state unchanged.
+Effective similarity is the lower of the two field scores. The review threshold is 5,500 basis points and the strong threshold is 7,000; both fields must align. Opposite polarity is excluded before comparison.
 
-Similarity only routes possible duplicates for explicit resolution. Opposite polarity is excluded before comparison. No semantic result approves or merges a habit.
+Normal scans compare active/disabled approved habits only. Candidate targets are checked against approved habits during proposal and activation; candidate-to-candidate semantic routing is excluded. Scans remain capped at 100 current habits / 4,950 pairs, batched, cancellable, progress-visible, snapshot-revalidated, and committed in one transaction. Failure leaves pre-scan semantic state unchanged.
+
+User-started scans dismiss obsolete pending scoring-method relations with audit. Candidates remain hidden until all their pending relations resolve. Unchanged keep-separate decisions survive method upgrades through wording hashes or validated legacy cache proof; changed/corrupt proof fails closed to re-review.
+
+Similarity only routes possible duplicates for explicit resolution. No semantic result approves or merges a habit.
 
 ## Activation concurrency
 

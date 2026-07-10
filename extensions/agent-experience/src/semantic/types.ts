@@ -49,6 +49,8 @@ export interface CachedHabitEmbedding {
 export interface SemanticDuplicateMatch {
 	habit: SemanticHabitRow;
 	similarityBp: number;
+	conditionSimilarityBp: number;
+	behaviorSimilarityBp: number;
 	strength: "review" | "strong";
 }
 

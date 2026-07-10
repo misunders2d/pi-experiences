@@ -3,7 +3,9 @@ export const LOCAL_EMBEDDING_MODEL = "Xenova/paraphrase-multilingual-MiniLM-L12-
 export const LOCAL_EMBEDDING_REVISION = "2c4055b12046f11709e9df2c122e59ffbdc2f900";
 export const LOCAL_EMBEDDING_ASSET_VERSION = "multilingual-minilm-l12-int8-v1";
 export const LOCAL_EMBEDDING_DIMENSIONS = 384;
-export const LOCAL_EMBEDDING_REVIEW_THRESHOLD_BP = 4000;
+// Thresholds apply to the conservative minimum of separate condition and
+// behavior cosine scores, not to one concatenated whole-habit vector.
+export const LOCAL_EMBEDDING_REVIEW_THRESHOLD_BP = 5500;
 export const LOCAL_EMBEDDING_STRONG_THRESHOLD_BP = 7000;
 export const LOCAL_EMBEDDING_TIMEOUT_MS = 120_000;
 export const LOCAL_EMBEDDING_MAX_TOKENS = 128;

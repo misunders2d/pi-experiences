@@ -1,18 +1,65 @@
-import { chooseCanonicalHabit, classifySimilarityBp, cosineBp, embeddingInputChecksum, habitEmbeddingInputV1, normalizedVector } from "./core.ts";
-import { duplicateMethod, getCachedHabitEmbedding, getKeptSeparateDuplicate, getSemanticHabitRow, insertHabitDuplicateAudit, listHabitDuplicates, markCandidateDuplicateResolution, restoreCandidateDuplicateResolution, selectSemanticHabitRows, updateHabitDuplicateDecision, upsertCachedHabitEmbedding, upsertHabitDuplicate } from "./storage.ts";
-import { LOCAL_EMBEDDING_DIMENSIONS, LOCAL_EMBEDDING_MAX_BATCH, LOCAL_EMBEDDING_MODEL, LOCAL_EMBEDDING_PROVIDER, LOCAL_EMBEDDING_REVIEW_THRESHOLD_BP, LOCAL_EMBEDDING_STRONG_THRESHOLD_BP, LOCAL_EMBEDDING_TIMEOUT_MS } from "./local-model-manifest.ts";
+import {
+	chooseCanonicalHabit,
+	classifySimilarityBp,
+	cosineBp,
+	effectiveFieldSimilarityBp,
+	embeddingInputChecksum,
+	habitFieldEmbeddingInputsV1,
+	normalizedVector,
+	SEMANTIC_BEHAVIOR_EMBEDDING_INPUT_VERSION,
+	SEMANTIC_CONDITION_EMBEDDING_INPUT_VERSION,
+	SEMANTIC_DUPLICATE_METHOD_VERSION,
+} from "./core.ts";
+import {
+	duplicateMethod,
+	duplicateWordingHashesMatch,
+	getCachedHabitEmbedding,
+	getKeptSeparateDuplicate,
+	getSemanticHabitRow,
+	insertHabitDuplicateAudit,
+	listHabitDuplicates,
+	markCandidateDuplicateResolution,
+	restoreCandidateDuplicateResolution,
+	selectSemanticHabitRows,
+	updateHabitDuplicateDecision,
+	upsertCachedHabitEmbedding,
+	upsertHabitDuplicate,
+} from "./storage.ts";
+import {
+	LOCAL_EMBEDDING_DIMENSIONS,
+	LOCAL_EMBEDDING_MAX_BATCH,
+	LOCAL_EMBEDDING_MODEL,
+	LOCAL_EMBEDDING_PROVIDER,
+	LOCAL_EMBEDDING_REVIEW_THRESHOLD_BP,
+	LOCAL_EMBEDDING_STRONG_THRESHOLD_BP,
+	LOCAL_EMBEDDING_TIMEOUT_MS,
+} from "./local-model-manifest.ts";
 import type { CachedHabitEmbedding, EmbeddingAdapter, SemanticDedupePolicy, SemanticDuplicateMatch, SemanticGateDecision, SemanticHabitRow } from "./types.ts";
 
-export const SEMANTIC_COMPARISON_STATUSES = ["active", "disabled", "candidate"];
+export const SEMANTIC_COMPARISON_STATUSES = ["active", "disabled"];
+export const SEMANTIC_STATE_STATUSES = ["active", "disabled", "candidate"];
 export const MAX_SEMANTIC_SCAN_HABITS = 100;
 export const MAX_SEMANTIC_SCAN_PAIRS = 4_950;
 const MAX_ACTIVATION_REPREPARES = 2;
 
-interface PreparedEmbedding {
-	habit: SemanticHabitRow;
+interface PreparedFieldEmbedding {
+	embeddingInputVersion: string;
 	embeddingInputChecksum: string;
 	vector: Float32Array;
 	cached: boolean;
+}
+
+interface PreparedEmbedding {
+	habit: SemanticHabitRow;
+	condition: PreparedFieldEmbedding;
+	behavior: PreparedFieldEmbedding;
+}
+
+interface PairScore {
+	similarityBp: number;
+	conditionSimilarityBp: number;
+	behaviorSimilarityBp: number;
+	strength: "none" | "review" | "strong";
 }
 
 export interface SemanticProgress {
@@ -40,7 +87,17 @@ export function sanitizePolicy(policy: Partial<SemanticDedupePolicy> | undefined
 }
 
 function policySummary(policy: SemanticDedupePolicy) {
-	return { enabled: policy.enabled, provider: policy.provider, model: policy.model, dimensions: policy.dimensions, reviewThresholdBp: policy.reviewThresholdBp, strongThresholdBp: policy.strongThresholdBp };
+	return {
+		enabled: policy.enabled,
+		provider: policy.provider,
+		model: policy.model,
+		dimensions: policy.dimensions,
+		reviewThresholdBp: policy.reviewThresholdBp,
+		strongThresholdBp: policy.strongThresholdBp,
+		scoringMethod: SEMANTIC_DUPLICATE_METHOD_VERSION,
+		conditionInputVersion: SEMANTIC_CONDITION_EMBEDDING_INPUT_VERSION,
+		behaviorInputVersion: SEMANTIC_BEHAVIOR_EMBEDDING_INPUT_VERSION,
+	};
 }
 
 function assertProviderMatches(policy: SemanticDedupePolicy, provider: EmbeddingAdapter): void {
@@ -55,34 +112,42 @@ function rowSnapshot(rows: SemanticHabitRow[]): string {
 	return JSON.stringify(rows.map((row) => [row.id, row.status, row.checksum, row.polarity]));
 }
 
-function relationSnapshot(db: any, userId: string, method: string): string {
-	const rows = db.prepare("SELECT id, pair_key, decision, checksum FROM habit_duplicates WHERE user_id = ? AND method = ? ORDER BY pair_key, id").all(userId, method);
-	return JSON.stringify(rows.map((row: any) => [row.id, row.pair_key, row.decision, row.checksum]));
+function relationSnapshot(db: any, userId: string): string {
+	const rows = db.prepare("SELECT id, pair_key, method, decision, checksum FROM habit_duplicates WHERE user_id = ? ORDER BY method, pair_key, id").all(userId);
+	return JSON.stringify(rows.map((row: any) => [row.id, row.pair_key, row.method, row.decision, row.checksum]));
 }
 
 function comparisonRows(db: any, input: { userId: string; target: SemanticHabitRow; policy: SemanticDedupePolicy; statuses?: string[] }): SemanticHabitRow[] {
-	return selectSemanticHabitRows(db, { userId: input.userId, statuses: input.statuses || ["active", "disabled"] })
+	return selectSemanticHabitRows(db, { userId: input.userId, statuses: input.statuses || SEMANTIC_COMPARISON_STATUSES })
 		.filter((row) => row.id !== input.target.id)
 		.filter((row) => row.status !== "archived" && row.status !== "suppressed_by_law")
 		.filter((row) => row.polarity === input.target.polarity)
+		.filter((row) => !(row.status === "candidate" && input.target.status === "candidate"))
 		.filter((row) => !getKeptSeparateDuplicate(db, { userId: input.userId, habitId: input.target.id, otherHabitId: row.id, provider: input.policy.provider, model: input.policy.model, dimensions: input.policy.dimensions }));
 }
 
 async function prepareHabitEmbeddings(db: any, input: { userId: string; habits: SemanticHabitRow[]; policy: SemanticDedupePolicy; provider: EmbeddingAdapter; signal?: AbortSignal; batchSize?: number; onProgress?: (progress: SemanticProgress) => void }): Promise<Map<string, PreparedEmbedding>> {
 	const policy = sanitizePolicy(input.policy);
 	assertProviderMatches(policy, input.provider);
-	const prepared = new Map<string, PreparedEmbedding>();
-	const missing: Array<{ habit: SemanticHabitRow; text: string; checksum: string }> = [];
+	const partial = new Map<string, { habit: SemanticHabitRow; condition?: PreparedFieldEmbedding; behavior?: PreparedFieldEmbedding }>();
+	const missing: Array<{ habit: SemanticHabitRow; field: "condition" | "behavior"; text: string; version: string; checksum: string }> = [];
 	for (const habit of input.habits) {
-		const text = habitEmbeddingInputV1({ condition: habit.condition, behavior: habit.behavior });
-		const checksum = embeddingInputChecksum(text);
-		const cached = getCachedHabitEmbedding(db, { userId: input.userId, habitId: habit.id, embeddingInputChecksum: checksum, habitRowChecksum: habit.checksum, provider: policy.provider, model: policy.model, dimensions: policy.dimensions });
-		if (cached) prepared.set(habit.id, { habit, embeddingInputChecksum: checksum, vector: cached.vector, cached: true });
-		else missing.push({ habit, text, checksum });
+		const fields = habitFieldEmbeddingInputsV1({ condition: habit.condition, behavior: habit.behavior });
+		const entry: { habit: SemanticHabitRow; condition?: PreparedFieldEmbedding; behavior?: PreparedFieldEmbedding } = { habit };
+		for (const field of ["condition", "behavior"] as const) {
+			const version = field === "condition" ? SEMANTIC_CONDITION_EMBEDDING_INPUT_VERSION : SEMANTIC_BEHAVIOR_EMBEDDING_INPUT_VERSION;
+			const text = fields[field];
+			const checksum = embeddingInputChecksum(text, version);
+			const cached = getCachedHabitEmbedding(db, { userId: input.userId, habitId: habit.id, embeddingInputVersion: version, embeddingInputChecksum: checksum, habitRowChecksum: habit.checksum, provider: policy.provider, model: policy.model, dimensions: policy.dimensions });
+			if (cached) entry[field] = { embeddingInputVersion: version, embeddingInputChecksum: checksum, vector: cached.vector, cached: true };
+			else missing.push({ habit, field, text, version, checksum });
+		}
+		partial.set(habit.id, entry);
 	}
+	const total = input.habits.length * 2;
 	const batchSize = Math.max(1, Math.min(LOCAL_EMBEDDING_MAX_BATCH, Math.trunc(input.batchSize || 32)));
-	let completed = input.habits.length - missing.length;
-	input.onProgress?.({ phase: "embedding", completed, total: input.habits.length });
+	let completed = total - missing.length;
+	input.onProgress?.({ phase: "embedding", completed, total });
 	for (let offset = 0; offset < missing.length; offset += batchSize) {
 		throwIfAborted(input.signal);
 		const batch = missing.slice(offset, offset + batchSize);
@@ -91,17 +156,44 @@ async function prepareHabitEmbeddings(db: any, input: { userId: string; habits: 
 		for (let index = 0; index < batch.length; index += 1) {
 			const vector = vectors[index];
 			if (!vector || vector.length !== policy.dimensions) throw new Error("Local embedding runtime returned wrong dimensions");
-			prepared.set(batch[index].habit.id, { habit: batch[index].habit, embeddingInputChecksum: batch[index].checksum, vector: normalizedVector(vector), cached: false });
+			const item = batch[index];
+			const entry = partial.get(item.habit.id);
+			if (!entry) throw new Error("Prepared habit entry missing");
+			entry[item.field] = { embeddingInputVersion: item.version, embeddingInputChecksum: item.checksum, vector: normalizedVector(vector), cached: false };
 		}
 		completed += batch.length;
-		input.onProgress?.({ phase: "embedding", completed, total: input.habits.length });
+		input.onProgress?.({ phase: "embedding", completed, total });
 	}
 	throwIfAborted(input.signal);
+	const prepared = new Map<string, PreparedEmbedding>();
+	for (const [habitId, entry] of partial) {
+		if (!entry.condition || !entry.behavior) throw new Error("Prepared field embedding missing");
+		prepared.set(habitId, { habit: entry.habit, condition: entry.condition, behavior: entry.behavior });
+	}
 	return prepared;
 }
 
-function persistPreparedEmbedding(db: any, input: { userId: string; prepared: PreparedEmbedding; policy: SemanticDedupePolicy; now: string }): CachedHabitEmbedding {
-	return upsertCachedHabitEmbedding(db, { userId: input.userId, habitId: input.prepared.habit.id, embeddingInputChecksum: input.prepared.embeddingInputChecksum, habitRowChecksum: input.prepared.habit.checksum, provider: input.policy.provider, model: input.policy.model, dimensions: input.policy.dimensions, vector: input.prepared.vector, now: input.now });
+function persistPreparedEmbedding(db: any, input: { userId: string; prepared: PreparedEmbedding; policy: SemanticDedupePolicy; now: string }): { condition: CachedHabitEmbedding; behavior: CachedHabitEmbedding } {
+	const save = (field: PreparedFieldEmbedding) => upsertCachedHabitEmbedding(db, {
+		userId: input.userId,
+		habitId: input.prepared.habit.id,
+		embeddingInputVersion: field.embeddingInputVersion,
+		embeddingInputChecksum: field.embeddingInputChecksum,
+		habitRowChecksum: input.prepared.habit.checksum,
+		provider: input.policy.provider,
+		model: input.policy.model,
+		dimensions: input.policy.dimensions,
+		vector: field.vector,
+		now: input.now,
+	});
+	return { condition: save(input.prepared.condition), behavior: save(input.prepared.behavior) };
+}
+
+function scorePair(left: PreparedEmbedding, right: PreparedEmbedding, policy: SemanticDedupePolicy): PairScore {
+	const conditionSimilarityBp = cosineBp(left.condition.vector, right.condition.vector);
+	const behaviorSimilarityBp = cosineBp(left.behavior.vector, right.behavior.vector);
+	const similarityBp = effectiveFieldSimilarityBp(conditionSimilarityBp, behaviorSimilarityBp);
+	return { similarityBp, conditionSimilarityBp, behaviorSimilarityBp, strength: classifySimilarityBp(similarityBp, policy) };
 }
 
 function computeMatches(input: { target: SemanticHabitRow; comparators: SemanticHabitRow[]; prepared: Map<string, PreparedEmbedding>; policy: SemanticDedupePolicy }): SemanticDuplicateMatch[] {
@@ -111,20 +203,23 @@ function computeMatches(input: { target: SemanticHabitRow; comparators: Semantic
 	for (const row of input.comparators) {
 		const other = input.prepared.get(row.id);
 		if (!other) throw new Error("Prepared comparator embedding missing");
-		const similarityBp = cosineBp(target.vector, other.vector);
-		const strength = classifySimilarityBp(similarityBp, input.policy);
-		if (strength !== "none") matches.push({ habit: row, similarityBp, strength });
+		const score = scorePair(target, other, input.policy);
+		if (score.strength !== "none") matches.push({ habit: row, similarityBp: score.similarityBp, conditionSimilarityBp: score.conditionSimilarityBp, behaviorSimilarityBp: score.behaviorSimilarityBp, strength: score.strength });
 	}
 	return matches.sort((left, right) => (right.similarityBp - left.similarityBp) || left.habit.id.localeCompare(right.habit.id));
+}
+
+function matchData(match: Pick<SemanticDuplicateMatch, "similarityBp" | "conditionSimilarityBp" | "behaviorSimilarityBp" | "strength">) {
+	return { similarity_bp: match.similarityBp, condition_similarity_bp: match.conditionSimilarityBp, behavior_similarity_bp: match.behaviorSimilarityBp, strength: match.strength, scoring_method: SEMANTIC_DUPLICATE_METHOD_VERSION };
 }
 
 function writeActivationBlocks(db: any, input: { userId: string; target: SemanticHabitRow; matches: SemanticDuplicateMatch[]; policy: SemanticDedupePolicy; targetKind: string; now: string }): void {
 	for (const match of input.matches) {
 		const canonical = chooseCanonicalHabit(input.target, match.habit);
 		const duplicate = canonical.id === input.target.id ? match.habit : input.target;
-		const relation = upsertHabitDuplicate(db, { userId: input.userId, habitId: input.target.id, otherHabitId: match.habit.id, canonicalHabitId: canonical.id, duplicateHabitId: duplicate.id, similarityBp: match.similarityBp, thresholdBp: input.policy.reviewThresholdBp, provider: input.policy.provider, model: input.policy.model, dimensions: input.policy.dimensions, decision: "pending", data: { action: "activation_block", target_kind: input.targetKind, strength: match.strength, policy: policySummary(input.policy) }, now: input.now });
-		if (input.target.status === "candidate") markCandidateDuplicateResolution(db, { userId: input.userId, habitId: input.target.id, relationId: relation.id, data: { action: "activation_block", matched_habit_id: match.habit.id, similarity_bp: match.similarityBp, canonical_habit_id: canonical.id }, now: input.now });
-		insertHabitDuplicateAudit(db, { userId: input.userId, duplicateId: relation.id, targetKind: input.targetKind, targetId: input.target.id, action: "semantic_activation_block", before: null, after: relation, data: { similarity_bp: match.similarityBp, matched_habit_id: match.habit.id, policy: policySummary(input.policy) }, now: input.now });
+		const relation = upsertHabitDuplicate(db, { userId: input.userId, habitId: input.target.id, otherHabitId: match.habit.id, canonicalHabitId: canonical.id, duplicateHabitId: duplicate.id, similarityBp: match.similarityBp, thresholdBp: input.policy.reviewThresholdBp, provider: input.policy.provider, model: input.policy.model, dimensions: input.policy.dimensions, decision: "pending", data: { action: "activation_block", target_kind: input.targetKind, ...matchData(match), policy: policySummary(input.policy) }, now: input.now });
+		if (input.target.status === "candidate") markCandidateDuplicateResolution(db, { userId: input.userId, habitId: input.target.id, relationId: relation.id, data: { action: "activation_block", matched_habit_id: match.habit.id, canonical_habit_id: canonical.id, ...matchData(match) }, now: input.now });
+		insertHabitDuplicateAudit(db, { userId: input.userId, duplicateId: relation.id, targetKind: input.targetKind, targetId: input.target.id, action: "semantic_activation_block", before: null, after: relation, data: { matched_habit_id: match.habit.id, ...matchData(match), policy: policySummary(input.policy) }, now: input.now });
 	}
 }
 
@@ -211,12 +306,6 @@ export async function runAtomicSemanticActivation<T>(db: any, input: { userId: s
 	throw new Error("Semantic state changed repeatedly; retry the action");
 }
 
-export async function ensureHabitEmbedding(db: any, input: { userId: string; habit: SemanticHabitRow; policy: SemanticDedupePolicy; provider: EmbeddingAdapter; now: string; signal?: AbortSignal }): Promise<CachedHabitEmbedding> {
-	const policy = sanitizePolicy(input.policy);
-	const prepared = await prepareHabitEmbeddings(db, { userId: input.userId, habits: [input.habit], policy, provider: input.provider, signal: input.signal, batchSize: 1 });
-	return persistPreparedEmbedding(db, { userId: input.userId, prepared: prepared.get(input.habit.id)!, policy, now: input.now });
-}
-
 export async function findSemanticDuplicateMatches(db: any, input: { userId: string; target: SemanticHabitRow; policy: SemanticDedupePolicy; provider: EmbeddingAdapter; now: string; statuses?: string[]; signal?: AbortSignal }): Promise<SemanticDuplicateMatch[]> {
 	const policy = sanitizePolicy(input.policy);
 	if (!policy.enabled) return [];
@@ -233,11 +322,26 @@ export async function checkSemanticActivationGate(db: any, input: { userId: stri
 	return result.semantic;
 }
 
+function relationDismissReason(db: any, input: { userId: string; relation: any; method: string; policy: SemanticDedupePolicy }): string | undefined {
+	const row = input.relation;
+	if (row.method !== input.method) return "obsolete_scoring_method";
+	const left = getSemanticHabitRow(db, { userId: input.userId, habitId: row.habit_a });
+	const right = getSemanticHabitRow(db, { userId: input.userId, habitId: row.habit_b });
+	if (!left || !right) return "missing_habit";
+	const allowed = new Set(SEMANTIC_STATE_STATUSES);
+	if (!allowed.has(left.status) || !allowed.has(right.status)) return "ineligible_habit_status";
+	if (left.status === "candidate" && right.status === "candidate") return "candidate_pair_not_supported";
+	if (left.polarity !== right.polarity) return "polarity_changed";
+	if (!duplicateWordingHashesMatch(db, { userId: input.userId, relation: row })) return "habit_wording_changed";
+	if (Number(row.similarity_bp) < input.policy.reviewThresholdBp) return "below_current_review_threshold";
+	return undefined;
+}
+
 export function reconcileSemanticDuplicateThresholds(db: any, input: { userId: string; policy?: Partial<SemanticDedupePolicy>; now: string }) {
 	const policy = sanitizePolicy(input.policy);
 	if (!policy.enabled) return { user_id: input.userId, checked: 0, dismissed: [], refreshed: [], enabled: false };
 	const method = duplicateMethod({ provider: policy.provider, model: policy.model, dimensions: policy.dimensions });
-	const pending = listHabitDuplicates(db, { userId: input.userId, decision: "pending" }).filter((row: any) => row.method === method);
+	const pending = listHabitDuplicates(db, { userId: input.userId, decision: "pending" });
 	const dismissed: string[] = [];
 	const refreshed: string[] = [];
 	for (const row of pending) {
@@ -245,12 +349,13 @@ export function reconcileSemanticDuplicateThresholds(db: any, input: { userId: s
 		const previousThresholdBp = Number(row.threshold_bp);
 		let existingData: any = {};
 		try { existingData = JSON.parse(row.data_json || "{}"); } catch {}
-		if (similarityBp < policy.reviewThresholdBp) {
-			const data = { ...existingData, resolution: { action: "dismissed_threshold_change", reason: "below_current_review_threshold", resolved_at: input.now, previous_threshold_bp: previousThresholdBp, current_threshold_bp: policy.reviewThresholdBp } };
+		const reason = relationDismissReason(db, { userId: input.userId, relation: row, method, policy });
+		if (reason) {
+			const data = { ...existingData, resolution: { action: "dismissed_semantic_policy_change", reason, resolved_at: input.now, previous_threshold_bp: previousThresholdBp, current_threshold_bp: policy.reviewThresholdBp, previous_method: row.method, current_method: method } };
 			const changed = updateHabitDuplicateDecision(db, { userId: input.userId, duplicateId: row.id, decision: "dismissed_threshold_change", data, thresholdBp: policy.reviewThresholdBp, now: input.now });
-			insertHabitDuplicateAudit(db, { userId: input.userId, duplicateId: row.id, targetKind: "habit_duplicate", targetId: row.id, action: "dismiss_threshold_change", before: changed.before, after: changed.after, data: { previous_threshold_bp: previousThresholdBp, current_threshold_bp: policy.reviewThresholdBp, similarity_bp: similarityBp }, now: input.now });
-			restoreCandidateDuplicateResolution(db, { userId: input.userId, habitId: row.habit_a, relationId: row.id, reviewStatus: "threshold_dismissed", data: { reason: "threshold_change" }, now: input.now });
-			restoreCandidateDuplicateResolution(db, { userId: input.userId, habitId: row.habit_b, relationId: row.id, reviewStatus: "threshold_dismissed", data: { reason: "threshold_change" }, now: input.now });
+			insertHabitDuplicateAudit(db, { userId: input.userId, duplicateId: row.id, targetKind: "habit_duplicate", targetId: row.id, action: "dismiss_semantic_policy_change", before: changed.before, after: changed.after, data: { reason, previous_threshold_bp: previousThresholdBp, current_threshold_bp: policy.reviewThresholdBp, similarity_bp: similarityBp, previous_method: row.method, current_method: method }, now: input.now });
+			restoreCandidateDuplicateResolution(db, { userId: input.userId, habitId: row.habit_a, relationId: row.id, reviewStatus: "candidate", data: { reason }, now: input.now });
+			restoreCandidateDuplicateResolution(db, { userId: input.userId, habitId: row.habit_b, relationId: row.id, reviewStatus: "candidate", data: { reason }, now: input.now });
 			dismissed.push(row.id);
 		} else if (previousThresholdBp !== policy.reviewThresholdBp) {
 			const data = { ...existingData, threshold_refresh: { refreshed_at: input.now, previous_threshold_bp: previousThresholdBp, current_threshold_bp: policy.reviewThresholdBp } };
@@ -262,42 +367,54 @@ export function reconcileSemanticDuplicateThresholds(db: any, input: { userId: s
 	return { user_id: input.userId, checked: pending.length, dismissed, refreshed, enabled: true };
 }
 
+function scanPairs(db: any, input: { userId: string; rows: SemanticHabitRow[]; policy: SemanticDedupePolicy }): Array<{ left: SemanticHabitRow; right: SemanticHabitRow }> {
+	const pairs: Array<{ left: SemanticHabitRow; right: SemanticHabitRow }> = [];
+	for (let leftIndex = 0; leftIndex < input.rows.length; leftIndex += 1) {
+		for (let rightIndex = leftIndex + 1; rightIndex < input.rows.length; rightIndex += 1) {
+			const left = input.rows[leftIndex];
+			const right = input.rows[rightIndex];
+			if (left.polarity !== right.polarity) continue;
+			if (left.status === "candidate" && right.status === "candidate") continue;
+			if (getKeptSeparateDuplicate(db, { userId: input.userId, habitId: left.id, otherHabitId: right.id, provider: input.policy.provider, model: input.policy.model, dimensions: input.policy.dimensions })) continue;
+			pairs.push({ left, right });
+		}
+	}
+	return pairs;
+}
+
 export async function scanAndBackfillSemanticDuplicates(db: any, input: { userId: string; policy?: Partial<SemanticDedupePolicy>; provider?: EmbeddingAdapter; now: string; statuses?: string[]; signal?: AbortSignal; batchSize?: number; onProgress?: (progress: SemanticProgress) => void; beforeCommitForTest?: () => void; failAfterWritesForTest?: boolean }) {
 	const policy = sanitizePolicy(input.policy);
 	if (!policy.enabled) return { user_id: input.userId, checked: 0, relations: [], threshold_reconciliation: { checked: 0, dismissed: [], refreshed: [] }, enabled: false };
 	if (!input.provider) throw new Error("Local embedding runtime unavailable");
 	throwIfAborted(input.signal);
 	const statuses = input.statuses || SEMANTIC_COMPARISON_STATUSES;
+	const stateRows = selectSemanticHabitRows(db, { userId: input.userId, statuses: SEMANTIC_STATE_STATUSES }).filter((row) => row.status !== "archived" && row.status !== "suppressed_by_law");
+	if (stateRows.length > MAX_SEMANTIC_SCAN_HABITS) throw new Error(`Duplicate scan is limited to ${MAX_SEMANTIC_SCAN_HABITS} current habits; archive unused habits and retry`);
 	const rows = selectSemanticHabitRows(db, { userId: input.userId, statuses }).filter((row) => row.status !== "archived" && row.status !== "suppressed_by_law");
-	if (rows.length > MAX_SEMANTIC_SCAN_HABITS) throw new Error(`Duplicate scan is limited to ${MAX_SEMANTIC_SCAN_HABITS} current habits; archive unused habits and retry`);
-	const pairCount = rows.length * (rows.length - 1) / 2;
-	if (pairCount > MAX_SEMANTIC_SCAN_PAIRS) throw new Error("Duplicate scan pair limit exceeded");
-	const method = duplicateMethod({ provider: policy.provider, model: policy.model, dimensions: policy.dimensions });
-	const rowState = rowSnapshot(rows);
-	const relationState = relationSnapshot(db, input.userId, method);
-	input.onProgress?.({ phase: "snapshot", completed: rows.length, total: rows.length });
-	const prepared = await prepareHabitEmbeddings(db, { userId: input.userId, habits: rows, policy, provider: input.provider, signal: input.signal, batchSize: input.batchSize, onProgress: input.onProgress });
-	const proposed: Array<{ left: SemanticHabitRow; right: SemanticHabitRow; similarityBp: number; strength: "review" | "strong" }> = [];
+	const pairs = scanPairs(db, { userId: input.userId, rows, policy });
+	if (pairs.length > MAX_SEMANTIC_SCAN_PAIRS) throw new Error("Duplicate scan pair limit exceeded");
+	const rowState = rowSnapshot(stateRows);
+	const relationState = relationSnapshot(db, input.userId);
+	input.onProgress?.({ phase: "snapshot", completed: stateRows.length, total: stateRows.length });
+	const pairHabits = [...new Map(pairs.flatMap((pair) => [pair.left, pair.right]).map((row) => [row.id, row])).values()];
+	const prepared = pairHabits.length
+		? await prepareHabitEmbeddings(db, { userId: input.userId, habits: pairHabits, policy, provider: input.provider, signal: input.signal, batchSize: input.batchSize, onProgress: input.onProgress })
+		: new Map<string, PreparedEmbedding>();
+	if (!pairHabits.length) input.onProgress?.({ phase: "embedding", completed: 0, total: 0 });
+	const proposed: Array<{ left: SemanticHabitRow; right: SemanticHabitRow; similarityBp: number; conditionSimilarityBp: number; behaviorSimilarityBp: number; strength: "review" | "strong" }> = [];
 	let compared = 0;
-	input.onProgress?.({ phase: "comparing", completed: 0, total: pairCount });
-	for (let leftIndex = 0; leftIndex < rows.length; leftIndex += 1) {
-		for (let rightIndex = leftIndex + 1; rightIndex < rows.length; rightIndex += 1) {
-			throwIfAborted(input.signal);
-			const left = rows[leftIndex];
-			const right = rows[rightIndex];
-			if (left.polarity === right.polarity && !getKeptSeparateDuplicate(db, { userId: input.userId, habitId: left.id, otherHabitId: right.id, provider: policy.provider, model: policy.model, dimensions: policy.dimensions })) {
-				const similarityBp = cosineBp(prepared.get(left.id)!.vector, prepared.get(right.id)!.vector);
-				const strength = classifySimilarityBp(similarityBp, policy);
-				if (strength !== "none") proposed.push({ left, right, similarityBp, strength });
-			}
-			compared += 1;
-			if (compared % 128 === 0) {
-				input.onProgress?.({ phase: "comparing", completed: compared, total: pairCount });
-				await new Promise<void>((resolve) => setImmediate(resolve));
-			}
+	input.onProgress?.({ phase: "comparing", completed: 0, total: pairs.length });
+	for (const pair of pairs) {
+		throwIfAborted(input.signal);
+		const score = scorePair(prepared.get(pair.left.id)!, prepared.get(pair.right.id)!, policy);
+		if (score.strength !== "none") proposed.push({ left: pair.left, right: pair.right, similarityBp: score.similarityBp, conditionSimilarityBp: score.conditionSimilarityBp, behaviorSimilarityBp: score.behaviorSimilarityBp, strength: score.strength });
+		compared += 1;
+		if (compared % 128 === 0) {
+			input.onProgress?.({ phase: "comparing", completed: compared, total: pairs.length });
+			await new Promise<void>((resolve) => setImmediate(resolve));
 		}
 	}
-	input.onProgress?.({ phase: "comparing", completed: compared, total: pairCount });
+	input.onProgress?.({ phase: "comparing", completed: compared, total: pairs.length });
 	throwIfAborted(input.signal);
 	input.beforeCommitForTest?.();
 	input.onProgress?.({ phase: "saving", completed: 0, total: proposed.length });
@@ -306,18 +423,18 @@ export async function scanAndBackfillSemanticDuplicates(db: any, input: { userId
 	db.exec("BEGIN IMMEDIATE");
 	try {
 		throwIfAborted(input.signal);
-		const freshRows = selectSemanticHabitRows(db, { userId: input.userId, statuses }).filter((row) => row.status !== "archived" && row.status !== "suppressed_by_law");
-		if (rowSnapshot(freshRows) !== rowState || relationSnapshot(db, input.userId, method) !== relationState) throw new Error("Duplicate scan state changed; retry");
+		const freshStateRows = selectSemanticHabitRows(db, { userId: input.userId, statuses: SEMANTIC_STATE_STATUSES }).filter((row) => row.status !== "archived" && row.status !== "suppressed_by_law");
+		if (rowSnapshot(freshStateRows) !== rowState || relationSnapshot(db, input.userId) !== relationState) throw new Error("Duplicate scan state changed; retry");
 		for (const item of prepared.values()) persistPreparedEmbedding(db, { userId: input.userId, prepared: item, policy, now: input.now });
 		threshold_reconciliation = reconcileSemanticDuplicateThresholds(db, { userId: input.userId, policy, now: input.now });
 		for (let index = 0; index < proposed.length; index += 1) {
 			const item = proposed[index];
 			const canonical = chooseCanonicalHabit(item.left, item.right);
 			const duplicate = canonical.id === item.left.id ? item.right : item.left;
-			const relation = upsertHabitDuplicate(db, { userId: input.userId, habitId: item.left.id, otherHabitId: item.right.id, canonicalHabitId: canonical.id, duplicateHabitId: duplicate.id, similarityBp: item.similarityBp, thresholdBp: policy.reviewThresholdBp, provider: policy.provider, model: policy.model, dimensions: policy.dimensions, decision: "pending", data: { action: "scan_backfill", strength: item.strength, policy: policySummary(policy) }, now: input.now });
-			if (item.left.status === "candidate") markCandidateDuplicateResolution(db, { userId: input.userId, habitId: item.left.id, relationId: relation.id, data: { action: "scan_backfill", matched_habit_id: item.right.id, similarity_bp: item.similarityBp, canonical_habit_id: canonical.id }, now: input.now });
-			if (item.right.status === "candidate") markCandidateDuplicateResolution(db, { userId: input.userId, habitId: item.right.id, relationId: relation.id, data: { action: "scan_backfill", matched_habit_id: item.left.id, similarity_bp: item.similarityBp, canonical_habit_id: canonical.id }, now: input.now });
-			insertHabitDuplicateAudit(db, { userId: input.userId, duplicateId: relation.id, targetKind: "habit_duplicate", targetId: relation.id, action: "semantic_scan_backfill", before: null, after: relation, data: { similarity_bp: item.similarityBp }, now: input.now });
+			const relation = upsertHabitDuplicate(db, { userId: input.userId, habitId: item.left.id, otherHabitId: item.right.id, canonicalHabitId: canonical.id, duplicateHabitId: duplicate.id, similarityBp: item.similarityBp, thresholdBp: policy.reviewThresholdBp, provider: policy.provider, model: policy.model, dimensions: policy.dimensions, decision: "pending", data: { action: "scan_backfill", ...matchData(item), policy: policySummary(policy) }, now: input.now });
+			if (item.left.status === "candidate") markCandidateDuplicateResolution(db, { userId: input.userId, habitId: item.left.id, relationId: relation.id, data: { action: "scan_backfill", matched_habit_id: item.right.id, canonical_habit_id: canonical.id, ...matchData(item) }, now: input.now });
+			if (item.right.status === "candidate") markCandidateDuplicateResolution(db, { userId: input.userId, habitId: item.right.id, relationId: relation.id, data: { action: "scan_backfill", matched_habit_id: item.left.id, canonical_habit_id: canonical.id, ...matchData(item) }, now: input.now });
+			insertHabitDuplicateAudit(db, { userId: input.userId, duplicateId: relation.id, targetKind: "habit_duplicate", targetId: relation.id, action: "semantic_scan_backfill", before: null, after: relation, data: matchData(item), now: input.now });
 			relations.push(relation);
 			if (input.failAfterWritesForTest && index === 0) throw new Error("injected_semantic_scan_write_failure");
 		}

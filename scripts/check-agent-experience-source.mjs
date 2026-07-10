@@ -48,6 +48,18 @@ for(const marker of ['### Package contract','### Hard invariants','### Why `prof
   const index=readme.indexOf(marker,technicalSummaryIndex);
   assert.ok(index>technicalSummaryIndex&&index<technicalCloseIndex,`README technical contract missing: ${marker}`);
 }
+const humanReadme=readme.slice(0,technicalOpenIndex);
+const technicalReadme=readme.slice(technicalSummaryIndex,technicalCloseIndex);
+assert.match(humanReadme,/situation and action separately/i,'normal-user duplicate explanation must preserve separate-field behavior');
+assert.match(humanReadme,/not globally against one another/i,'normal-user duplicate explanation must preserve approved-only candidate policy');
+for(const phrase of ['lower of separate condition and behavior cosine scores','Review threshold: 5,500 basis points','candidate-to-candidate semantic routing is excluded','obsolete pending scoring-method relations','every pending relation involving it','keep-separate decisions survive scoring/cache method upgrades'])assert.match(technicalReadme,new RegExp(phrase,'i'),`README dedupe correction contract missing: ${phrase}`);
+const extensionReadme=await readFile(join(root,'extensions/agent-experience/README.md'),'utf8');
+const experienceSkill=await readFile(join(root,'skills/agent-experience/SKILL.md'),'utf8');
+for(const [name,text] of [['extension README',extensionReadme],['public skill',experienceSkill]]){
+  assert.match(text,/condition and behavior.*two independent inputs/is,`${name} must preserve separate-field privacy contract`);
+  assert.match(text,/candidate-to-candidate/is,`${name} must preserve candidate-pair exclusion`);
+  assert.match(text,/obsolete pending scoring-method/is,`${name} must preserve reconciliation contract`);
+}
 
 const forbidden=/OPENAI_API_KEY|AX_OPENAI_EMBEDDING|openai-compatible embedding|api\.openai\.com/i;
 async function sourceFiles(directory){

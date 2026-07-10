@@ -121,9 +121,12 @@ try {
     const calls=[];const progress=[];
     const provider={id:'fixture-local:fixture-v1:2',provider:'fixture-local',model:'fixture-v1',dimensions:2,async embed(texts){calls.push(texts.slice());return texts.map(()=>unit.slice())}};
     const result=await scanAndBackfillSemanticDuplicates(scan.db,{userId:'owner',policy,provider,now:'2026-07-10T04:01:00.000Z',batchSize:2,onProgress:(item)=>progress.push(item)});
-    assert.equal(result.checked,6);
-    assert.deepEqual(calls.map((batch)=>batch.length),[2,2,2],'scan must batch missing embeddings');
-    assert.ok(calls.flat().every((text)=>!text.includes(poison)&&text.split('\n').length===2),'embedding payload must contain only normalized condition plus behavior');
+    assert.equal(result.checked,2,'normal maintenance scan must compare approved active/disabled habits only');
+    assert.deepEqual(calls.map((batch)=>batch.length),[2,2],'two-field scan must batch four missing field embeddings for two approved habits');
+    assert.equal(scan.db.prepare('SELECT COUNT(*) count FROM habit_embeddings').get().count,4,'each approved habit must cache condition and behavior separately');
+    assert.ok(calls.flat().every((text)=>!text.includes(poison)&&/^(condition|behavior): /.test(text)&&!text.includes('\n')),'embedding payload must contain one normalized condition or behavior field only');
+    assert.equal(scan.db.prepare("SELECT COUNT(*) count FROM habits WHERE status='candidate' AND json_extract(data_json,'$.review_status')='candidate'").get().count,4,'normal maintenance scan must not route candidates into duplicate resolution');
+    assert.ok(result.relations.every((relation)=>!String(relation.habit_a).includes('scan-2')&&!String(relation.habit_b).includes('scan-2')),'normal maintenance scan relations must exclude candidates');
     assert.ok(progress.some((item)=>item.phase==='embedding')&&progress.some((item)=>item.phase==='comparing')&&progress.some((item)=>item.phase==='saving')&&progress.some((item)=>item.phase==='done'));
     const durableJson=JSON.stringify({relations:scan.db.prepare('SELECT data_json FROM habit_duplicates').all(),audit:scan.db.prepare('SELECT data_json FROM habit_duplicate_audit').all()});
     assert.doesNotMatch(durableJson,/RAW_EXAMPLE|private\/path|secret-value|abcdef/,'vector relation/audit metadata must not contain raw/residual/private payload');
@@ -131,7 +134,7 @@ try {
     const failRoot=await ensurePrivateRoot(join(temp,'scan-fail'));
     const fail=await initExperienceStorage(failRoot,{allowInit:true,userId:'owner'});
     try {
-      for(let i=0;i<3;i+=1)insertStorageRecord(fail.db,'habits',{id:`fail-${i}`,userId:'owner',data:eligibleData(`When f${i}`,'Do the same action.'),now:`2026-07-10T05:00:0${i}.000Z`});
+      for(let i=0;i<3;i+=1)insertStorageRecord(fail.db,'habits',{id:`fail-${i}`,userId:'owner',data:eligibleData(`When f${i}`,'Do the same action.',{status:'active',active:true,review_status:'accepted_active'}),now:`2026-07-10T05:00:0${i}.000Z`});
       const before=semanticDigest(fail.db);
       await assert.rejects(()=>scanAndBackfillSemanticDuplicates(fail.db,{userId:'owner',policy,provider,now:'2026-07-10T05:01:00.000Z',failAfterWritesForTest:true}),/injected_semantic_scan_write_failure/);
       assert.equal(semanticDigest(fail.db),before,'write failure must roll back embeddings, relations, and audit');

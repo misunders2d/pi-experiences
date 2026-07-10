@@ -19,7 +19,7 @@ npm audit --omit=dev
 6. selector behavior;
 7. selector adapters and legacy CLI behavior;
 8. nonblocking setup Analyze;
-9. semantic duplicate routing;
+9. separate-field semantic duplicate routing, method reconciliation, and candidate restoration;
 10. future-schema and online backup/journaled restore hardening;
 11. bounded observation tail/index/Analyze/rotation/retention;
 12. managed local embedding unit checks;
@@ -55,7 +55,9 @@ This integration test verifies:
 - streamed install and idempotent cache reuse;
 - network-blocked offline inference;
 - 384-dimensional normalized output;
-- English, Russian, Spanish, German, French, Chinese, and cross-language duplicate/non-duplicate calibration;
+- separate condition/behavior field scoring with a 5,500-bp minimum-field review threshold;
+- eight-of-nine precision-first English/Russian/Spanish/German/French/Chinese and cross-language paraphrase routing, including one documented conservative false negative;
+- same-topic/different-action and same-action/different-situation rejection;
 - 128-token rejection;
 - worker idle unload;
 - corruption rejection;
@@ -70,12 +72,12 @@ Build and inspect the exact tarball:
 
 ```bash
 npm pack --dry-run
-npm pack --json --pack-destination /tmp/pi-experiences-028-pack
+npm pack --json --pack-destination /tmp/pi-experiences-029-pack
 ```
 
 The tarball must include:
 
-- `package.json` version `0.1.28` and Node floor `>=22.19.0`;
+- `package.json` version `0.1.29` and Node floor `>=22.19.0`;
 - wildcard Pi peer dependencies;
 - extension source and public skill;
 - current executable `dist/experience-consolidate.mjs`;
@@ -87,7 +89,7 @@ The tarball must include:
 Fresh installation must use the exact generated tarball and disable lifecycle scripts:
 
 ```bash
-npm install --ignore-scripts /tmp/pi-experiences-028-pack/pi-experiences-0.1.28.tgz
+npm install --ignore-scripts /tmp/pi-experiences-029-pack/pi-experiences-0.1.29.tgz
 ```
 
 Use a dedicated disposable `/tmp/*smoke*` prefix. Verify package version, CLI help/status, extension import, skill loading, package-relative worker resolution, and file allowlist from that installed copy—not the source checkout.
@@ -101,7 +103,7 @@ Run Pi's actual skill loader against the installed package and require zero diag
 Use the packed/fresh-installed package with:
 
 ```bash
-AX_STATE_ROOT=/tmp/pi-experiences-028-tui-smoke-state
+AX_STATE_ROOT=/tmp/pi-experiences-029-tui-smoke-state
 ```
 
 Launch the real Pi TUI in a disposable Pi config/package root that references the installed tarball copy, not this repository. Exercise every major `/experience setup` section:
@@ -136,6 +138,10 @@ Release evidence must include:
 - concurrent approval, re-enable, and promotion barriers;
 - approved waiting visibility and unchanged-identity promotion;
 - semantic scan batch/cancel/progress/snapshot/write-failure rollback;
+- approved-only default scans and zero candidate-to-candidate proposal/same-batch/scan routing;
+- obsolete pending method cleanup with precise audit reason;
+- restore-after-last behavior for candidates with multiple pending relations, including approved-waiting identity;
+- new wording-hash and validated legacy-cache keep-separate continuity, plus changed/corrupt fail-closed cases;
 - live/expired/dead/empty/malformed/foreign/mismatch lock behavior;
 - bounded append and disjoint Analyze watermarks;
 - cross-batch learning from compact structured context;
@@ -154,6 +160,6 @@ git diff --check
 git status --short
 ```
 
-Then obtain independent DeepSeek, GLM, and constitution review of the actual diff plus test evidence. Reviewer verdicts do not replace test evidence.
+Then obtain independent DeepSeek, an available model-diverse reviewer, and constitution review of the actual diff plus test evidence. Skip a reviewer that stalls or reports exhausted usage rather than blocking release evidence. Reviewer verdicts do not replace test evidence.
 
-After final commit/tag push, verify local `HEAD`, `origin/main`, and `refs/tags/v0.1.28` resolve to the same commit and `v0.1.25`, `v0.1.26`, and `v0.1.27` remain unchanged. npm publication is a separate manual action and is outside this release scope.
+After final commit/tag push, verify local `HEAD`, `origin/main`, and `refs/tags/v0.1.29` resolve to the same commit and `v0.1.25` through `v0.1.28` remain unchanged. npm publication is a separate manual action and is outside this release scope.

@@ -14,7 +14,7 @@ const packageRoot=resolve(process.argv[2]||'');
 if(!packageRoot)throw new Error('Usage: verify-packed-install.mjs /absolute/installed/pi-experiences');
 const pkg=JSON.parse(await readFile(join(packageRoot,'package.json'),'utf8'));
 assert.equal(pkg.name,'pi-experiences');
-assert.equal(pkg.version,'0.1.28');
+assert.equal(pkg.version,'0.1.29');
 assert.equal(pkg.engines.node,'>=22.19.0');
 assert.deepEqual(pkg.peerDependencies,{'@earendil-works/pi-ai':'*','@earendil-works/pi-coding-agent':'*','@earendil-works/pi-tui':'*'});
 assert.equal(pkg.scripts?.install,undefined);assert.equal(pkg.scripts?.postinstall,undefined);assert.equal(pkg.scripts?.prepare,undefined);
@@ -68,8 +68,8 @@ if(fixtureDir&&fixtureWasm){
     const oldFetch=globalThis.fetch;globalThis.fetch=async()=>{throw new Error('packed offline inference forbids network')};
     const adapter=adapterModule.createLocalEmbeddingAdapter(modelState,{idleMs:100});
     try{
-      const vectors=await adapter.embed(['when reviewing code\nidentify concrete risks and recommend fixes','при проверке кода\nнаходить конкретные риски и предлагать исправления']);
-      assert.equal(vectors.length,2);assert.equal(vectors[0].length,384);
+      const vectors=await adapter.embed(['condition: when reviewing code','behavior: identify concrete risks and recommend fixes','condition: при проверке кода','behavior: находить конкретные риски и предлагать исправления']);
+      assert.equal(vectors.length,4);assert.ok(vectors.every((vector)=>vector.length===384));
       const digest=createHash('sha256').update(Buffer.from(vectors[0].buffer)).digest('hex');
       await new Promise((resolve)=>setTimeout(resolve,250));
       assert.equal(adapter.isWorkerActive(),false);

@@ -542,18 +542,6 @@ export function resolveHabitDuplicate(db: any, input: { userId: string; duplicat
 					.run(row.record_kind, row.schema_version, row.status, row.habit_id, row.condition, row.behavior, row.polarity, row.confidence_bp, row.activation, row.staleness, row.data_json, row.checksum, row.updated_at, userId, evidence.id, evidence.checksum);
 			}
 		}
-		if (input.action === "keep_separate") {
-			for (const habit of [canonicalHabit, duplicateHabit].filter(Boolean)) {
-				if (habit.status !== "candidate") continue;
-				const habitData = { ...parseJson(habit.data_json), condition: habit.condition, behavior: habit.behavior, polarity: habit.polarity, confidence_bp: habit.confidence_bp, record_kind: habit.record_kind, schema_version: habit.schema_version };
-				if (habitData.review_status !== "duplicate_resolution") continue;
-				const previouslyApproved = !!habitData.approved_identity;
-				const visibleData = { ...habitData, review_status: previouslyApproved ? "approved_pending_eligibility" : "kept_separate", ...(previouslyApproved ? { approved_pending_reason: "duplicate_resolved" } : {}), semantic_duplicate_resolution: { action: "keep_separate", duplicate_id: before.id, resolved_at: input.now, reason: input.reason || "setup" } };
-				updateHabitRow(db, { userId, id: habit.id, expectedStatus: "candidate", expectedChecksum: habit.checksum, data: visibleData, status: "candidate", now: input.now });
-				const visibleAfter = getHabit(db, userId, habit.id);
-				insertReviewAudit(db, { userId, targetKind: "habit", targetId: habit.id, action: "resolve_duplicate_keep_separate_unhide", before: habit, after: visibleAfter, data: { duplicate_id: before.id, reason: input.reason || "setup" }, createdAt: input.now });
-			}
-		}
 		if (input.action === "supersede" && canonicalHabit?.status === "candidate" && (duplicateHabit?.status === "active" || duplicateHabit?.status === "disabled")) {
 			if (!input.law) throw new Error("Supersede requires law check before replacing an approved habit");
 			const lawSnapshot = revalidateLawSnapshotSync(input.law);
@@ -579,8 +567,17 @@ export function resolveHabitDuplicate(db: any, input: { userId: string; duplicat
 		const dataJson = boundedJson(data);
 		const afterBase = { user_id: before.user_id, pair_key: before.pair_key, habit_a: before.habit_a, habit_b: before.habit_b, canonical_habit_id: canonicalId, duplicate_habit_id: duplicateId, similarity_bp: Number(before.similarity_bp), threshold_bp: Number(before.threshold_bp), method: before.method, provider: before.provider, model: before.model, dimensions: before.dimensions === null ? null : Number(before.dimensions), decision, data_json: dataJson, created_at: before.created_at, updated_at: input.now, decided_at: input.now };
 		const checksum = checksumJson({ table: "habit_duplicates", row: afterBase });
-		db.prepare("UPDATE habit_duplicates SET canonical_habit_id=?, duplicate_habit_id=?, decision=?, data_json=?, checksum=?, updated_at=?, decided_at=? WHERE user_id=? AND id=? AND checksum=?")
+		const relationUpdate = db.prepare("UPDATE habit_duplicates SET canonical_habit_id=?, duplicate_habit_id=?, decision=?, data_json=?, checksum=?, updated_at=?, decided_at=? WHERE user_id=? AND id=? AND checksum=?")
 			.run(canonicalId, duplicateId, decision, dataJson, checksum, input.now, input.now, userId, before.id, input.checksum);
+		if (relationUpdate.changes !== 1) throw new Error("Duplicate item changed; refresh required");
+		if (input.action === "keep_separate") {
+			for (const planned of [canonicalHabit, duplicateHabit].filter(Boolean)) {
+				const habitBeforeRestore = getHabit(db, userId, planned.id);
+				if (habitBeforeRestore.status !== "candidate") continue;
+				const restored = restoreCandidateDuplicateResolution(db, { userId, habitId: planned.id, relationId: before.id, reviewStatus: "kept_separate", data: { action: "keep_separate", reason: input.reason || "setup" }, now: input.now });
+				if (restored.updated) insertReviewAudit(db, { userId, targetKind: "habit", targetId: planned.id, action: "resolve_duplicate_keep_separate_unhide", before: restored.before, after: restored.after, data: { duplicate_id: before.id, reason: input.reason || "setup" }, createdAt: input.now });
+			}
+		}
 		const after = db.prepare("SELECT * FROM habit_duplicates WHERE user_id = ? AND id = ?").get(userId, before.id);
 		const audit = insertHabitDuplicateAudit(db, { userId, duplicateId: before.id, targetKind: "habit_duplicate", targetId: before.id, action: `resolve_${decision}`, before, after, data, now: input.now });
 		result = { duplicate_id: before.id, decision, audit_id: audit.id };

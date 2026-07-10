@@ -108,7 +108,9 @@ Duplicate prevention is off until explicitly prepared from setup.
 
 Tell users only the plain contract:
 
-- it compares habit wording on this computer;
+- it compares each habit's situation and action separately on this computer;
+- both parts must align before a possible duplicate is shown;
+- normal maintenance compares approved habits; suggestions are checked against approved habits when proposed or activated, not globally against one another;
 - preparation downloads about 150 MB once;
 - the managed semantic-similarity model supports 50+ languages and works across languages;
 - no external app, account, key, service, or setup is required;
@@ -119,9 +121,9 @@ Tell users only the plain contract:
 
 Do not ask users to configure a provider, model, dimensions, API key, endpoint, Python, Ollama, LM Studio, port, or server. There is no hosted fallback.
 
-Only normalized `condition + "\n" + behavior` enters local inference. Raw examples, source refs, evidence summaries, residual JSON, paths, checksums, audit text, credentials, and tokens do not.
+Normalized condition and behavior wording enter local inference as two independent inputs. Raw examples, source refs, evidence summaries, residual JSON, paths, checksums, audit text, credentials, and tokens do not.
 
-The setup progress view shows plain preparation/comparison/save phases and supports Escape cancellation. Scans are bounded and atomic; a failed/cancelled scan must not claim partial durable results.
+The setup progress view shows plain preparation/comparison/save phases and supports Escape cancellation. Scans are bounded and atomic; a failed/cancelled scan must not claim partial durable results. An obsolete pending scoring-method relation is dismissed only by an explicit user-started scan, with audit. A candidate remains hidden until all pending relations involving it are resolved. Unchanged keep-separate decisions survive method upgrades; changed or corrupt proof returns to human review.
 
 Use **Resolve duplicate habits** to compare both complete wordings. Each outcome must state exactly which habit remains, which is archived/hidden, and whether evidence is combined. Merge, replacement, and archive actions require a second explicit confirmation; cancellation changes nothing. Never expose internal scores or thresholds in normal UI.
 
@@ -173,7 +175,9 @@ Maintainer invariants:
 - observations use tail manifest + fixed-width index;
 - locks use token/PID/hostname/time and ownership-checked release;
 - semantic activation revalidates in one SQLite writer transaction;
-- scan cap is 100 habits / 4,950 pairs;
+- duplicate scoring uses the lower of separate condition/behavior scores at 5,500 review / 7,000 strong basis points;
+- normal scans compare active/disabled approved habits only and never candidate-to-candidate pairs;
+- scan cap is 100 current habits / 4,950 pairs;
 - package Node floor is `>=22.19.0`;
 - Pi peers remain wildcard;
 - package install has no model-download lifecycle hook;

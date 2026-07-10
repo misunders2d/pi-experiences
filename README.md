@@ -127,7 +127,7 @@ pi update --extensions
 Pinned GitHub installation:
 
 ```bash
-pi install git:github.com/misunders2d/pi-experiences@v0.1.28
+pi install git:github.com/misunders2d/pi-experiences@v0.1.29
 ```
 
 Git refs remain pinned; they do not float to newer tags.
@@ -170,7 +170,9 @@ Potential duplicates are never silently merged. **Resolve duplicate habits** sho
 Duplicate prevention is optional and off by default.
 
 - Preparing it from `/experience setup` downloads about 150 MB once.
-- It compares normalized habit wording on this computer and works offline after preparation.
+- It compares each habit's situation and action separately on this computer and works offline after preparation.
+- Both parts must align before a possible duplicate is shown, reducing topical false matches.
+- Normal maintenance compares approved habits; suggestions are checked against approved habits when proposed or activated, not globally against one another.
 - The managed semantic model supports 50+ languages, including comparisons between languages.
 - It needs no account, API key, Python, external app, or model server.
 - Setup can remove the downloaded files.
@@ -268,13 +270,15 @@ Do not market an ever-growing `profile.md` as equivalent to Experience. The arch
 
 - Model: `Xenova/paraphrase-multilingual-MiniLM-L12-v2` at immutable revision `2c4055b12046f11709e9df2c122e59ffbdc2f900`, Apache-2.0.
 - Runtime: extension-managed INT8 ONNX inference through pinned `onnxruntime-web` and tokenizer dependencies; no hosted provider or fallback.
-- Dimensions: 384. Review threshold: 4,000 basis points. Strong threshold: 7,000 basis points. Matching is same-polarity only.
+- Dimensions: 384. Effective similarity is the lower of separate condition and behavior cosine scores. Review threshold: 5,500 basis points. Strong threshold: 7,000 basis points. Matching is same-polarity only.
 - Managed asset bytes: 148,618,669 before package/runtime overhead. User-facing copy rounds this to about 150 MB.
-- Only normalized `condition + "\n" + behavior` enters inference. Raw examples, source references, summaries, residual JSON, paths, checksums, audit text, credentials, and tokens are excluded.
+- Condition and behavior are normalized and embedded as two independent inputs. Raw examples, source references, summaries, residual JSON, paths, checksums, audit text, credentials, and tokens are excluded.
+- Cache input versions and relation scoring methods are independent. Legacy whole-habit cache rows remain only to prove unchanged historical keep-separate decisions; missing or corrupt proof fails closed to re-review.
 - Assets use private 0700 directories and 0600 files and are version, size, and SHA-256 checked before use.
 - Complete interrupted generations may recover offline; corrupt, partial, symlinked, obsolete, or abandoned generations are rejected or removed only under the owned model lock.
 - Inference runs in a bounded worker and unloads after 30 seconds idle or explicit scan completion.
-- Explicit scans cap at 100 current habits / 4,950 pairs, embed each habit once, support cancellation, revalidate their snapshot, and commit atomically.
+- Explicit scans cap at 100 current habits / 4,950 pairs, embed each selected condition and behavior once, support cancellation, revalidate all habit/relation state they may change, and commit atomically.
+- Normal scans compare active/disabled approved habits only. Candidate targets are checked against approved habits at proposal/activation; candidate-to-candidate semantic routing is excluded.
 
 ### Duplicate-resolution contract
 
@@ -284,6 +288,8 @@ Do not market an ever-growing `profile.md` as equivalent to Experience. The arch
 - Merge, supersede, and archive require a Back-first confirmation; keep-separate records a reason without archiving either habit.
 - The pending relation checksum and both displayed habit checksums are revalidated inside `BEGIN IMMEDIATE` before mutation.
 - A stale relation, changed habit, changed law, conflict, cancellation, or error rolls back without partial mutation.
+- User-started scans dismiss and audit obsolete pending scoring-method relations. A hidden candidate returns to normal or approved-waiting review only after every pending relation involving it is resolved.
+- Unchanged keep-separate decisions survive scoring/cache method upgrades; materially changed wording returns the pair to human review.
 - Internal IDs, checksums, similarity scores, thresholds, model metadata, and backend details stay out of normal UI.
 
 ### Bounded observations and privacy retention
@@ -414,6 +420,7 @@ npm pack --dry-run
 - bounded observation append/Analyze/rotation/retention;
 - real optional local-model integration when fixture paths are supplied;
 - semantic two-connection barriers and atomic scan failure/cancellation;
+- separate-field multilingual precision fixtures, approved-only scans, obsolete-method reconciliation, multi-relation candidate restoration, and keep-separate continuity;
 - stale lock recovery;
 - source/import bundling;
 - CLI generation drift.

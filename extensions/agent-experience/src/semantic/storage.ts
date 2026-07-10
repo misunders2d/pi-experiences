@@ -2,7 +2,7 @@ import { canonicalJson, checksumJson, sha256Hex } from "../storage/checksum.ts";
 import { normalizeUserId } from "../storage/private-root.ts";
 import { containsUnredactedSensitiveText, redactJson } from "../storage/redaction.ts";
 import { buildTypedStorageRow } from "../storage/sqlite.ts";
-import { blobToVector, embeddingInputChecksum, habitEmbeddingInputV1, SEMANTIC_EMBEDDING_INPUT_VERSION, semanticPairKey, vectorChecksum, vectorToBlob } from "./core.ts";
+import { blobToVector, embeddingInputChecksum, habitEmbeddingInputV1, SEMANTIC_DUPLICATE_METHOD_VERSION, SEMANTIC_EMBEDDING_INPUT_VERSION, semanticPairKey, semanticWordingIdentityChecksum, vectorChecksum, vectorToBlob } from "./core.ts";
 import type { CachedHabitEmbedding, SemanticHabitRow } from "./types.ts";
 
 function boundedJson(value: unknown, max = 24000): string {
@@ -23,6 +23,30 @@ function embeddingRowChecksum(row: { user_id: string; habit_id: string; embeddin
 
 function duplicateChecksum(row: { user_id: string; pair_key: string; habit_a: string; habit_b: string; canonical_habit_id: string | null; duplicate_habit_id: string | null; similarity_bp: number; threshold_bp: number; method: string; provider: string | null; model: string | null; dimensions: number | null; decision: string; data_json: string; created_at: string; updated_at: string; decided_at: string | null }): string {
 	return checksumJson({ table: "habit_duplicates", row });
+}
+
+function duplicateRowChecksumValid(row: any): boolean {
+	if (!row || typeof row !== "object") return false;
+	const expected = duplicateChecksum({
+		user_id: row.user_id,
+		pair_key: row.pair_key,
+		habit_a: row.habit_a,
+		habit_b: row.habit_b,
+		canonical_habit_id: row.canonical_habit_id ?? null,
+		duplicate_habit_id: row.duplicate_habit_id ?? null,
+		similarity_bp: Number(row.similarity_bp),
+		threshold_bp: Number(row.threshold_bp),
+		method: row.method,
+		provider: row.provider ?? null,
+		model: row.model ?? null,
+		dimensions: row.dimensions === null || row.dimensions === undefined ? null : Number(row.dimensions),
+		decision: row.decision,
+		data_json: row.data_json,
+		created_at: row.created_at,
+		updated_at: row.updated_at,
+		decided_at: row.decided_at ?? null,
+	});
+	return expected === row.checksum;
 }
 
 function auditChecksum(row: { user_id: string; duplicate_id: string | null; target_kind: string; target_id: string | null; action: string; before_json: string; after_json: string; data_json: string; created_at: string }): string {
@@ -49,9 +73,10 @@ export function getSemanticHabitRow(db: any, input: { userId: string; habitId: s
 	return row ? { ...row, polarity: Number(row.polarity) } : null;
 }
 
-export function getCachedHabitEmbedding(db: any, input: { userId: string; habitId: string; embeddingInputChecksum: string; habitRowChecksum: string; provider: string; model: string; dimensions: number }): CachedHabitEmbedding | null {
+export function getCachedHabitEmbedding(db: any, input: { userId: string; habitId: string; embeddingInputVersion?: string; embeddingInputChecksum: string; habitRowChecksum: string; provider: string; model: string; dimensions: number }): CachedHabitEmbedding | null {
+	const embeddingInputVersion = input.embeddingInputVersion || SEMANTIC_EMBEDDING_INPUT_VERSION;
 	const row = db.prepare(`SELECT * FROM habit_embeddings WHERE user_id = ? AND habit_id = ? AND embedding_input_version = ? AND embedding_input_checksum = ? AND habit_row_checksum = ? AND provider = ? AND model = ? AND dimensions = ?`)
-		.get(normalizeUserId(input.userId), input.habitId, SEMANTIC_EMBEDDING_INPUT_VERSION, input.embeddingInputChecksum, input.habitRowChecksum, input.provider, input.model, input.dimensions);
+		.get(normalizeUserId(input.userId), input.habitId, embeddingInputVersion, input.embeddingInputChecksum, input.habitRowChecksum, input.provider, input.model, input.dimensions);
 	if (!row) return null;
 	const expected = embeddingRowChecksum({ user_id: row.user_id, habit_id: row.habit_id, embedding_input_version: row.embedding_input_version, embedding_input_checksum: row.embedding_input_checksum, habit_row_checksum: row.habit_row_checksum, provider: row.provider, model: row.model, dimensions: Number(row.dimensions), vector_checksum: row.vector_checksum, created_at: row.created_at, updated_at: row.updated_at });
 	if (expected !== row.row_checksum) return null;
@@ -60,26 +85,46 @@ export function getCachedHabitEmbedding(db: any, input: { userId: string; habitI
 	return { ...row, dimensions: Number(row.dimensions), vector };
 }
 
-export function upsertCachedHabitEmbedding(db: any, input: { userId: string; habitId: string; embeddingInputChecksum: string; habitRowChecksum: string; provider: string; model: string; dimensions: number; vector: Float32Array; now: string }): CachedHabitEmbedding {
+export function upsertCachedHabitEmbedding(db: any, input: { userId: string; habitId: string; embeddingInputVersion?: string; embeddingInputChecksum: string; habitRowChecksum: string; provider: string; model: string; dimensions: number; vector: Float32Array; now: string }): CachedHabitEmbedding {
 	const userId = normalizeUserId(input.userId);
+	const embeddingInputVersion = input.embeddingInputVersion || SEMANTIC_EMBEDDING_INPUT_VERSION;
 	if (!Number.isInteger(input.dimensions) || input.dimensions < 1 || input.dimensions > 8192) throw new Error("Invalid embedding dimensions");
 	if (input.vector.length !== input.dimensions) throw new Error("Embedding vector dimension mismatch");
-	const existing = getCachedHabitEmbedding(db, input);
+	const existing = getCachedHabitEmbedding(db, { ...input, embeddingInputVersion });
 	const vector_checksum = vectorChecksum(input.vector);
 	const created_at = existing?.created_at || input.now;
-	const rowBase = { user_id: userId, habit_id: input.habitId, embedding_input_version: SEMANTIC_EMBEDDING_INPUT_VERSION, embedding_input_checksum: input.embeddingInputChecksum, habit_row_checksum: input.habitRowChecksum, provider: input.provider, model: input.model, dimensions: input.dimensions, vector_checksum, created_at, updated_at: input.now };
+	const rowBase = { user_id: userId, habit_id: input.habitId, embedding_input_version: embeddingInputVersion, embedding_input_checksum: input.embeddingInputChecksum, habit_row_checksum: input.habitRowChecksum, provider: input.provider, model: input.model, dimensions: input.dimensions, vector_checksum, created_at, updated_at: input.now };
 	const row_checksum = embeddingRowChecksum(rowBase);
 	db.prepare(`INSERT INTO habit_embeddings (user_id, habit_id, embedding_input_version, embedding_input_checksum, habit_row_checksum, provider, model, dimensions, vector_blob, vector_checksum, created_at, updated_at, row_checksum)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(user_id, habit_id, provider, model, dimensions, embedding_input_version) DO UPDATE SET embedding_input_checksum=excluded.embedding_input_checksum, habit_row_checksum=excluded.habit_row_checksum, vector_blob=excluded.vector_blob, vector_checksum=excluded.vector_checksum, created_at=excluded.created_at, updated_at=excluded.updated_at, row_checksum=excluded.row_checksum`)
-		.run(userId, input.habitId, SEMANTIC_EMBEDDING_INPUT_VERSION, input.embeddingInputChecksum, input.habitRowChecksum, input.provider, input.model, input.dimensions, vectorToBlob(input.vector), vector_checksum, created_at, input.now, row_checksum);
-	const saved = getCachedHabitEmbedding(db, input);
+		.run(userId, input.habitId, embeddingInputVersion, input.embeddingInputChecksum, input.habitRowChecksum, input.provider, input.model, input.dimensions, vectorToBlob(input.vector), vector_checksum, created_at, input.now, row_checksum);
+	const saved = getCachedHabitEmbedding(db, { ...input, embeddingInputVersion });
 	if (!saved) throw new Error("Embedding cache write failed");
 	return saved;
 }
 
 export function duplicateMethod(input: { provider: string; model: string; dimensions: number }): string {
-	return `embedding:${input.provider}:${input.model}:${input.dimensions}:${SEMANTIC_EMBEDDING_INPUT_VERSION}`;
+	return `embedding:${input.provider}:${input.model}:${input.dimensions}:${SEMANTIC_DUPLICATE_METHOD_VERSION}`;
+}
+
+export function currentDuplicateWordingHashes(db: any, input: { userId: string; habitId: string; otherHabitId: string }): Record<string, string> | null {
+	const userId = normalizeUserId(input.userId);
+	const pair = semanticPairKey(input.habitId, input.otherHabitId);
+	const habits = db.prepare("SELECT id, condition, behavior, polarity FROM habits WHERE user_id = ? AND id IN (?, ?) ORDER BY id").all(userId, pair.habitA, pair.habitB);
+	if (habits.length !== 2) return null;
+	return Object.fromEntries(habits.map((habit: any) => [habit.id, semanticWordingIdentityChecksum({ condition: habit.condition, behavior: habit.behavior, polarity: Number(habit.polarity) })]));
+}
+
+export function duplicateWordingHashesMatch(db: any, input: { userId: string; relation: any }): boolean {
+	if (!duplicateRowChecksumValid(input.relation)) return false;
+	const current = currentDuplicateWordingHashes(db, { userId: input.userId, habitId: input.relation.habit_a, otherHabitId: input.relation.habit_b });
+	if (!current) return false;
+	let data: any = {};
+	try { data = JSON.parse(input.relation.data_json || "{}"); } catch {}
+	const stored = data.wording_hashes;
+	if (!stored || typeof stored !== "object" || Array.isArray(stored)) return false;
+	return Object.keys(current).every((habitId) => typeof stored[habitId] === "string" && stored[habitId] === current[habitId]);
 }
 
 export function upsertHabitDuplicate(db: any, input: { userId: string; habitId: string; otherHabitId: string; canonicalHabitId: string; duplicateHabitId: string; similarityBp: number; thresholdBp: number; provider: string; model: string; dimensions: number; decision?: "pending" | "merged" | "superseded" | "kept_separate" | "archived_duplicate" | "dismissed_threshold_change"; data?: unknown; now: string }) {
@@ -90,7 +135,10 @@ export function upsertHabitDuplicate(db: any, input: { userId: string; habitId: 
 	const decision = input.decision || existing?.decision || "pending";
 	const created_at = existing?.created_at || input.now;
 	const decided_at = decision === "pending" ? null : input.now;
-	const data_json = boundedJson(input.data ?? {});
+	const wordingHashes = currentDuplicateWordingHashes(db, { userId, habitId: pair.habitA, otherHabitId: pair.habitB });
+	if (!wordingHashes) throw new Error("Duplicate habits changed; retry");
+	const suppliedData = typeof input.data === "object" && input.data && !Array.isArray(input.data) ? input.data as Record<string, unknown> : {};
+	const data_json = boundedJson({ ...suppliedData, wording_hashes: wordingHashes });
 	const base = { user_id: userId, pair_key: pair.pairKey, habit_a: pair.habitA, habit_b: pair.habitB, canonical_habit_id: input.canonicalHabitId, duplicate_habit_id: input.duplicateHabitId, similarity_bp: input.similarityBp, threshold_bp: input.thresholdBp, method, provider: input.provider, model: input.model, dimensions: input.dimensions, decision, data_json, created_at, updated_at: input.now, decided_at };
 	const checksum = duplicateChecksum(base);
 	const id = existing?.id || stableId("habit-dup", { user_id: userId, pair_key: pair.pairKey, method });
@@ -106,11 +154,14 @@ export function getKeptSeparateDuplicate(db: any, input: { userId: string; habit
 	const pair = semanticPairKey(input.habitId, input.otherHabitId);
 	const habits = db.prepare("SELECT id, condition, behavior FROM habits WHERE user_id = ? AND id IN (?, ?) ORDER BY id").all(userId, pair.habitA, pair.habitB);
 	if (habits.length !== 2) return undefined;
-	const inputChecksums = new Map(habits.map((habit: any) => [habit.id, embeddingInputChecksum(habitEmbeddingInputV1({ condition: habit.condition, behavior: habit.behavior }))]));
+	const legacyChecksums = new Map(habits.map((habit: any) => [habit.id, embeddingInputChecksum(habitEmbeddingInputV1({ condition: habit.condition, behavior: habit.behavior }), SEMANTIC_EMBEDDING_INPUT_VERSION)]));
 	const prior = db.prepare("SELECT * FROM habit_duplicates WHERE user_id = ? AND pair_key = ? AND decision = 'kept_separate' ORDER BY updated_at DESC, id").all(userId, pair.pairKey);
 	for (const relation of prior) {
-		const cached = db.prepare("SELECT habit_id, embedding_input_checksum FROM habit_embeddings WHERE user_id = ? AND habit_id IN (?, ?) AND provider = ? AND model = ? AND dimensions = ? AND embedding_input_version = ?").all(userId, pair.habitA, pair.habitB, relation.provider, relation.model, Number(relation.dimensions), SEMANTIC_EMBEDDING_INPUT_VERSION);
-		if (cached.length === 2 && cached.every((row: any) => inputChecksums.get(row.habit_id) === row.embedding_input_checksum)) return relation;
+		if (!duplicateRowChecksumValid(relation)) continue;
+		if (duplicateWordingHashesMatch(db, { userId, relation })) return relation;
+		if (!String(relation.method || "").endsWith(`:${SEMANTIC_EMBEDDING_INPUT_VERSION}`)) continue;
+		const cached = db.prepare("SELECT habit_id, embedding_input_checksum, habit_row_checksum FROM habit_embeddings WHERE user_id = ? AND habit_id IN (?, ?) AND provider = ? AND model = ? AND dimensions = ? AND embedding_input_version = ?").all(userId, pair.habitA, pair.habitB, relation.provider, relation.model, Number(relation.dimensions), SEMANTIC_EMBEDDING_INPUT_VERSION);
+		if (cached.length === 2 && cached.every((row: any) => legacyChecksums.get(row.habit_id) === row.embedding_input_checksum && !!getCachedHabitEmbedding(db, { userId, habitId: row.habit_id, embeddingInputVersion: SEMANTIC_EMBEDDING_INPUT_VERSION, embeddingInputChecksum: row.embedding_input_checksum, habitRowChecksum: row.habit_row_checksum, provider: relation.provider, model: relation.model, dimensions: Number(relation.dimensions) }))) return relation;
 	}
 	return undefined;
 }
@@ -133,11 +184,36 @@ function updateCandidateReviewStatus(db: any, input: { userId: string; habitId: 
 }
 
 export function markCandidateDuplicateResolution(db: any, input: { userId: string; habitId: string; relationId: string; data?: unknown; now: string }) {
-	return updateCandidateReviewStatus(db, { userId: input.userId, habitId: input.habitId, expectedReviewStatus: undefined, nextReviewStatus: "duplicate_resolution", data: { semantic_duplicate: { ...(typeof input.data === "object" && input.data && !Array.isArray(input.data) ? input.data as Record<string, unknown> : {}), duplicate_relation_id: input.relationId, routed_at: input.now } }, now: input.now });
+	const userId = normalizeUserId(input.userId);
+	const before = db.prepare("SELECT data_json FROM habits WHERE user_id = ? AND id = ? AND status = 'candidate'").get(userId, input.habitId);
+	if (!before) return { updated: false, before: null, after: null };
+	let existingData: any = {};
+	try { existingData = JSON.parse(before.data_json || "{}"); } catch {}
+	const existingSemantic = existingData.semantic_duplicate && typeof existingData.semantic_duplicate === "object" ? existingData.semantic_duplicate : {};
+	const previousReviewStatus = existingData.review_status === "duplicate_resolution"
+		? String(existingSemantic.previous_review_status || "candidate")
+		: String(existingData.review_status || "candidate");
+	return updateCandidateReviewStatus(db, { userId, habitId: input.habitId, expectedReviewStatus: undefined, nextReviewStatus: "duplicate_resolution", data: { semantic_duplicate: { ...existingSemantic, ...(typeof input.data === "object" && input.data && !Array.isArray(input.data) ? input.data as Record<string, unknown> : {}), previous_review_status: previousReviewStatus, duplicate_relation_id: input.relationId, routed_at: input.now } }, now: input.now });
 }
 
 export function restoreCandidateDuplicateResolution(db: any, input: { userId: string; habitId: string; relationId: string; reviewStatus: string; data?: unknown; now: string }) {
-	return updateCandidateReviewStatus(db, { userId: input.userId, habitId: input.habitId, expectedReviewStatus: "duplicate_resolution", nextReviewStatus: input.reviewStatus, data: { semantic_duplicate_resolution: { ...(typeof input.data === "object" && input.data && !Array.isArray(input.data) ? input.data as Record<string, unknown> : {}), duplicate_relation_id: input.relationId, restored_at: input.now } }, now: input.now });
+	const userId = normalizeUserId(input.userId);
+	const before = db.prepare("SELECT * FROM habits WHERE user_id = ? AND id = ? AND status = 'candidate'").get(userId, input.habitId);
+	if (!before) return { updated: false, before: null, after: null, pendingRelations: 0 };
+	let existingData: any = {};
+	try { existingData = JSON.parse(before.data_json || "{}"); } catch {}
+	if (existingData.review_status !== "duplicate_resolution") return { updated: false, before, after: before, pendingRelations: 0 };
+	const pendingRelations = Number(db.prepare("SELECT COUNT(*) AS count FROM habit_duplicates WHERE user_id = ? AND decision = 'pending' AND (habit_a = ? OR habit_b = ?)").get(userId, input.habitId, input.habitId)?.count || 0);
+	if (pendingRelations > 0) return { updated: false, before, after: before, pendingRelations };
+	const approved = !!existingData.approved_identity;
+	const previous = String(existingData.semantic_duplicate?.previous_review_status || "candidate");
+	const allowedPrevious = new Set(["candidate", "collecting_evidence", "kept_separate", "approved_pending_eligibility", "approved_pending_conflict", "approved_pending_law_blocked"]);
+	const nextReviewStatus = approved
+		? (previous.startsWith("approved_pending_") ? previous : "approved_pending_eligibility")
+		: input.reviewStatus === "kept_separate" ? "kept_separate"
+		: allowedPrevious.has(previous) ? previous
+		: "candidate";
+	return { ...updateCandidateReviewStatus(db, { userId, habitId: input.habitId, expectedReviewStatus: "duplicate_resolution", nextReviewStatus, data: { ...(approved ? { approved_pending_reason: "duplicate_resolved" } : {}), semantic_duplicate_resolution: { ...(typeof input.data === "object" && input.data && !Array.isArray(input.data) ? input.data as Record<string, unknown> : {}), duplicate_relation_id: input.relationId, restored_at: input.now } }, now: input.now }), pendingRelations: 0 };
 }
 
 export function listHabitDuplicates(db: any, input: { userId: string; decision?: string }) {
