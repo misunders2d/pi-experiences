@@ -1,0 +1,151 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="800" viewBox="0 0 1400 800" role="img" aria-labelledby="title desc">
+  <title id="title">Pi Experiences: skills, memory, and habits</title>
+  <desc id="desc">An infographic showing three distinct layers for a Pi coding agent. Skills provide procedures, memory preserves facts and context, and human-reviewed habits improve how the agent works with you. A five-step core loop shows observe, detect, propose, review, and apply; ongoing controls remain available afterward.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#07111f"/>
+      <stop offset="0.55" stop-color="#10233b"/>
+      <stop offset="1" stop-color="#102a2d"/>
+    </linearGradient>
+    <linearGradient id="habit" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#123d3b"/>
+      <stop offset="1" stop-color="#173047"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="12" stdDeviation="16" flood-color="#000814" flood-opacity="0.42"/>
+    </filter>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="0" stdDeviation="10" flood-color="#36d399" flood-opacity="0.25"/>
+    </filter>
+    <style>
+      .font { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .eyebrow { font-size: 19px; font-weight: 750; letter-spacing: 4px; }
+      .title { font-size: 43px; font-weight: 780; letter-spacing: -1.2px; }
+      .subtitle { font-size: 21px; font-weight: 450; }
+      .card-label { font-size: 17px; font-weight: 760; letter-spacing: 2px; }
+      .card-title { font-size: 31px; font-weight: 760; }
+      .card-question { font-size: 21px; font-weight: 610; }
+      .card-copy { font-size: 17px; font-weight: 430; }
+      .flow-label { font-size: 16px; font-weight: 760; letter-spacing: 2px; }
+      .step-number { font-size: 14px; font-weight: 800; }
+      .step-title { font-size: 20px; font-weight: 720; }
+      .step-copy { font-size: 14px; font-weight: 450; }
+      .pill { font-size: 14px; font-weight: 760; letter-spacing: 1px; }
+    </style>
+  </defs>
+
+  <rect width="1400" height="800" rx="28" fill="url(#bg)"/>
+  <circle cx="1280" cy="72" r="180" fill="#38bdf8" opacity="0.055"/>
+  <circle cx="1180" cy="680" r="260" fill="#34d399" opacity="0.045"/>
+  <circle cx="70" cy="720" r="190" fill="#8b5cf6" opacity="0.045"/>
+
+  <g class="font">
+    <g transform="translate(62 52)">
+      <rect width="49" height="49" rx="14" fill="#34d399"/>
+      <text x="24.5" y="33" text-anchor="middle" font-size="24" font-weight="850" fill="#06251f">π</text>
+      <text x="68" y="20" class="eyebrow" fill="#6ee7b7">PI EXPERIENCES</text>
+      <text x="68" y="57" class="title" fill="#f8fafc">Give your coding agent habits—not just instructions.</text>
+      <text x="68" y="90" class="subtitle" fill="#b9c8d8">A third, human-reviewed layer for how Pi learns to work with you.</text>
+    </g>
+
+    <g filter="url(#shadow)">
+      <rect x="62" y="182" width="398" height="244" rx="24" fill="#141c38" stroke="#8b5cf6" stroke-opacity="0.62" stroke-width="2"/>
+      <rect x="86" y="207" width="123" height="31" rx="15.5" fill="#8b5cf6" fill-opacity="0.18"/>
+      <text x="147.5" y="228" text-anchor="middle" class="card-label" fill="#c4b5fd">SKILLS</text>
+      <text x="87" y="278" class="card-title" fill="#f8fafc">Procedures</text>
+      <text x="87" y="316" class="card-question" fill="#ddd6fe">“What should I do?”</text>
+      <text x="87" y="356" class="card-copy" fill="#afbdd0">Deliberate playbooks, tools,</text>
+      <text x="87" y="382" class="card-copy" fill="#afbdd0">and workflows you install.</text>
+
+      <rect x="501" y="182" width="398" height="244" rx="24" fill="#10283c" stroke="#38bdf8" stroke-opacity="0.58" stroke-width="2"/>
+      <rect x="525" y="207" width="137" height="31" rx="15.5" fill="#38bdf8" fill-opacity="0.16"/>
+      <text x="593.5" y="228" text-anchor="middle" class="card-label" fill="#7dd3fc">MEMORY</text>
+      <text x="526" y="278" class="card-title" fill="#f8fafc">Facts &amp; context</text>
+      <text x="526" y="316" class="card-question" fill="#bae6fd">“What should I know?”</text>
+      <text x="526" y="356" class="card-copy" fill="#afbdd0">Durable knowledge, decisions,</text>
+      <text x="526" y="382" class="card-copy" fill="#afbdd0">names, and project context.</text>
+
+      <g filter="url(#glow)">
+        <rect x="940" y="182" width="398" height="244" rx="24" fill="url(#habit)" stroke="#34d399" stroke-width="3"/>
+      </g>
+      <rect x="964" y="207" width="131" height="31" rx="15.5" fill="#34d399" fill-opacity="0.18"/>
+      <text x="1029.5" y="228" text-anchor="middle" class="card-label" fill="#6ee7b7">HABITS</text>
+      <text x="965" y="278" class="card-title" fill="#f8fafc">Behavior</text>
+      <text x="965" y="316" class="card-question" fill="#a7f3d0">“How should I work with you?”</text>
+      <text x="965" y="356" class="card-copy" fill="#c4d9d3">Patterns inferred from repetition,</text>
+      <text x="965" y="382" class="card-copy" fill="#c4d9d3">then reviewed and approved.</text>
+    </g>
+
+    <text x="62" y="478" class="flow-label" fill="#6ee7b7">THE REVIEW-FIRST EXPERIENCE LOOP</text>
+    <text x="1338" y="478" text-anchor="end" class="card-copy" fill="#9fb0c3">No silent self-rewriting</text>
+
+    <g>
+      <g transform="translate(62 510)">
+        <rect width="224" height="116" rx="20" fill="#101d30" stroke="#33445b"/>
+        <circle cx="28" cy="27" r="15" fill="#8b5cf6"/>
+        <text x="28" y="32" text-anchor="middle" class="step-number" fill="#ffffff">1</text>
+        <text x="52" y="33" class="step-title" fill="#f8fafc">Observe</text>
+        <text x="22" y="72" class="step-copy" fill="#afbdd0">Opt-in, redacted examples</text>
+        <text x="22" y="94" class="step-copy" fill="#afbdd0">from normal work</text>
+      </g>
+      <path d="M294 568h31" stroke="#53677f" stroke-width="3" stroke-linecap="round"/>
+      <path d="m318 561 9 7-9 7" fill="none" stroke="#53677f" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+
+      <g transform="translate(335 510)">
+        <rect width="224" height="116" rx="20" fill="#101d30" stroke="#33445b"/>
+        <circle cx="28" cy="27" r="15" fill="#64748b"/>
+        <text x="28" y="32" text-anchor="middle" class="step-number" fill="#ffffff">2</text>
+        <text x="52" y="33" class="step-title" fill="#f8fafc">Detect</text>
+        <text x="22" y="72" class="step-copy" fill="#afbdd0">Repeated behavior across</text>
+        <text x="22" y="94" class="step-copy" fill="#afbdd0">tasks and time</text>
+      </g>
+      <path d="M567 568h31" stroke="#53677f" stroke-width="3" stroke-linecap="round"/>
+      <path d="m591 561 9 7-9 7" fill="none" stroke="#53677f" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+
+      <g transform="translate(608 510)">
+        <rect width="224" height="116" rx="20" fill="#101d30" stroke="#33445b"/>
+        <circle cx="28" cy="27" r="15" fill="#38bdf8"/>
+        <text x="28" y="32" text-anchor="middle" class="step-number" fill="#06283a">3</text>
+        <text x="52" y="33" class="step-title" fill="#f8fafc">Propose</text>
+        <text x="22" y="72" class="step-copy" fill="#afbdd0">Candidate “When → Do”</text>
+        <text x="22" y="94" class="step-copy" fill="#afbdd0">habit, still inactive</text>
+      </g>
+      <path d="M840 568h31" stroke="#53677f" stroke-width="3" stroke-linecap="round"/>
+      <path d="m864 561 9 7-9 7" fill="none" stroke="#53677f" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+
+      <g transform="translate(881 510)">
+        <rect width="224" height="116" rx="20" fill="#12303a" stroke="#34d399" stroke-opacity="0.65"/>
+        <circle cx="28" cy="27" r="15" fill="#34d399"/>
+        <text x="28" y="32" text-anchor="middle" class="step-number" fill="#06251f">4</text>
+        <text x="52" y="33" class="step-title" fill="#f8fafc">Review</text>
+        <text x="22" y="72" class="step-copy" fill="#bce7da">Human accepts or rejects</text>
+        <text x="22" y="94" class="step-copy" fill="#bce7da">every new wording</text>
+      </g>
+      <path d="M1113 568h31" stroke="#53677f" stroke-width="3" stroke-linecap="round"/>
+      <path d="m1137 561 9 7-9 7" fill="none" stroke="#53677f" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+
+      <g transform="translate(1154 510)">
+        <rect width="184" height="116" rx="20" fill="#12303a" stroke="#34d399" stroke-opacity="0.65"/>
+        <circle cx="28" cy="27" r="15" fill="#34d399"/>
+        <text x="28" y="32" text-anchor="middle" class="step-number" fill="#06251f">5</text>
+        <text x="52" y="33" class="step-title" fill="#f8fafc">Apply</text>
+        <text x="22" y="72" class="step-copy" fill="#bce7da">Small, relevant</text>
+        <text x="22" y="94" class="step-copy" fill="#bce7da">guidance when enabled</text>
+      </g>
+    </g>
+
+    <g transform="translate(62 675)">
+      <rect width="119" height="35" rx="17.5" fill="#18283d" stroke="#41546c"/>
+      <text x="59.5" y="23" text-anchor="middle" class="pill" fill="#cbd5e1">OPT-IN</text>
+      <rect x="133" width="194" height="35" rx="17.5" fill="#16343b" stroke="#2a665d"/>
+      <text x="230" y="23" text-anchor="middle" class="pill" fill="#a7f3d0">HUMAN-REVIEWED</text>
+      <rect x="341" width="155" height="35" rx="17.5" fill="#152b3d" stroke="#2f5d76"/>
+      <text x="418.5" y="23" text-anchor="middle" class="pill" fill="#bae6fd">LOCAL-FIRST</text>
+      <rect x="510" width="150" height="35" rx="17.5" fill="#28203f" stroke="#5f4c8a"/>
+      <text x="585" y="23" text-anchor="middle" class="pill" fill="#ddd6fe">REVERSIBLE</text>
+    </g>
+
+    <text x="1338" y="702" text-anchor="end" font-size="18" font-weight="620" fill="#c9d6e3">Skills tell Pi what to do. Memory tells Pi what to know.</text>
+    <text x="1338" y="730" text-anchor="end" font-size="21" font-weight="780" fill="#6ee7b7">Habits teach Pi how to work with you.</text>
+  </g>
+</svg>

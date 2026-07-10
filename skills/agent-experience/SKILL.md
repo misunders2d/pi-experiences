@@ -31,12 +31,24 @@ This is the complete normal-user surface. Do not require typed setup/review subc
 
 If the panel does not render, tell the user to restart Pi so the latest extension loads, then run `/experience setup` again.
 
+## Documentation and discovery contract
+
+The root `README.md` must always do three jobs:
+
+1. **Explain and market the idea:** lead with the category-defining distinction—skills are procedures, memory is facts/context, Experience is human-reviewed behavioral habits. Use discoverable Pi/coding-agent language, an accessible infographic, real-life habit examples, the review-first loop, and a clear explanation of why an ever-growing `profile.md` is not a scalable habit engine.
+2. **Guide humans:** keep setup, choices, privacy, provider boundaries, control, and safety clear in simple visible language. Do not bury the one-command `/experience setup` path under implementation detail.
+3. **Guide agents and maintainers:** retain the detailed implementation contract inside a collapsed `<details>` block whose summary begins **For agents and maintainers**.
+
+Never reduce the README to a dry safety specification, and never delete the technical block while simplifying normal-user documentation. A small profile file may hold stable declared identity/preferences; do not market it as equivalent to structured, selectively injected habits with evidence, approval, freshness, status, and audit.
+
+Update all layers when behavior changes. The technical layer must retain package/runtime contracts, hard invariants, context-selection/profile trade-offs, capture/storage semantics, local embedding details, duplicate-resolution atomicity, law/selector caveats, validation, and release discipline. Package description, discovery keywords, and Pi gallery artwork must preserve the same product category. `npm run check:source` intentionally fails if the product story, either audience layer, gallery assets, or collapsed structure disappears.
+
 ## Normal workflow
 
 1. Open `/experience setup`.
 2. Turn on **Save chat examples locally**.
 3. Use Pi normally until behavior repeats.
-4. Choose **Choose model for habit learning**.
+4. Select **Choose model for habit learning**.
 5. Choose **Analyze saved examples now**.
 6. Open **Review suggested habits** and explicitly Approve or Reject.
 7. Open **Review approved habits** to inspect, disable, re-enable, archive, or recheck a waiting approval.

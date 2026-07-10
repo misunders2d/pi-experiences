@@ -1,7 +1,7 @@
 {
   "name": "pi-experiences",
-  "version": "0.1.27",
-  "description": "A Pi extension package for capturing and reviewing behavioral experience patterns separately from skills and memory.",
+  "version": "0.1.28",
+  "description": "Human-reviewed habits for Pi coding agents—a local-first behavioral learning layer alongside skills and memory.",
   "license": "MIT",
   "type": "module",
   "engines": {
@@ -10,8 +10,21 @@
   "keywords": [
     "pi-package",
     "pi-extension",
+    "pi-coding-agent",
+    "ai-agent",
+    "coding-agent",
     "agent-experience",
+    "agent-habits",
     "agent-memory",
+    "agent-profile",
+    "agent-skills",
+    "behavioral-learning",
+    "context-management",
+    "persistent-learning",
+    "human-in-the-loop",
+    "local-first",
+    "privacy-first",
+    "token-efficiency",
     "personalization",
     "habits"
   ],
@@ -54,7 +67,8 @@
     ],
     "skills": [
       "./skills"
-    ]
+    ],
+    "image": "https://raw.githubusercontent.com/misunders2d/pi-experiences/v0.1.28/docs/images/pi-experiences-habits.png"
   },
   "files": [
     "bin/",
@@ -62,6 +76,7 @@
     "extensions/",
     "runtime/",
     "skills/",
+    "docs/",
     "scripts/",
     "README.md",
     "LICENSE",

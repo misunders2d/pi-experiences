@@ -15,11 +15,39 @@ assert.match(fileURLToPath(resolveLocalEmbeddingWorkerUrl()),/runtime\/agent-exp
 const packageJson=JSON.parse(await readFile(join(root,'package.json'),'utf8'));
 assert.equal(packageJson.engines.node,'>=22.19.0','package Node floor must match locked Pi peers');
 assert.ok(packageJson.files.includes('runtime/'),'packed package must include local worker/vendor runtime');
+assert.ok(packageJson.files.includes('docs/'),'packed package must include README/gallery artwork');
+assert.equal(packageJson.description,'Human-reviewed habits for Pi coding agents—a local-first behavioral learning layer alongside skills and memory.','package description must preserve the discoverable habits category');
+for(const keyword of ['pi-package','pi-coding-agent','coding-agent','agent-habits','agent-memory','agent-profile','agent-skills','behavioral-learning','context-management','human-in-the-loop','local-first','token-efficiency']){
+  assert.ok(packageJson.keywords.includes(keyword),`package discovery keyword missing: ${keyword}`);
+}
+assert.equal(packageJson.pi?.image,`https://raw.githubusercontent.com/misunders2d/pi-experiences/v${packageJson.version}/docs/images/pi-experiences-habits.png`,'Pi gallery image must point at the immutable matching-release preview asset');
 assert.equal(packageJson.scripts?.install,undefined);
 assert.equal(packageJson.scripts?.postinstall,undefined);
 assert.equal(packageJson.scripts?.prepare,undefined,'package installation must never download local model assets');
 const configText=formatAgentExperienceConfig(DEFAULT_AGENT_EXPERIENCE_CONFIG);
 assert.doesNotMatch(configText,/embedding_(provider|model|dimensions|review_threshold|strong_threshold|timeout|openai)/i);
+
+const readme=await readFile(join(root,'README.md'),'utf8');
+const technicalSummary='<summary><strong>For agents and maintainers: technical contract, caveats, and release discipline</strong></summary>';
+const technicalSummaryIndex=readme.indexOf(technicalSummary);
+assert.notEqual(technicalSummaryIndex,-1,'README must preserve the collapsed agent/maintainer technical contract');
+const technicalOpenIndex=readme.lastIndexOf('<details>',technicalSummaryIndex);
+const technicalCloseIndex=readme.indexOf('</details>',technicalSummaryIndex);
+assert.notEqual(technicalOpenIndex,-1,'agent/maintainer technical contract must be inside <details>');
+assert.notEqual(technicalCloseIndex,-1,'agent/maintainer technical contract must close its <details> block');
+assert.equal(readme.slice(technicalOpenIndex,technicalSummaryIndex).trim(),'<details>','agent/maintainer technical contract must be collapsed by default');
+for(const marker of ['# Pi Experiences — habits for a coding agent that learns how you work','## The missing layer in AI agent improvement','## Why not put every preference in `profile.md`?','## Real-life habits Pi can learn','## How the review-first learning loop works','## Safety model','## Normal workflow','## Local duplicate prevention','## Privacy in plain language','## Frequently asked questions']){
+  const index=readme.indexOf(marker);
+  assert.ok(index>=0&&index<technicalOpenIndex,`README human-first product section missing before technical contract: ${marker}`);
+}
+for(const phrase of ['Pi coding agent','Agent skill','Agent memory','Experience habit','human-in-the-loop behavioral learning','Profiles describe the person; experience manages reviewed habits','selected Pi model/provider']){
+  assert.match(readme.slice(0,technicalOpenIndex),new RegExp(phrase,'i'),`README discovery/product story missing: ${phrase}`);
+}
+assert.match(readme.slice(0,technicalOpenIndex),/!\[Infographic: skills give a Pi coding agent procedures, memory preserves facts, and human-reviewed habits improve how it works with you\]\(\.\/docs\/images\/pi-experiences-habits\.svg\)/,'README must show the local habits/skills/memory infographic');
+for(const marker of ['### Package contract','### Hard invariants','### Why `profile.md` is not the habit store','### Local embedding contract','### Duplicate-resolution contract','### Bounded observations and privacy retention','### Law-check caveat','### Development and validation','### Release discipline']){
+  const index=readme.indexOf(marker,technicalSummaryIndex);
+  assert.ok(index>technicalSummaryIndex&&index<technicalCloseIndex,`README technical contract missing: ${marker}`);
+}
 
 const forbidden=/OPENAI_API_KEY|AX_OPENAI_EMBEDDING|openai-compatible embedding|api\.openai\.com/i;
 async function sourceFiles(directory){
@@ -32,6 +60,15 @@ async function sourceFiles(directory){
   return out;
 }
 for(const path of await sourceFiles(join(root,'extensions')))assert.doesNotMatch(await readFile(path,'utf8'),forbidden,`hosted embedding behavior must be absent: ${path}`);
+const heroSvg=await readFile(join(root,'docs/images/pi-experiences-habits.svg'),'utf8');
+assert.match(heroSvg,/<title[^>]*>Pi Experiences: skills, memory, and habits<\/title>/,'README SVG needs an accessible title');
+assert.match(heroSvg,/<desc[^>]*>[^<]*human-reviewed habits[^<]*<\/desc>/i,'README SVG needs an accessible description of habits');
+assert.doesNotMatch(heroSvg,/<script\b|(?:href|src)=["']https?:/i,'README SVG must remain inert and self-contained');
+const galleryPng=await readFile(join(root,'docs/images/pi-experiences-habits.png'));
+assert.deepEqual([...galleryPng.subarray(0,8)],[137,80,78,71,13,10,26,10],'Pi gallery preview must be a valid PNG');
+assert.equal(galleryPng.readUInt32BE(16),1400,'Pi gallery preview width drifted');
+assert.equal(galleryPng.readUInt32BE(20),800,'Pi gallery preview height drifted');
+assert.ok(galleryPng.byteLength<=500_000,'Pi gallery preview should remain lightweight');
 const expectedGlue={
   'ort.node.min.mjs':'e89f5e9feb40384ab2bd1f95ade074e3de8ce3b64485bd03fb79d2cde2a620f1',
   'ort-wasm-simd-threaded.mjs':'0a1e718d99c41b22c21f2520ff4f9e883a6b5533856e398d21816ee8eb8185d3',
