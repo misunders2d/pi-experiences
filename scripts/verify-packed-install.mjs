@@ -21,8 +21,8 @@ assert.equal(pkg.dependencies?.typebox,'1.1.38');
 assert.equal(pkg.scripts?.install,undefined);assert.equal(pkg.scripts?.postinstall,undefined);assert.equal(pkg.scripts?.prepare,undefined);
 const required=['dist/experience-consolidate.mjs','extensions/agent-experience/index.ts','extensions/agent-experience/src/conversation.ts','extensions/agent-experience/src/conversational-tools.ts','extensions/agent-experience/src/steering-note.ts','skills/agent-experience/SKILL.md','scripts/test-agent-experience-phase16-conversation.mjs','scripts/seed-steering-tui-smoke.mjs','scripts/test-steering-tui-smoke.py','runtime/agent-experience/local-embedding-worker.mjs','runtime/vendor/onnxruntime-web/ort.node.min.mjs','runtime/vendor/onnxruntime-web/ort-wasm-simd-threaded.mjs','THIRD_PARTY_NOTICES.md'];
 for(const relative of required)await access(join(packageRoot,relative));
-async function files(directory){const out=[];for(const entry of await readdir(directory,{withFileTypes:true})){const p=join(directory,entry.name);if(entry.isDirectory())out.push(...await files(p));else out.push(p);}return out;}
-const packedFiles=await files(packageRoot);
+async function files(directory,{skipNodeModules=false}={}){const out=[];for(const entry of await readdir(directory,{withFileTypes:true})){if(skipNodeModules&&entry.isDirectory()&&entry.name==='node_modules')continue;const p=join(directory,entry.name);if(entry.isDirectory())out.push(...await files(p,{skipNodeModules}));else out.push(p);}return out;}
+const packedFiles=await files(packageRoot,{skipNodeModules:true});
 assert.ok(!packedFiles.some((path)=>/model_int8\.onnx|ort-wasm-simd-threaded\.wasm|observations\.jsonl|ledger\.sqlite|\.map$/.test(path)),'tarball must not contain model assets, private state, or source maps');
 // Native Node intentionally refuses type stripping below node_modules. Pi owns real
 // installed extension loading (validated separately by the PTY smoke). For the
@@ -32,6 +32,9 @@ const runtimeRoot=await mkdtemp(join(tmpdir(),'pi-experiences-packed-runtime-'))
 process.once('exit',()=>rmSync(runtimeRoot,{recursive:true,force:true}));
 const runtimePackage=join(runtimeRoot,'pi-experiences');
 await cp(packageRoot,runtimePackage,{recursive:true});
+// Shared npm roots can place conflict-resolved dependencies inside the package.
+// They are install artifacts, not packed bytes; use the authoritative install root.
+await rm(join(runtimePackage,'node_modules'),{recursive:true,force:true});
 await symlink(dirname(packageRoot),join(runtimePackage,'node_modules'),'dir');
 const adapterModule=await import(pathToFileURL(join(runtimePackage,'extensions/agent-experience/src/semantic/local-adapter.ts')).href);
 const workerUrl=adapterModule.resolveLocalEmbeddingWorkerUrl();
@@ -49,8 +52,8 @@ const {loadSkills}=await import(pathToFileURL(loaderPath).href);
 const loaded=loadSkills({cwd:process.cwd(),agentDir:join(tmpdir(),'pi-experiences-no-agent-defaults'),skillPaths:[join(packageRoot,'skills/agent-experience/SKILL.md')],includeDefaults:false});
 assert.equal(loaded.diagnostics.length,0,JSON.stringify(loaded.diagnostics));
 assert.deepEqual(loaded.skills.map((skill)=>skill.name),['agent-experience']);
-async function bytes(directory){let total=0;for(const path of await files(directory))total+=(await stat(path)).size;return total;}
-let installedRuntimeBytes=await bytes(packageRoot);
+async function bytes(directory,{skipNodeModules=false}={}){let total=0;for(const path of await files(directory,{skipNodeModules}))total+=(await stat(path)).size;return total;}
+let installedRuntimeBytes=await bytes(packageRoot,{skipNodeModules:true});
 for(const dependency of ['@huggingface/tokenizers','onnxruntime-common','typebox']){
   const path=join(dirname(packageRoot),dependency);
   await access(path);
