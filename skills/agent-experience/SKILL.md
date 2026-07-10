@@ -97,7 +97,8 @@ Duplicate prevention is off until explicitly prepared from setup.
 Tell users only the plain contract:
 
 - it compares habit wording on this computer;
-- preparation downloads about 149 MB once (under the 300 MB cap);
+- preparation downloads about 150 MB once;
+- the managed semantic-similarity model supports 50+ languages and works across languages;
 - no external app, account, key, service, or setup is required;
 - it works offline after preparation;
 - setup can remove the local files;
@@ -110,7 +111,7 @@ Only normalized `condition + "\n" + behavior` enters local inference. Raw exampl
 
 The setup progress view shows plain preparation/comparison/save phases and supports Escape cancellation. Scans are bounded and atomic; a failed/cancelled scan must not claim partial durable results.
 
-Use **Resolve duplicate habits** for explicit merge evidence, supersede, keep separate, or archive/hide decisions. Never expose internal scores or thresholds in normal UI.
+Use **Resolve duplicate habits** to compare both complete wordings. Each outcome must state exactly which habit remains, which is archived/hidden, and whether evidence is combined. Merge, replacement, and archive actions require a second explicit confirmation; cancellation changes nothing. Never expose internal scores or thresholds in normal UI.
 
 ## Source retention
 

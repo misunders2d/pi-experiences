@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initExperienceStorage, insertStorageRecord } from '../extensions/agent-experience/src/storage/sqlite.ts';
@@ -10,7 +10,7 @@ import { getCachedHabitEmbedding, listHabitDuplicates } from '../extensions/agen
 import { checkSemanticActivationGate, reconcileSemanticDuplicateThresholds, sanitizePolicy, scanAndBackfillSemanticDuplicates } from '../extensions/agent-experience/src/semantic/service.ts';
 import { consolidateProposalBatch } from '../extensions/agent-experience/src/consolidate/commit.ts';
 import { runConsolidationOnce } from '../extensions/agent-experience/src/consolidate/runner.ts';
-import { acceptCandidateHabit, archiveHideHabit, lawSnapshotForTest, listApprovedHabitsForSetup, listPendingReviewItems, resolveHabitDuplicate } from '../extensions/agent-experience/src/review.ts';
+import { acceptCandidateHabit, archiveHideHabit, lawSnapshotForTest, listApprovedHabitsForSetup, listPendingReviewItems, planHabitDuplicateResolution, readConfiguredLawSnapshot, resolveHabitDuplicate } from '../extensions/agent-experience/src/review.ts';
 import { promoteApprovedPendingCandidates, selectActiveSelectorSnapshot } from '../extensions/agent-experience/src/selector.ts';
 
 for (const file of ['core.ts', 'service.ts', 'storage.ts', 'types.ts']) {
@@ -161,6 +161,10 @@ try {
     insertStorageRecord(storage6.db, 'habits', { id: 'new-candidate-3', userId: 'owner', data: habitData({ ...habit3 }), now: '2026-07-09T04:11:00.000Z' });
     const scan = await scanAndBackfillSemanticDuplicates(storage6.db, { userId: 'owner', policy, provider, now: '2026-07-09T04:12:00.000Z' });
     assert.equal(listPendingReviewItems(storage6.db, { userId: 'owner' }).items.some((item) => item.id === 'new-candidate-3'), false, 'scan/backfill duplicate candidate must leave normal review until resolved');
+    const supersedeHabits = storage6.db.prepare("SELECT * FROM habits WHERE id IN ('old-active-2','new-candidate-3') ORDER BY id").all();
+    const supersedePlan = planHabitDuplicateResolution(scan.relations[0], supersedeHabits, 'supersede');
+    assert.equal(supersedePlan.survivor.id, 'new-candidate-3', 'supersede preview must identify the exact wording that resolver retains');
+    assert.equal(supersedePlan.other.id, 'old-active-2', 'supersede preview must identify the exact approved habit that resolver archives');
     const supersede = resolveHabitDuplicate(storage6.db, { userId: 'owner', duplicateId: scan.relations[0].id, checksum: scan.relations[0].checksum, action: 'supersede', reason: 'new wording is clearer', law: lawSnapshotForTest('semantic supersede law'), now: '2026-07-09T04:13:00.000Z' });
     assert.equal(supersede.decision, 'superseded');
     assert.equal(storage6.db.prepare("SELECT status FROM habits WHERE id = 'old-active-2'").get().status, 'archived', 'supersede archives old active habit');
@@ -180,17 +184,59 @@ try {
     storage7.db.close();
   }
 
+  const lawRoot = await ensurePrivateRoot(join(temp, 'state-law-freshness'));
+  const lawStorage = await initExperienceStorage(lawRoot, { allowInit: true, userId: 'owner' });
+  try {
+    insertStorageRecord(lawStorage.db, 'habits', { id: 'law-old-active', userId: 'owner', data: habitData({ status: 'active', active: true, ...habit2 }), now: '2026-07-09T04:25:00.000Z' });
+    insertStorageRecord(lawStorage.db, 'habits', { id: 'law-new-candidate', userId: 'owner', data: habitData({ ...habit3 }), now: '2026-07-09T04:26:00.000Z' });
+    const lawScan = await scanAndBackfillSemanticDuplicates(lawStorage.db, { userId: 'owner', policy, provider, now: '2026-07-09T04:27:00.000Z' });
+    const lawFile = join(lawRoot, 'law.md');
+    await writeFile(lawFile, 'original safety instructions', { mode: 0o600 });
+    const staleLaw = await readConfiguredLawSnapshot(lawRoot, { law_path: 'law.md' });
+    await writeFile(lawFile, 'changed safety instructions', { mode: 0o600 });
+    assert.throws(() => resolveHabitDuplicate(lawStorage.db, { userId: 'owner', duplicateId: lawScan.relations[0].id, checksum: lawScan.relations[0].checksum, action: 'supersede', reason: 'new wording is clearer', law: staleLaw, now: '2026-07-09T04:28:00.000Z' }), /safety file changed/, 'supersede must synchronously revalidate law freshness inside its writer transaction');
+    assert.equal(lawStorage.db.prepare("SELECT status FROM habits WHERE id = 'law-old-active'").get().status, 'active', 'stale-law rejection must leave the approved habit unchanged');
+    assert.equal(lawStorage.db.prepare("SELECT status FROM habits WHERE id = 'law-new-candidate'").get().status, 'candidate', 'stale-law rejection must leave replacement candidate unchanged');
+    assert.equal(listHabitDuplicates(lawStorage.db, { userId: 'owner', decision: 'pending' }).length, 1, 'stale-law rejection must leave duplicate relation pending');
+  } finally {
+    lawStorage.db.close();
+  }
+
   const storage8 = await initExperienceStorage(await ensurePrivateRoot(join(temp, 'state8')), { allowInit: true, userId: 'owner' });
   try {
     insertStorageRecord(storage8.db, 'habits', { id: 'older-candidate-2', userId: 'owner', data: habitData({ ...habit2 }), now: '2026-07-09T04:30:00.000Z' });
     insertStorageRecord(storage8.db, 'habits', { id: 'newer-active-3', userId: 'owner', data: habitData({ status: 'active', active: true, ...habit3 }), now: '2026-07-09T04:31:00.000Z' });
     const scan = await scanAndBackfillSemanticDuplicates(storage8.db, { userId: 'owner', policy, provider, now: '2026-07-09T04:32:00.000Z' });
+    const mergeHabits = storage8.db.prepare("SELECT * FROM habits WHERE id IN ('older-candidate-2','newer-active-3') ORDER BY id").all();
+    const mergePlan = planHabitDuplicateResolution(scan.relations[0], mergeHabits, 'merge');
+    assert.equal(mergePlan.survivor.id, 'newer-active-3', 'merge preview must mirror approved-side protection when canonical role reverses');
+    assert.equal(mergePlan.other.id, 'older-candidate-2');
+    assert.throws(() => resolveHabitDuplicate(storage8.db, { userId: 'owner', duplicateId: scan.relations[0].id, checksum: scan.relations[0].checksum, action: 'merge', reason: 'stale comparison must fail', expectedHabitChecksums: { 'newer-active-3': mergePlan.survivor.checksum, 'older-candidate-2': 'stale-checksum' }, now: '2026-07-09T04:32:30.000Z' }), /Duplicate habit changed/, 'resolver must reject when either displayed habit changed after comparison');
+    assert.equal(listHabitDuplicates(storage8.db, { userId: 'owner', decision: 'pending' }).length, 1, 'stale habit preview rejection must leave relation pending');
+    assert.equal(storage8.db.prepare("SELECT status FROM habits WHERE id = 'newer-active-3'").get().status, 'active');
+    assert.equal(storage8.db.prepare("SELECT status FROM habits WHERE id = 'older-candidate-2'").get().status, 'candidate');
     const merge = resolveHabitDuplicate(storage8.db, { userId: 'owner', duplicateId: scan.relations[0].id, checksum: scan.relations[0].checksum, action: 'merge', reason: 'same behavior', now: '2026-07-09T04:33:00.000Z' });
     assert.equal(merge.decision, 'merged');
     assert.equal(storage8.db.prepare("SELECT status FROM habits WHERE id = 'newer-active-3'").get().status, 'active', 'merge must keep approved side active when paired with older candidate');
     assert.equal(storage8.db.prepare("SELECT status FROM habits WHERE id = 'older-candidate-2'").get().status, 'archived', 'merge archives candidate duplicate instead of active approved habit');
   } finally {
     storage8.db.close();
+  }
+
+  const disabledStorage = await initExperienceStorage(await ensurePrivateRoot(join(temp, 'state-disabled')), { allowInit: true, userId: 'owner' });
+  try {
+    insertStorageRecord(disabledStorage.db, 'habits', { id: 'disabled-old-active', userId: 'owner', data: habitData({ status: 'disabled', active: false, ...habit2 }), now: '2026-07-09T04:34:00.000Z' });
+    insertStorageRecord(disabledStorage.db, 'habits', { id: 'disabled-new-candidate', userId: 'owner', data: habitData({ ...habit3 }), now: '2026-07-09T04:35:00.000Z' });
+    const disabledScan = await scanAndBackfillSemanticDuplicates(disabledStorage.db, { userId: 'owner', policy, provider, now: '2026-07-09T04:36:00.000Z' });
+    const disabledHabits = disabledStorage.db.prepare("SELECT * FROM habits WHERE id IN ('disabled-old-active','disabled-new-candidate') ORDER BY id").all();
+    const disabledPlan = planHabitDuplicateResolution(disabledScan.relations[0], disabledHabits, 'supersede');
+    assert.equal(disabledPlan.survivor.id, 'disabled-new-candidate');
+    assert.equal(disabledPlan.other.id, 'disabled-old-active');
+    resolveHabitDuplicate(disabledStorage.db, { userId: 'owner', duplicateId: disabledScan.relations[0].id, checksum: disabledScan.relations[0].checksum, action: 'supersede', reason: 'clearer wording while disabled', law: lawSnapshotForTest('disabled semantic supersede law'), now: '2026-07-09T04:37:00.000Z' });
+    assert.equal(disabledStorage.db.prepare("SELECT status FROM habits WHERE id = 'disabled-new-candidate'").get().status, 'disabled', 'supersede must preserve disabled approved state on replacement wording');
+    assert.equal(disabledStorage.db.prepare("SELECT status FROM habits WHERE id = 'disabled-old-active'").get().status, 'archived');
+  } finally {
+    disabledStorage.db.close();
   }
 
   const storage12 = await initExperienceStorage(await ensurePrivateRoot(join(temp, 'state12')), { allowInit: true, userId: 'owner' });

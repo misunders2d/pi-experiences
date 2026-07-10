@@ -55,7 +55,8 @@ Duplicate prevention is fully local and extension-managed.
 
 - off by default;
 - no download during package installation;
-- explicit setup preparation downloads approximately 149 MB, below the 300 MB cap;
+- explicit setup preparation downloads about 150 MB once;
+- the pinned semantic-similarity model supports 50+ languages and is tested across languages;
 - no hosted provider/fallback, API key, external runtime, Python, model server, port, account, or service;
 - private 0700/0600 cache inside the state root;
 - pinned version/size/SHA-256 manifest;

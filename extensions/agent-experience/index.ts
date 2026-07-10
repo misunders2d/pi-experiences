@@ -36,11 +36,12 @@ import {
 	rejectCandidateHabit,
 	rejectPendingReview,
 	resolveHabitDuplicate,
+	planHabitDuplicateResolution,
 	showPendingReviewItem,
+	type HabitDuplicateResolutionAction,
 } from "./src/review.ts";
 import { semanticPolicyFromConfig, createEmbeddingAdapterFromConfig } from "./src/semantic/config.ts";
 import { ensureLocalEmbeddingAssets, getLocalEmbeddingAssetStatus, removeLocalEmbeddingAssets } from "./src/semantic/local-model.ts";
-import { LOCAL_EMBEDDING_DOWNLOAD_BYTES } from "./src/semantic/local-model-manifest.ts";
 import { scanAndBackfillSemanticDuplicates } from "./src/semantic/service.ts";
 import { listHabitDuplicates } from "./src/semantic/storage.ts";
 import { acquireOwnedLock } from "./src/storage/locks.ts";
@@ -454,6 +455,8 @@ class TextPanelComponent implements Component {
 
 class ChoicePanelComponent implements Component {
 	private selectedIndex = 0;
+	private scroll = 0;
+	private maxScroll = 0;
 	private readonly title: string;
 	private readonly details: string;
 	private readonly actions: string[];
@@ -468,28 +471,47 @@ class ChoicePanelComponent implements Component {
 
 	render(width: number): string[] {
 		const w = Math.max(50, width);
-		const lines = [truncateLine(this.title, w), truncateLine(this.details, w), "", "Action:"];
+		const detailLines = wrapPanelText(this.details, Math.max(30, w - 2));
+		const maxDetail = 18; // Leaves room for wrapped actions in common 30–40 row terminals.
+		this.maxScroll = Math.max(0, detailLines.length - maxDetail);
+		this.scroll = Math.max(0, Math.min(this.scroll, this.maxScroll));
+		const visible = detailLines.slice(this.scroll, this.scroll + maxDetail);
+		const lines = [truncateLine(this.title, w), truncateLine("Review the details and selected outcome before continuing.", w), ""];
+		for (const line of visible) lines.push(truncateLine(line, w));
+		if (detailLines.length > maxDetail) lines.push(truncateLine(`… lines ${this.scroll + 1}-${Math.min(this.scroll + maxDetail, detailLines.length)} of ${detailLines.length}; PgUp/PgDn scroll`, w));
+		lines.push("", "Action:");
 		for (let i = 0; i < this.actions.length; i++) {
 			const prefix = i === this.selectedIndex ? "→ " : "  ";
-			lines.push(truncateLine(`${prefix}${this.actions[i]}`, w));
+			const wrapped = wrapPanelText(this.actions[i], Math.max(20, w - 4));
+			lines.push(truncateLine(`${prefix}${wrapped[0] || ""}`, w));
+			const continuationPrefix = i === this.selectedIndex ? "  │ " : "    ";
+			for (const continuation of wrapped.slice(1)) lines.push(truncateLine(`${continuationPrefix}${continuation}`, w));
 		}
-		lines.push("", truncateLine("↑/↓ choose action · Space/Enter run · 1/2/3 · Esc cancel", w));
+		const shortcutCount = Math.min(9, this.actions.length);
+		lines.push("", truncateLine(`↑/↓ choose · Space/Enter run · 1-${shortcutCount} · PgUp/PgDn · Esc back`, w));
 		return boxedLines(lines, w);
 	}
 
 	handleInput(data: string): void {
 		if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c"))) return this.done(undefined);
 		if (matchesKey(data, Key.enter) || matchesKey(data, Key.space) || data === " ") return this.done(this.actions[this.selectedIndex]);
-		if (data === "1" && this.actions[0]) return this.done(this.actions[0]);
-		if (data === "2" && this.actions[1]) return this.done(this.actions[1]);
-		if (data === "3" && this.actions[2]) return this.done(this.actions[2]);
+		if (/^[1-9]$/.test(data)) {
+			const action = this.actions[Number(data) - 1];
+			if (action) return this.done(action);
+		}
 		if (matchesKey(data, Key.up)) {
 			this.selectedIndex = this.selectedIndex === 0 ? this.actions.length - 1 : this.selectedIndex - 1;
 			return;
 		}
 		if (matchesKey(data, Key.down)) {
 			this.selectedIndex = this.selectedIndex === this.actions.length - 1 ? 0 : this.selectedIndex + 1;
+			return;
 		}
+		if (matchesKey(data, Key.pageUp)) {
+			this.scroll = Math.max(0, this.scroll - 8);
+			return;
+		}
+		if (matchesKey(data, Key.pageDown)) this.scroll = Math.min(this.maxScroll, this.scroll + 8);
 	}
 
 	invalidate(): void {}
@@ -1076,7 +1098,7 @@ function setupHelpMessage(config: { enabled: boolean; capture_enabled: boolean; 
 			: "Use approved habits before replies: lets Pi add only human-approved habits as reminders before future replies. Optional advanced matching remains separately controlled and fail-closed.",
 		"Automatic schedule: Phase 2 / off in this release. Setup will not install, enable, or start a timer.",
 		"Review suggested habits: opens the list of proposed habits for you to approve or reject. Nothing is auto-approved.",
-		"Resolve duplicate habits: opens possible duplicate habits for merge/supersede/keep-separate/archive choices inside setup.",
+		"Resolve duplicate habits: compares both full habit wordings, states exactly what each outcome keeps or hides, and confirms destructive choices inside setup.",
 		"Review approved habits: opens actual active/disabled approved habits so you can inspect, disable, re-enable, or archive/hide one without typing ids or checksums.",
 		"Prevent duplicate habits: compares only normalized When/Do wording on this computer after you explicitly prepare it; saved examples and audit details are never compared.",
 		`Keep analyzed source examples: rotated redacted source text is deleted after ${config.observation_retention_days || 7} days. Choose 7, 14, or 30 days; minimized evidence and audit remain.`,
@@ -1161,7 +1183,7 @@ async function handleSetupEmbedding(ctx: ExtensionCommandContext) {
 		return notify(ctx, "Duplicate prevention is OFF and its local model files were removed. Habits, review decisions, and audit remain.", "info");
 	}
 	const preparing = choice === "Prepare local duplicate prevention and scan";
-	const operation = await runSetupProgress(ctx, preparing ? `Preparing duplicate prevention (up to ${Math.ceil(LOCAL_EMBEDDING_DOWNLOAD_BYTES / 1_000_000)} MB once)` : "Checking for duplicate habits", async (signal, update) => {
+	const operation = await runSetupProgress(ctx, preparing ? "Preparing duplicate prevention (about 150 MB once)" : "Checking for duplicate habits", async (signal, update) => {
 		let provider: any;
 		try {
 			if (preparing) {
@@ -1636,72 +1658,170 @@ async function chooseApprovedHabitActionInPanel(ctx: ExtensionCommandContext, ti
 	return chooseSetup(ctx, "What do you want to do with this approved habit?", actions, false) as Promise<SetupHabitAction | undefined>;
 }
 
-function duplicateLabel(_item: any, index: number): string {
-	return `${index + 1}. Possible duplicate`;
+const DUPLICATE_BACK = "Back to duplicate list";
+const DUPLICATE_CONFIRM_BACK = "Back — keep both unchanged";
+const DUPLICATE_CONFIRM = "Confirm this resolution";
+
+type DuplicateResolutionChoice = {
+	action: HabitDuplicateResolutionAction;
+	label: string;
+	resultMessage: string;
+	plan: ReturnType<typeof planHabitDuplicateResolution>;
+	requiresConfirmation: boolean;
+};
+
+function duplicateStatusForHuman(habitOrStatus: any): string {
+	const habit = habitOrStatus && typeof habitOrStatus === "object" ? habitOrStatus : { status: habitOrStatus };
+	const status = String(habit.status || "");
+	if (status === "candidate") {
+		try {
+			if (JSON.parse(String(habit.data_json || "{}")).approved_identity) return "approved — waiting for duplicate resolution";
+		} catch {}
+		return "suggestion — not approved";
+	}
+	const labels: Record<string, string> = {
+		active: "approved — active",
+		disabled: "approved — disabled",
+		suppressed_by_law: "approved — paused by safety rules",
+		archived: "archived/hidden",
+	};
+	return labels[status] || "unavailable — refresh required";
+}
+
+function duplicateHabits(item: any, habits: any[]): { habitA: any; habitB: any } {
+	const byId = new Map<string, any>(habits.map((habit) => [String(habit.id), habit]));
+	const habitA = byId.get(String(item.canonical_habit_id || ""));
+	const habitB = byId.get(String(item.duplicate_habit_id || ""));
+	if (!habitA || !habitB) throw new Error("Duplicate habit changed; refresh required");
+	return { habitA, habitB };
+}
+
+function duplicateSide(item: any, habit: any): "Habit A" | "Habit B" {
+	return String(habit.id) === String(item.canonical_habit_id) ? "Habit A" : "Habit B";
+}
+
+function shortDuplicateText(value: unknown, max: number): string {
+	const clean = redactText(String(value || "Unavailable")).replace(/\s+/g, " ").trim();
+	return clean.length > max ? `${clean.slice(0, Math.max(1, max - 1))}…` : clean;
+}
+
+function shortDuplicateHabit(habit: any, max = 44): string {
+	const each = Math.max(12, Math.floor((max - 3) / 2));
+	return `${shortDuplicateText(habit.condition, each)} → ${shortDuplicateText(habit.behavior, each)}`;
+}
+
+function duplicateLabel(item: any, index: number, habits: any[]): string {
+	try {
+		const { habitA, habitB } = duplicateHabits(item, habits);
+		return `${index + 1}. [${duplicateStatusForHuman(habitA)} / ${duplicateStatusForHuman(habitB)}] ${shortDuplicateHabit(habitA, 34)} ↔ ${shortDuplicateHabit(habitB, 34)}`;
+	} catch {
+		return `${index + 1}. Possible duplicate — refresh required`;
+	}
+}
+
+function formatDuplicateHabit(label: string, habit: any): string[] {
+	return [
+		`${label}:`,
+		`Status: ${duplicateStatusForHuman(habit)}`,
+		`When: ${redactText(String(habit.condition || "Unavailable")).slice(0, 600)}`,
+		`Do: ${redactText(String(habit.behavior || "Unavailable")).slice(0, 1000)}`,
+	];
 }
 
 function formatDuplicateForHuman(item: any, habits: any[]): string {
-	const byId = new Map(habits.map((habit) => [habit.id, habit]));
-	const left = byId.get(item.habit_a) || {};
-	const right = byId.get(item.habit_b) || {};
-	const lines = [
+	const { habitA, habitB } = duplicateHabits(item, habits);
+	return [
 		"Possible duplicate habits",
-		"These two habits may express the same working preference. You decide what to keep.",
+		"Read both full wordings. Each action below states exactly what will remain.",
 		"",
-		"Habit A:",
-		`Status: ${left.status || "unknown"}`,
-		`When: ${redactText(String(left.condition || "")).slice(0, 600)}`,
-		`Do: ${redactText(String(left.behavior || "")).slice(0, 1000)}`,
+		...formatDuplicateHabit("Habit A", habitA),
 		"",
-		"Habit B:",
-		`Status: ${right.status || "unknown"}`,
-		`When: ${redactText(String(right.condition || "")).slice(0, 600)}`,
-		`Do: ${redactText(String(right.behavior || "")).slice(0, 1000)}`,
+		...formatDuplicateHabit("Habit B", habitB),
 		"",
-		"Choose Merge evidence if they mean the same thing, Supersede if the newer wording should replace the older one, Keep separate if both are intentionally distinct, or Archive/hide duplicate to remove the duplicate from normal use.",
-	];
-	return lines.join("\n");
+		"No similarity score or automatic decision is used here. Destructive choices ask again for confirmation.",
+	].join("\n");
+}
+
+function duplicateResolutionChoices(item: any, habits: any[]): DuplicateResolutionChoice[] {
+	const make = (action: HabitDuplicateResolutionAction): DuplicateResolutionChoice => {
+		const plan = planHabitDuplicateResolution(item, habits, action);
+		const survivor = duplicateSide(item, plan.survivor);
+		const other = duplicateSide(item, plan.other);
+		if (action === "merge") return { action, plan, requiresConfirmation: true, label: `Same habit — keep ${survivor} wording, combine evidence, and hide ${other}`, resultMessage: `Kept ${survivor} wording, combined evidence, and archived ${other}.` };
+		if (action === "supersede") return { action, plan, requiresConfirmation: true, label: `Use ${survivor} wording — replace and hide ${other} after final safety checks`, resultMessage: `Kept ${survivor} wording and superseded ${other}.` };
+		if (action === "archive_duplicate") return { action, plan, requiresConfirmation: true, label: `Hide ${other} — keep ${survivor} without combining evidence`, resultMessage: `Kept ${survivor} and archived ${other} without combining evidence.` };
+		return { action, plan, requiresConfirmation: false, label: "Different habits — keep both", resultMessage: "Kept both habits separate." };
+	};
+	return [make("merge"), make("supersede"), make("keep_separate"), make("archive_duplicate")];
+}
+
+function formatDuplicateConfirmation(choice: DuplicateResolutionChoice, item: any): string {
+	const survivor = duplicateSide(item, choice.plan.survivor);
+	const other = duplicateSide(item, choice.plan.other);
+	return [
+		`Selected outcome: ${choice.label}`,
+		"",
+		...formatDuplicateHabit(`Will keep — ${survivor}`, choice.plan.survivor),
+		"",
+		...formatDuplicateHabit(`Will archive/hide — ${other}`, choice.plan.other),
+		"",
+		choice.plan.combinesEvidence ? `Evidence from both will be retained under ${survivor}.` : "Evidence will not be combined.",
+		"The archived habit leaves normal use/review but remains in private audit history.",
+		"If either habit changed after this comparison, nothing will be applied and the list will refresh.",
+		choice.action === "supersede" ? "Current safety instructions and habit conflicts are checked again before replacement." : "The current duplicate relation is checked again before any change.",
+	].join("\n");
 }
 
 async function handleDuplicateResolutionSetup(ctx: ExtensionCommandContext) {
 	const paths = getAgentExperiencePaths();
 	if (!(await fileExists(resolvePrivatePath(paths.root, "ledger.sqlite")))) return notify(ctx, "No habit ledger yet. Choose Analyze saved examples now after saving examples.", "info");
-	while (true) {
+	duplicateList: while (true) {
 		const data = await withExistingReviewStorage(async (storage) => {
 			const duplicates = listHabitDuplicates(storage.db, { userId: storage.userId, decision: "pending" });
 			const ids = [...new Set(duplicates.flatMap((row: any) => [row.habit_a, row.habit_b]))];
-			const habits = ids.length ? storage.db.prepare(`SELECT id, status, condition, behavior, checksum FROM habits WHERE user_id = ? AND id IN (${ids.map(() => "?").join(",")}) ORDER BY id`).all(storage.userId, ...ids) : [];
+			const habits = ids.length ? storage.db.prepare(`SELECT id, status, condition, behavior, data_json, checksum FROM habits WHERE user_id = ? AND id IN (${ids.map(() => "?").join(",")}) ORDER BY id`).all(storage.userId, ...ids) : [];
 			return { duplicates, habits };
 		});
 		if (!data.duplicates.length) return notify(ctx, "No duplicate habits are waiting for resolution.", "info");
-		const labels = data.duplicates.map((item: any, index: number) => duplicateLabel(item, index));
+		const labels = data.duplicates.map((item: any, index: number) => duplicateLabel(item, index, data.habits));
 		const choice = await chooseSetup(ctx, `Resolve duplicate habits — ${plural(data.duplicates.length, "item")}`, [...labels, "Back to setup"], false);
 		if (!choice || choice === "Back to setup") return;
 		const item = data.duplicates[labels.indexOf(choice)];
 		if (!item) continue;
-		const action = await chooseActionInPanel(ctx, "Resolve duplicate habits", formatDuplicateForHuman(item, data.habits), ["Merge evidence", "Supersede old habit", "Keep separate", "Archive/hide duplicate", "Back to duplicate list"]);
-		if (!action || action === "Back to duplicate list") continue;
+		let resolutionChoices: DuplicateResolutionChoice[];
 		try {
-			let reason = "setup";
-			if (action === "Keep separate") {
-				const typedReason = await inputSetup(ctx, "Reason to keep these habits separate", "short reason, e.g. different context or scope");
-				reason = typedReason ? redactText(typedReason).slice(0, 300) : "user chose keep separate in setup";
-			}
-			const result = await withReviewStorage(async (storage) => {
-				const current = listHabitDuplicates(storage.db, { userId: storage.userId, decision: "pending" }).find((row: any) => row.id === item.id);
-				if (!current || current.checksum !== item.checksum) throw new Error("Duplicate item changed; refresh required");
-				const map: Record<string, "merge" | "supersede" | "keep_separate" | "archive_duplicate"> = {
-					"Merge evidence": "merge",
-					"Supersede old habit": "supersede",
-					"Keep separate": "keep_separate",
-					"Archive/hide duplicate": "archive_duplicate",
-				};
-				const resolutionAction = map[action]!;
-				return resolveHabitDuplicate(storage.db, { userId: storage.userId, duplicateId: item.id, checksum: item.checksum, action: resolutionAction, reason, ...(resolutionAction === "supersede" ? { law: await readConfiguredLawForRoot(storage.root) } : {}), now: new Date().toISOString() });
-			});
-			notify(ctx, `Duplicate resolved: ${result.decision.replace(/_/g, " ")}.`, "info");
+			resolutionChoices = duplicateResolutionChoices(item, data.habits);
 		} catch (error) {
 			notify(ctx, `${formatReviewReadError(error)}\nReopening duplicate list with current data.`, "warn");
+			continue;
+		}
+		comparison: while (true) {
+			const actionLabel = await chooseActionInPanel(ctx, "Resolve duplicate habits", formatDuplicateForHuman(item, data.habits), [...resolutionChoices.map((entry) => entry.label), DUPLICATE_BACK]);
+			if (!actionLabel || actionLabel === DUPLICATE_BACK) continue duplicateList;
+			const selected = resolutionChoices.find((entry) => entry.label === actionLabel);
+			if (!selected) continue duplicateList;
+			if (selected.requiresConfirmation) {
+				const confirmation = await chooseActionInPanel(ctx, "Confirm duplicate resolution", formatDuplicateConfirmation(selected, item), [DUPLICATE_CONFIRM_BACK, DUPLICATE_CONFIRM]);
+				if (confirmation !== DUPLICATE_CONFIRM) continue comparison;
+			}
+			try {
+				let reason = "setup";
+				if (selected.action === "keep_separate") {
+					const typedReason = await inputSetup(ctx, "Reason to keep these habits separate", "short reason, e.g. different context or scope");
+					if (typedReason === undefined) continue comparison;
+					reason = typedReason.trim() ? redactText(typedReason).slice(0, 300) : "user chose keep separate in setup";
+				}
+				await withReviewStorage(async (storage) => {
+					const current = listHabitDuplicates(storage.db, { userId: storage.userId, decision: "pending" }).find((row: any) => row.id === item.id);
+					if (!current || current.checksum !== item.checksum) throw new Error("Duplicate item changed; refresh required");
+					const expectedHabitChecksums = Object.fromEntries([selected.plan.survivor, selected.plan.other].map((habit: any) => [String(habit.id), String(habit.checksum)]));
+					return resolveHabitDuplicate(storage.db, { userId: storage.userId, duplicateId: item.id, checksum: item.checksum, action: selected.action, reason, expectedHabitChecksums, ...(selected.action === "supersede" ? { law: await readConfiguredLawForRoot(storage.root) } : {}), now: new Date().toISOString() });
+				});
+				notify(ctx, `Duplicate resolved. ${selected.resultMessage}`, "info");
+			} catch (error) {
+				notify(ctx, `${formatReviewReadError(error)}\nReopening duplicate list with current data.`, "warn");
+			}
+			continue duplicateList;
 		}
 	}
 }

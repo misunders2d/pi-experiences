@@ -12,6 +12,7 @@ import { createLocalEmbeddingAdapter } from '../extensions/agent-experience/src/
 import { ensureLocalEmbeddingAssets, getLocalEmbeddingAssetStatus, removeLocalEmbeddingAssets } from '../extensions/agent-experience/src/semantic/local-model.ts';
 import { LOCAL_EMBEDDING_ASSETS, LOCAL_EMBEDDING_DOWNLOAD_BYTES, LOCAL_EMBEDDING_MAX_MANAGED_BYTES, LOCAL_EMBEDDING_REVIEW_THRESHOLD_BP } from '../extensions/agent-experience/src/semantic/local-model-manifest.ts';
 
+assert.equal(LOCAL_EMBEDDING_DOWNLOAD_BYTES, 148_618_669, 'public about-150-MB wording must match the exact pinned asset manifest');
 assert.ok(LOCAL_EMBEDDING_DOWNLOAD_BYTES > 100_000_000 && LOCAL_EMBEDDING_DOWNLOAD_BYTES < LOCAL_EMBEDDING_MAX_MANAGED_BYTES, 'pinned local assets must stay within managed footprint cap');
 assert.equal(LOCAL_EMBEDDING_ASSETS.length, 5);
 assert.ok(LOCAL_EMBEDDING_ASSETS.every((asset) => /^[a-f0-9]{64}$/.test(asset.sha256) && asset.bytes > 0), 'every managed asset must be size/hash pinned');
@@ -98,7 +99,11 @@ try {
   const fixtures = [
     ['positive-en', {condition:'When reviewing code',behavior:'Identify concrete risks and recommend fixes.'}, {condition:'During a code review',behavior:'Find specific failure modes and propose corrections.'}, true],
     ['positive-ru', {condition:'При проверке кода',behavior:'Находить конкретные риски и предлагать исправления.'}, {condition:'Во время ревью программы',behavior:'Выявлять точные сценарии отказа и рекомендовать изменения.'}, true],
-    ['positive-cross', {condition:'When reviewing code',behavior:'Identify concrete risks and recommend fixes.'}, {condition:'При проверке кода',behavior:'Находить конкретные риски и предлагать исправления.'}, true],
+    ['positive-cross-ru', {condition:'When reviewing code',behavior:'Identify concrete risks and recommend fixes.'}, {condition:'При проверке кода',behavior:'Находить конкретные риски и предлагать исправления.'}, true],
+    ['positive-cross-es', {condition:'When reviewing code',behavior:'Identify concrete risks and recommend fixes.'}, {condition:'Al revisar código',behavior:'Identificar riesgos concretos y recomendar correcciones.'}, true],
+    ['positive-cross-de', {condition:'When reviewing code',behavior:'Identify concrete risks and recommend fixes.'}, {condition:'Bei der Codeprüfung',behavior:'Konkrete Risiken erkennen und Korrekturen empfehlen.'}, true],
+    ['positive-cross-fr', {condition:'When reviewing code',behavior:'Identify concrete risks and recommend fixes.'}, {condition:'Lors de la revue du code',behavior:'Identifier les risques concrets et recommander des corrections.'}, true],
+    ['positive-cross-zh', {condition:'When reviewing code',behavior:'Identify concrete risks and recommend fixes.'}, {condition:'审查代码时',behavior:'识别具体风险并提出修复建议。'}, true],
     ['positive-es', {condition:'Antes de publicar un paquete',behavior:'Ejecutar todas las pruebas y verificar el artefacto instalable.'}, {condition:'Al preparar una versión de software',behavior:'Completar la validación y probar el paquete final.'}, true],
     ['negative-en', {condition:'When reviewing code',behavior:'Identify concrete risks and recommend fixes.'}, {condition:'When preparing breakfast',behavior:'Choose fresh seasonal fruit.'}, false],
     ['negative-ru', {condition:'При проверке кода',behavior:'Находить конкретные риски и предлагать исправления.'}, {condition:'Перед поездкой',behavior:'Проверять прогноз погоды и брать подходящую одежду.'}, false],

@@ -10,6 +10,7 @@ import { canonicalJson } from '../extensions/agent-experience/src/storage/checks
 import { ensurePrivateRoot, resolvePrivatePath } from '../extensions/agent-experience/src/storage/private-root.ts';
 import { observationChecksumForTest, observationPairRefForTest } from '../extensions/agent-experience/src/storage/observations.ts';
 import { initExperienceStorage, insertStorageRecord } from '../extensions/agent-experience/src/storage/sqlite.ts';
+import { listHabitDuplicates, upsertHabitDuplicate } from '../extensions/agent-experience/src/semantic/storage.ts';
 
 function makeObservation({ seq, previous = null, createdAt, user, assistant }) {
   const base = {
@@ -487,6 +488,116 @@ try {
   const rows = storage.db.prepare("SELECT id, status FROM habits WHERE user_id = 'owner' AND id = ?").all(active.id);
   assert.equal(rows[0].status, 'active', 'setup approved-habit action must persist active status after re-enable');
   storage.db.prepare("UPDATE habits SET status = 'archived' WHERE user_id = 'owner' AND id = 'candidate-hidden-from-approved-browser'").run();
+} finally {
+  storage.db.close();
+}
+
+const duplicateA = {
+  id: 'duplicate-ui-habit-a',
+  condition: 'When preparing nontrivial code changes or package releases with multiple validation stages',
+  behavior: 'Run required checks and independent review before declaring the release ready, then report concrete evidence and any remaining caveats.',
+};
+const duplicateB = {
+  id: 'duplicate-ui-habit-b',
+  condition: 'Before calling a substantial implementation or software release complete',
+  behavior: 'Complete the relevant validation and external critique, verify the final artifact, and describe the evidence instead of making an unsupported completion claim.',
+};
+storage = await initExperienceStorage(paths.root, { allowInit: true, userId: 'owner' });
+let duplicateRelation;
+try {
+  insertStorageRecord(storage.db, 'habits', { id: duplicateA.id, userId: 'owner', data: { schema_version: 2, record_kind: 'candidate_habit_v1', status: 'active', active: true, injectable: false, condition: duplicateA.condition, behavior: duplicateA.behavior, polarity: 1, confidence_bp: 9000, source_refs: [], source_dates: [] }, now: '2026-07-10T08:00:00.000Z' });
+  insertStorageRecord(storage.db, 'habits', { id: duplicateB.id, userId: 'owner', data: { schema_version: 2, record_kind: 'candidate_habit_v1', status: 'candidate', review_status: 'duplicate_resolution', active: false, injectable: false, condition: duplicateB.condition, behavior: duplicateB.behavior, polarity: 1, confidence_bp: 8800, source_refs: [], source_dates: [], approved_identity: { candidate_id: duplicateB.id, condition: duplicateB.condition.toLowerCase(), behavior: duplicateB.behavior.toLowerCase(), polarity: 1, approved_at: '2026-07-10T08:01:30.000Z' } }, now: '2026-07-10T08:01:00.000Z' });
+  duplicateRelation = upsertHabitDuplicate(storage.db, { userId: 'owner', habitId: duplicateA.id, otherHabitId: duplicateB.id, canonicalHabitId: duplicateA.id, duplicateHabitId: duplicateB.id, similarityBp: 8048, thresholdBp: 4000, provider: 'local-fixture', model: 'multilingual-fixture', dimensions: 384, decision: 'pending', data: { action: 'ui_regression_fixture' }, now: '2026-07-10T08:02:00.000Z' });
+} finally {
+  storage.db.close();
+}
+
+const normalSelect = ctx.ui.select;
+async function exerciseDuplicatePanel({ confirm }) {
+  let duplicateListVisits = 0;
+  let setupVisits = 0;
+  let comparisonVisits = 0;
+  let comparisonSeen = false;
+  let confirmationSeen = false;
+  ctx.ui.select = async (title, options) => {
+    if (/Resolve duplicate habits —/.test(title)) {
+      duplicateListVisits += 1;
+      if (duplicateListVisits === 1) {
+        assert.match(options[0], /approved — active/);
+        assert.match(options[0], /approved — waiting for duplicate resolution/);
+        assert.match(options[0], /When preparing|Before calling/i);
+        assert.match(options[0], /Run required|Complete the relevant/i);
+        assert.doesNotMatch(options[0], new RegExp(`${duplicateA.id}|${duplicateB.id}`));
+        return options[0];
+      }
+      return 'Back to setup';
+    }
+    return normalSelect.call(ctx.ui, title, options);
+  };
+  ctx.ui.custom = async (factory) => {
+    let value;
+    const component = await factory({ requestRender() {} }, {}, {}, (result) => { value = result; });
+    const firstRows = component.render(72);
+    assert.ok(firstRows.every((row) => !/[\r\n]/.test(row)), 'every custom-panel render entry must be exactly one terminal row');
+    const first = firstRows.join('\n');
+    if (/Agent Experience setup/.test(first)) return setupVisits++ === 0 ? 'duplicates' : 'done';
+    component.handleInput('\x1b[6~');
+    const secondRows = component.render(72);
+    assert.ok(secondRows.every((row) => !/[\r\n]/.test(row)), 'scrolled duplicate panel rows must not contain embedded newlines');
+    const rendered = `${first}\n${secondRows.join('\n')}`;
+    assert.doesNotMatch(rendered, new RegExp(`${duplicateA.id}|${duplicateB.id}|${duplicateRelation.checksum.slice(0, 16)}|8048|local-fixture|multilingual-fixture`), 'normal duplicate UI must hide ids, checksums, scores, and backend metadata');
+    if (/Confirm duplicate resolution/.test(rendered)) {
+      confirmationSeen = true;
+      assert.match(rendered, /Will keep — Habit A/);
+      assert.match(rendered, /Will archive\/hide — Habit B/);
+      assert.match(rendered, /Evidence from both will be retained under Habit A/);
+      component.handleInput(confirm ? '2' : '1');
+      return value;
+    }
+    assert.match(rendered, /Possible duplicate habits/);
+    assert.match(rendered, /Habit A:[\s\S]*approved — active/);
+    assert.match(rendered, /Habit B:[\s\S]*approved — waiting for duplicate resolution/);
+    assert.match(rendered, /preparing nontrivial code changes[\s\S]*multiple validation stages/i);
+    assert.match(rendered, /Complete the relevant validation[\s\S]*unsupported completion claim/i);
+    assert.match(rendered, /Same habit[\s\S]*keep Habit A wording[\s\S]*hide Habit[\s\S]*B/);
+    assert.match(rendered, /Use Habit B wording[\s\S]*replace and hide Habit A/);
+    assert.match(rendered, /Different habits[\s\S]*keep both/);
+    assert.match(rendered, /Hide Habit B[\s\S]*keep Habit A without combining evidence/);
+    comparisonSeen = true;
+    comparisonVisits += 1;
+    component.handleInput(!confirm && comparisonVisits > 1 ? '5' : '1');
+    return value;
+  };
+  await commands.get('experience').handler('setup', ctx);
+  delete ctx.ui.custom;
+  ctx.ui.select = normalSelect;
+  assert.equal(comparisonSeen, true, 'duplicate comparison panel must render');
+  assert.equal(confirmationSeen, true, 'destructive duplicate action must open explicit confirmation');
+}
+
+await exerciseDuplicatePanel({ confirm: false });
+storage = await initExperienceStorage(paths.root, { allowInit: true, userId: 'owner' });
+try {
+  assert.equal(listHabitDuplicates(storage.db, { userId: 'owner', decision: 'pending' }).some((row) => row.id === duplicateRelation.id), true, 'confirmation cancellation must leave duplicate relation pending');
+  assert.equal(storage.db.prepare('SELECT status FROM habits WHERE id = ?').get(duplicateA.id).status, 'active');
+  assert.equal(storage.db.prepare('SELECT status FROM habits WHERE id = ?').get(duplicateB.id).status, 'candidate');
+} finally {
+  storage.db.close();
+}
+
+await exerciseDuplicatePanel({ confirm: true });
+storage = await initExperienceStorage(paths.root, { allowInit: true, userId: 'owner' });
+try {
+  assert.equal(listHabitDuplicates(storage.db, { userId: 'owner', decision: 'merged' }).some((row) => row.id === duplicateRelation.id), true, 'confirmed merge must resolve the selected relation');
+  assert.equal(storage.db.prepare('SELECT status FROM habits WHERE id = ?').get(duplicateA.id).status, 'active');
+  assert.equal(storage.db.prepare('SELECT status FROM habits WHERE id = ?').get(duplicateB.id).status, 'archived');
+} finally {
+  storage.db.close();
+}
+assert.ok(notes.some((note) => /Duplicate resolved\. Kept Habit A wording, combined evidence, and archived Habit B\./.test(note.message || '')), 'resolution result must state the exact survivor and archived habit');
+storage = await initExperienceStorage(paths.root, { allowInit: true, userId: 'owner' });
+try {
+  storage.db.prepare("UPDATE habits SET status = 'archived' WHERE user_id = 'owner' AND id = ?").run(duplicateA.id);
 } finally {
   storage.db.close();
 }

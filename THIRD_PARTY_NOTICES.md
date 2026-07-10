@@ -8,7 +8,9 @@
 - ONNX conversion/source files: `Xenova/paraphrase-multilingual-MiniLM-L12-v2`
 - Pinned revision: `2c4055b12046f11709e9df2c122e59ffbdc2f900`
 - License: Apache License 2.0
-- Source: https://huggingface.co/Xenova/paraphrase-multilingual-MiniLM-L12-v2
+- Capability: multilingual semantic similarity, trained on parallel data for 50+ languages
+- ONNX source: https://huggingface.co/Xenova/paraphrase-multilingual-MiniLM-L12-v2
+- Official model documentation: https://www.sbert.net/docs/sentence_transformer/pretrained_models.html
 
 Model/tokenizer assets are not bundled in the npm package. They are downloaded only after explicit user enablement, then size/hash verified in the private state root.
 

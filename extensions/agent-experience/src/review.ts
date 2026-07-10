@@ -467,26 +467,60 @@ export async function enableHabit(db: any, input: { userId: string; habitId: str
 	return outcome.result || { status: outcome.target.status, habit_id: outcome.target.id, enabled: false, semantic: outcome.semantic, checksum: outcome.target.checksum };
 }
 
-export function resolveHabitDuplicate(db: any, input: { userId: string; duplicateId: string; checksum: string; action: "merge" | "supersede" | "keep_separate" | "archive_duplicate"; reason?: string; law?: LawSnapshot; now: string }) {
+export type HabitDuplicateResolutionAction = "merge" | "supersede" | "keep_separate" | "archive_duplicate";
+
+export interface HabitDuplicateResolutionPlan {
+	action: HabitDuplicateResolutionAction;
+	survivor: any;
+	other: any;
+	archivesOther: boolean;
+	combinesEvidence: boolean;
+}
+
+export function planHabitDuplicateResolution(relation: any, habits: any[], action: HabitDuplicateResolutionAction): HabitDuplicateResolutionPlan {
+	const canonicalId = String(relation?.canonical_habit_id || "");
+	const duplicateId = String(relation?.duplicate_habit_id || "");
+	if (!canonicalId || !duplicateId || canonicalId === duplicateId) throw new Error("Duplicate item changed; refresh required");
+	const byId = new Map(habits.map((habit) => [String(habit.id), habit]));
+	let survivor = byId.get(action === "supersede" ? duplicateId : canonicalId);
+	let other = byId.get(action === "supersede" ? canonicalId : duplicateId);
+	if (!survivor || !other) throw new Error("Duplicate habit changed; refresh required");
+	if (action === "merge" && survivor.status === "candidate" && (other.status === "active" || other.status === "disabled")) {
+		[survivor, other] = [other, survivor];
+	}
+	return {
+		action,
+		survivor,
+		other,
+		archivesOther: action !== "keep_separate",
+		combinesEvidence: action === "merge" || action === "supersede",
+	};
+}
+
+export function resolveHabitDuplicate(db: any, input: { userId: string; duplicateId: string; checksum: string; action: HabitDuplicateResolutionAction; reason?: string; law?: LawSnapshot; expectedHabitChecksums?: Record<string, string>; now: string }) {
 	const userId = normalizeUserId(input.userId);
 	let result: any;
 	db.exec("BEGIN IMMEDIATE");
 	try {
 		const before = db.prepare("SELECT * FROM habit_duplicates WHERE user_id = ? AND id = ?").get(userId, input.duplicateId);
 		if (!before || before.checksum !== input.checksum || before.decision !== "pending") throw new Error("Duplicate item changed; refresh required");
-		let canonicalId = input.action === "supersede" ? before.duplicate_habit_id : before.canonical_habit_id;
-		let duplicateId = input.action === "supersede" ? before.canonical_habit_id : before.duplicate_habit_id;
-		let duplicateHabit: any = null;
-		let canonicalHabit: any = null;
-		if (canonicalId) canonicalHabit = getHabit(db, userId, canonicalId);
-		if (duplicateId) duplicateHabit = getHabit(db, userId, duplicateId);
-		if (input.action === "merge" && canonicalHabit?.status === "candidate" && (duplicateHabit?.status === "active" || duplicateHabit?.status === "disabled")) {
-			const oldCanonical = canonicalHabit;
-			canonicalHabit = duplicateHabit;
-			duplicateHabit = oldCanonical;
-			canonicalId = canonicalHabit.id;
-			duplicateId = duplicateHabit.id;
+		const relationCanonicalId = String(before.canonical_habit_id || "");
+		const relationDuplicateId = String(before.duplicate_habit_id || "");
+		if (!relationCanonicalId || !relationDuplicateId || relationCanonicalId === relationDuplicateId) throw new Error("Duplicate item changed; refresh required");
+		const relationHabits = [
+			getHabit(db, userId, relationCanonicalId),
+			getHabit(db, userId, relationDuplicateId),
+		];
+		if (input.expectedHabitChecksums) {
+			for (const habit of relationHabits) {
+				if (!input.expectedHabitChecksums[habit.id] || input.expectedHabitChecksums[habit.id] !== habit.checksum) throw new Error("Duplicate habit changed; refresh required");
+			}
 		}
+		const plan = planHabitDuplicateResolution(before, relationHabits, input.action);
+		let canonicalId = plan.survivor.id;
+		let duplicateId = plan.other.id;
+		let canonicalHabit = plan.survivor;
+		let duplicateHabit = plan.other;
 		if ((input.action === "merge" || input.action === "supersede") && canonicalHabit && duplicateHabit) {
 			const canonicalData = { ...parseJson(canonicalHabit.data_json), condition: canonicalHabit.condition, behavior: canonicalHabit.behavior, polarity: canonicalHabit.polarity, confidence_bp: canonicalHabit.confidence_bp, record_kind: canonicalHabit.record_kind, schema_version: canonicalHabit.schema_version };
 			const duplicateData = parseJson(duplicateHabit.data_json);
@@ -522,12 +556,13 @@ export function resolveHabitDuplicate(db: any, input: { userId: string; duplicat
 		}
 		if (input.action === "supersede" && canonicalHabit?.status === "candidate" && (duplicateHabit?.status === "active" || duplicateHabit?.status === "disabled")) {
 			if (!input.law) throw new Error("Supersede requires law check before replacing an approved habit");
-			const law = checkHabitLaw({ condition: canonicalHabit.condition, behavior: canonicalHabit.behavior, law: input.law });
+			const lawSnapshot = revalidateLawSnapshotSync(input.law);
+			const law = checkHabitLaw({ condition: canonicalHabit.condition, behavior: canonicalHabit.behavior, law: lawSnapshot });
 			if (!law.pass) throw new Error("Supersede replacement blocked by law check");
 			const conflict = checkHabitConflict(db, { userId, habitId: canonicalHabit.id, condition: canonicalHabit.condition, behavior: canonicalHabit.behavior, polarity: Number(canonicalHabit.polarity) });
 			const blockingConflicts = conflict.conflicts.filter((item: any) => item.id !== duplicateHabit.id);
 			if (blockingConflicts.length) throw new Error("Supersede replacement blocked by conflict check");
-			const replacementData = { ...parseJson(canonicalHabit.data_json), condition: canonicalHabit.condition, behavior: canonicalHabit.behavior, polarity: canonicalHabit.polarity, confidence_bp: canonicalHabit.confidence_bp, record_kind: canonicalHabit.record_kind, schema_version: canonicalHabit.schema_version, review_status: duplicateHabit.status === "active" ? "supersede_active" : "supersede_disabled", active: duplicateHabit.status === "active", injectable: false, law_hash: input.law.hash, superseded_habit_id: duplicateHabit.id, superseded_at: input.now, supersede_conflict_check: { ...conflict, conflicts: blockingConflicts } };
+			const replacementData = { ...parseJson(canonicalHabit.data_json), condition: canonicalHabit.condition, behavior: canonicalHabit.behavior, polarity: canonicalHabit.polarity, confidence_bp: canonicalHabit.confidence_bp, record_kind: canonicalHabit.record_kind, schema_version: canonicalHabit.schema_version, review_status: duplicateHabit.status === "active" ? "supersede_active" : "supersede_disabled", active: duplicateHabit.status === "active", injectable: false, law_hash: lawSnapshot.hash, superseded_habit_id: duplicateHabit.id, superseded_at: input.now, supersede_conflict_check: { ...conflict, conflicts: blockingConflicts } };
 			const replacementBefore = canonicalHabit;
 			updateHabitRow(db, { userId, id: canonicalHabit.id, expectedStatus: canonicalHabit.status, expectedChecksum: canonicalHabit.checksum, data: replacementData, status: duplicateHabit.status, now: input.now });
 			canonicalHabit = getHabit(db, userId, canonicalHabit.id);

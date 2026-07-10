@@ -45,7 +45,7 @@ pi update --extensions
 Pinned GitHub installation:
 
 ```bash
-pi install git:github.com/misunders2d/pi-experiences@v0.1.26
+pi install git:github.com/misunders2d/pi-experiences@v0.1.27
 ```
 
 Git refs remain pinned; they do not float to newer tags.
@@ -93,7 +93,7 @@ Approval and activation are separate when a requirement is temporarily unmet. An
 
 Analyze automatically rechecks approved waiting candidates after a validated commit. The same recheck is available under **Review approved habits**. Prior approval applies only while normalized condition, behavior, and polarity remain unchanged; material wording changes require approval again.
 
-Potential duplicates are never silently merged. **Resolve duplicate habits** offers explicit choices to merge evidence, supersede wording, keep both separate, or archive/hide one.
+Potential duplicates are never silently merged. **Resolve duplicate habits** shows both complete wordings, states exactly which habit each outcome keeps or hides, and confirms merge, replacement, and archive choices before changing anything.
 
 Candidate habits should generalize reusable behavior:
 
@@ -106,7 +106,8 @@ Duplicate prevention uses one extension-managed multilingual local component. It
 
 - It is off by default.
 - Package installation downloads nothing.
-- Explicit preparation from `/experience setup` downloads approximately 149 MB, within the 300 MB managed-footprint cap.
+- Explicit preparation from `/experience setup` downloads about 150 MB once.
+- The pinned model is trained for semantic similarity across 50+ languages; release tests include same-language and cross-language fixtures.
 - No API key, account, Python, Ollama, LM Studio, port, service, provider, endpoint, dimension, or model identifier is configured by the user.
 - Assets stay under the private Agent Experience state root with 0700 directories and 0600 files.
 - Every asset is version, size, and SHA-256 checked before use.
