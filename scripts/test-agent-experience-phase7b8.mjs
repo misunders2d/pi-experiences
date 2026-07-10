@@ -90,7 +90,7 @@ function makePi() {
   const fakePi = {
     registerCommand(name, options) { commands.set(name, options); },
     on(event, handler) { handlers.set(event, handler); },
-    registerTool() { throw new Error('no tools'); },
+    registerTool() {},
     registerFlag() { throw new Error('no flags'); },
     registerShortcut() { throw new Error('no shortcuts'); },
   };
@@ -152,8 +152,8 @@ try {
   assert.match(notes.at(-1), /Analyze saved examples now: available when you choose it in setup/);
   assert.match(notes.at(-1), /Automatic schedule: Phase 2 \/ OFF/);
   await commands.get('experience').handler('help', { cwd: process.cwd(), ui: { notify(message) { notes.push(message); } } });
-  assert.match(notes.at(-1), /\/experience setup/);
-  assert.match(notes.at(-1), /the one normal-user setup panel/);
+  assert.match(notes.at(-1), /Discuss a pattern naturally/);
+  assert.match(notes.at(-1), /\/experience setup as the complete control panel/);
   assert.doesNotMatch(notes.at(-1), /setup model|setup analyze-now|setup review|setup use-habits/);
   await commands.get('experience').handler('selector calibrate', { cwd: process.cwd(), ui: { notify(message) { notes.push(message); } } });
   assert.match(notes.at(-1), /Manual weekly calibration/);

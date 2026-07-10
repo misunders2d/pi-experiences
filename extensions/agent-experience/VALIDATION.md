@@ -16,7 +16,7 @@ npm audit --omit=dev
 3. capture/redaction;
 4. consolidation/proposal validation;
 5. explicit review/CAS/law gates;
-6. selector behavior;
+6. selector behavior plus muted per-answer steering provenance, privacy, ordering, and fail-closed visibility;
 7. selector adapters and legacy CLI behavior;
 8. nonblocking setup Analyze;
 9. separate-field semantic duplicate routing, method reconciliation, and candidate restoration;
@@ -25,7 +25,8 @@ npm audit --omit=dev
 12. managed local embedding unit checks;
 13. two-connection semantic activation and atomic scan adversarial checks;
 14. token-lock stale/dead/malformed/ownership recovery;
-15. source/import bundling and generated CLI drift.
+15. conversational draft/confirm, direct declaration, numbered review, privacy, stale-state, and no-orphan semantic failure;
+16. source/import bundling and generated CLI drift.
 
 The suite must leave timers off and perform no hosted embedding request or model download.
 
@@ -72,14 +73,14 @@ Build and inspect the exact tarball:
 
 ```bash
 npm pack --dry-run
-npm pack --json --pack-destination /tmp/pi-experiences-030-pack
+npm pack --json --pack-destination /tmp/pi-experiences-031-pack
 ```
 
 The tarball must include:
 
-- `package.json` version `0.1.30` and Node floor `>=22.19.0`;
+- `package.json` version `0.1.31` and Node floor `>=22.19.0`;
 - wildcard Pi peer dependencies;
-- extension source and public skill;
+- extension source, `steering-note.ts`, and public skill;
 - current executable `dist/experience-consolidate.mjs`;
 - `runtime/agent-experience/local-embedding-worker.mjs`;
 - the two pinned vendored runtime glue modules;
@@ -89,7 +90,7 @@ The tarball must include:
 Fresh installation must use the exact generated tarball and disable lifecycle scripts:
 
 ```bash
-npm install --ignore-scripts /tmp/pi-experiences-030-pack/pi-experiences-0.1.30.tgz
+npm install --ignore-scripts /tmp/pi-experiences-031-pack/pi-experiences-0.1.31.tgz
 ```
 
 Use a dedicated disposable `/tmp/*smoke*` prefix. Verify package version, CLI help/status, extension import, skill loading, package-relative worker resolution, and file allowlist from that installed copy—not the source checkout.
@@ -103,7 +104,7 @@ Run Pi's actual skill loader against the installed package and require zero diag
 Use the packed/fresh-installed package with:
 
 ```bash
-AX_STATE_ROOT=/tmp/pi-experiences-030-tui-smoke-state
+AX_STATE_ROOT=/tmp/pi-experiences-031-tui-smoke-state
 ```
 
 Launch the real Pi TUI in a disposable Pi config/package root that references the installed tarball copy, not this repository. Exercise every major `/experience setup` section:
@@ -122,7 +123,11 @@ Launch the real Pi TUI in a disposable Pi config/package root that references th
 - help;
 - all-off/Done.
 
-Verify the visible UI contains no habit IDs, checksums, duplicate thresholds, local-model identifiers, provider endpoints, API-key instructions, or required advanced subcommands.
+Also exercise the conversational tools in a fresh session: exact draft display, same-turn confirmation rejection, later-turn save, corrected-draft replacement, numbered suggestion/duplicate listing, explicit decision application, stale-list refresh, and idempotent retry.
+
+Seed one active approved habit, enable reminders, and submit a matching prompt. Verify a muted `◇ Habit steering · 1 approved habit` entry appears before the assistant answer, collapsed by default; expansion shows exact approved `When:` / `Do:` wording; an unrelated prompt shows no marker. Verify non-TUI, renderer failure, malformed wording, and append failure suppress injection.
+
+Verify all visible UI/tool results contain no habit IDs, checksums, duplicate thresholds, local-model identifiers, provider endpoints, source refs, private paths, API-key instructions, audit fields, or required advanced subcommands.
 
 For any user-visible report/HTML surface, capture real screenshots for each major navigation section before completion. For this terminal-only package, preserve PTY transcript/screenshot evidence of the installed TUI smoke.
 
@@ -148,7 +153,15 @@ Release evidence must include:
 - cross-batch learning from compact structured context;
 - 7/14/30-day journaled rotation/retention;
 - exact embedding payload privacy probes;
-- full disabled/all-off/no-timer/no-law-write regressions.
+- full disabled/all-off/no-timer/no-law-write regressions;
+- direct declaration creates no row before later-turn confirmation, bypasses repetition only, and rechecks law/conflict/semantic gates;
+- semantic-unavailable declaration creates no candidate/relation; clean activation and duplicate-block routing are atomic;
+- conversational review exposes numbered sanitized wording only, revalidates hidden snapshots, and rejects stale or same-turn mutation;
+- retry/correction/expiry/session-isolation behavior creates no duplicate or replaced-draft habit;
+- actual TUI selector injection appends exactly one `agent_experience.habit_steering` entry before prompt modification;
+- collapsed/expanded/malformed steering rendering is subtle, exact, and safe; no-selection emits no marker;
+- provenance stores approved wording/count/time only and never enters LLM context;
+- non-TUI, renderer/build/append failure produces no habit injection and only a static sanitized diagnostic.
 
 ## Release gate
 
@@ -163,4 +176,4 @@ git status --short
 
 Then obtain independent DeepSeek, an available model-diverse reviewer, and constitution review of the actual diff plus test evidence. Skip a reviewer that stalls or reports exhausted usage rather than blocking release evidence. Reviewer verdicts do not replace test evidence.
 
-After final commit/tag push, verify local `HEAD`, `origin/main`, and `refs/tags/v0.1.30` resolve to the same commit and `v0.1.25` through `v0.1.29` remain unchanged. npm publication is a separate manual action and is outside this release scope.
+After final commit/tag push, verify local `HEAD`, `origin/main`, and `refs/tags/v0.1.31` resolve to the same commit and `v0.1.25` through `v0.1.30` remain unchanged. npm publication is a separate manual action and is outside this release scope.

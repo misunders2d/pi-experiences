@@ -27,15 +27,16 @@ import {
 function makePi() {
   const commands = new Map();
   const handlers = new Map();
+  const tools = new Map();
   const fakePi = {
     registerCommand(name, options) { commands.set(name, options); },
     on(event, handler) { handlers.set(event, handler); },
-    registerTool() { throw new Error('no tools'); },
+    registerTool(definition) { tools.set(definition.name, definition); },
     registerFlag() { throw new Error('no flags'); },
     registerShortcut() { throw new Error('no shortcuts'); },
   };
   agentExperienceExtension(fakePi);
-  return { commands, handlers };
+  return { commands, handlers, tools };
 }
 
 function refs(count = 3, generation = 'active') {

@@ -2,8 +2,9 @@
 name: agent-experience
 description: >-
   Use when explaining, configuring, troubleshooting, or safely operating the Pi
-  Experiences / Agent Experience extension: /experience setup, local capture,
-  bounded Analyze, suggestion review, approved-habit controls, local duplicate
+  Experiences / Agent Experience extension: natural habit declaration and
+  numbered conversational review, /experience setup, local capture, bounded
+  Analyze, suggestion review, approved-habit controls, local duplicate
   prevention, short source retention, approved-habit reminders, privacy, law,
   and the distinction between skills, memory, and experience. Do not use for
   unrelated Pi extension development.
@@ -21,13 +22,23 @@ Experience may learn durable work preferences and recurring task/tool categories
 
 ## Normal-user rule
 
-Always start with:
+Use natural conversation when the user directly discusses or declares a habit:
+
+1. clarify the behavioral pattern in ordinary language;
+2. call `agent_experience_draft_habit` with exact `When:` / `Do:` wording;
+3. show that exact wording and ask whether to save it;
+4. call `agent_experience_confirm_habit` only after a clear affirmative answer in a later user message;
+5. if the user changes wording, draft again and never confirm the replaced draft.
+
+For suggestions or possible duplicates, call `agent_experience_list_review`, discuss its numbered plain-language items, then call `agent_experience_apply_review` only after the user explicitly names the number and decision in a later message. Never expose or request IDs, checksums, source refs, scores, thresholds, providers, raw examples, private paths, audit fields, or capability tokens.
+
+The complete control panel/fallback remains:
 
 ```text
 /experience setup
 ```
 
-This is the complete normal-user surface. Do not require typed setup/review subcommands, IDs, checksums, thresholds, endpoints, provider settings, model-server details, or filesystem commands.
+Setup must remain sufficient by itself. Do not require typed setup/review subcommands, IDs, checksums, thresholds, endpoints, provider settings, model-server details, or filesystem commands.
 
 If the panel does not render, tell the user to restart Pi so the latest extension loads, then run `/experience setup` again.
 
@@ -45,6 +56,18 @@ Update all layers when behavior changes. The technical layer must retain package
 
 ## Normal workflow
 
+### Directly declared habit
+
+1. Discuss the pattern naturally.
+2. Show the exact tool-produced `When:` / `Do:` draft.
+3. Wait for a later user message.
+4. On explicit yes, save the current draft. On correction, replace the draft and ask again.
+5. Explain only the sanitized outcome: active, waiting on law/conflict/duplicate review, or not saved.
+
+A direct declaration bypasses only the repeated-observation threshold. Law, conflict, local duplicate, same-user, stale-state, audit, and fail-closed gates remain. Drafting alone changes no durable state.
+
+### Learned from repetition
+
 1. Open `/experience setup`.
 2. Turn on **Save chat examples locally**.
 3. Use Pi normally until behavior repeats.
@@ -60,7 +83,7 @@ The panel also exposes duplicate resolution, current settings, help, schedule Ph
 
 ## Hard product invariants
 
-- Every new or materially reworded habit needs explicit human approval.
+- Every new or materially reworded habit needs explicit human approval; conversational confirmation must occur after the exact draft in a later user turn.
 - Exact normalized evidence may update support for an unchanged approved identity without rewriting it.
 - Exact strong contradictory evidence may make one uniquely matched old active habit dormant; replacement remains a proposal.
 - Direct user instructions and configured law override habits.
@@ -91,7 +114,7 @@ If saved examples exist but no suggestions appear, choose **Analyze saved exampl
 
 Review suggestion details in the focused panel. Do not dump internal JSON into chat.
 
-A suggestion currently needs at least three cited observations across two distinct days. Approval may remain visibly waiting for more evidence, current law, conflict resolution, or local duplicate checking.
+An Analyze-generated suggestion currently needs at least three cited observations across two distinct days. A directly declared and exactly confirmed habit does not need fabricated/repeated evidence. Either path may remain inactive for current law, conflict resolution, or local duplicate checking.
 
 - Analyze automatically rechecks approved waiting habits after a validated commit.
 - **Review approved habits** offers a plain recheck action.
@@ -125,7 +148,7 @@ Normalized condition and behavior wording enter local inference as two independe
 
 The setup progress view shows plain preparation/comparison/save phases and supports Escape cancellation. Scans are bounded and atomic; a failed/cancelled scan must not claim partial durable results. An obsolete pending scoring-method relation is dismissed only by an explicit user-started scan, with audit. A candidate remains hidden until all pending relations involving it are resolved. Unchanged keep-separate decisions survive method upgrades; changed or corrupt proof returns to human review.
 
-Use **Resolve duplicate habits** to compare both complete wordings. Each outcome must state exactly which habit remains, which is archived/hidden, and whether evidence is combined. Merge, replacement, and archive actions require a second explicit confirmation; cancellation changes nothing. Never expose internal scores or thresholds in normal UI.
+Use conversational numbered review or **Resolve duplicate habits** to compare both complete wordings. Each outcome must state exactly which habit remains, which is archived/hidden, and whether evidence is combined. Merge, replacement, archive, keep-separate, approval, and rejection require an explicit user decision; cancellation changes nothing. Never expose internal IDs, checksums, scores, thresholds, providers, or source refs in normal chat/UI.
 
 ## Source retention
 
@@ -136,11 +159,21 @@ After a source generation is fully analyzed, redacted source text rotates and is
 
 Minimized evidence, provenance, integrity checks, and review audit remain. Redaction is heuristic, not a formal guarantee.
 
-## Approved-habit reminders
+## Approved-habit reminders and steering provenance
 
 Reminders are off by default. Default instant mode uses local lexical/no-network matching. Only active same-user approved habits can be selected.
 
-Never inject from suggestions, disabled/dormant/suppressed/archived habits, evidence, quarantine, reports, or raw observations. Selector logs do not persist raw prompt/session/injected text; `prompt_hash` remains `omitted`.
+Never steer invisibly. For every actual TUI injection, Pi must place a muted collapsed marker immediately before the answer:
+
+```text
+◇ Habit steering · N approved habit(s)
+```
+
+Expanded rendering shows the exact approved `When:` / `Do:` wording selected. No marker means no habit guidance was injected. The marker is a durable custom Pi session entry and never enters LLM context. It may retain selected approved wording for traceability, but never raw prompts, IDs, checksums, confidence, model/provider details, source refs, raw examples, paths, or audit data.
+
+If the interface is not the Pi TUI, or marker registration/build/append fails, suppress habit injection and emit only the static sanitized diagnostic. Never fall back to hidden steering or `sendMessage`.
+
+Never inject from suggestions, disabled/dormant/suppressed/archived habits, evidence, quarantine, reports, or raw observations. Selector hit logs do not persist raw prompt/session/injected text; `prompt_hash` remains `omitted`; the separate provenance marker stores approved wording only.
 
 Optional advanced matching is separately controlled and must fail closed.
 
@@ -174,7 +207,10 @@ Maintainer invariants:
 - restore prevalidates and journals old-or-new recovery;
 - observations use tail manifest + fixed-width index;
 - locks use token/PID/hostname/time and ownership-checked release;
+- conversational drafts/review snapshots are same-user/session, in-memory, bounded, 15-minute, and lost safely on restart;
+- direct declarations create no row when semantic preparation is unavailable and otherwise create/block/activate in one SQLite writer transaction;
 - semantic activation revalidates in one SQLite writer transaction;
+- each actual TUI injection appends one `agent_experience.habit_steering` custom entry before prompt modification; non-TUI/unrenderable/unappendable provenance suppresses injection;
 - duplicate scoring uses the lower of separate condition/behavior scores at 5,500 review / 7,000 strong basis points;
 - normal scans compare active/disabled approved habits only and never candidate-to-candidate pairs;
 - scan cap is 100 current habits / 4,950 pairs;

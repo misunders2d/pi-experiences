@@ -14,11 +14,12 @@ const packageRoot=resolve(process.argv[2]||'');
 if(!packageRoot)throw new Error('Usage: verify-packed-install.mjs /absolute/installed/pi-experiences');
 const pkg=JSON.parse(await readFile(join(packageRoot,'package.json'),'utf8'));
 assert.equal(pkg.name,'pi-experiences');
-assert.equal(pkg.version,'0.1.30');
+assert.equal(pkg.version,'0.1.31');
 assert.equal(pkg.engines.node,'>=22.19.0');
 assert.deepEqual(pkg.peerDependencies,{'@earendil-works/pi-ai':'*','@earendil-works/pi-coding-agent':'*','@earendil-works/pi-tui':'*'});
+assert.equal(pkg.dependencies?.typebox,'1.1.38');
 assert.equal(pkg.scripts?.install,undefined);assert.equal(pkg.scripts?.postinstall,undefined);assert.equal(pkg.scripts?.prepare,undefined);
-const required=['dist/experience-consolidate.mjs','extensions/agent-experience/index.ts','skills/agent-experience/SKILL.md','runtime/agent-experience/local-embedding-worker.mjs','runtime/vendor/onnxruntime-web/ort.node.min.mjs','runtime/vendor/onnxruntime-web/ort-wasm-simd-threaded.mjs','THIRD_PARTY_NOTICES.md'];
+const required=['dist/experience-consolidate.mjs','extensions/agent-experience/index.ts','extensions/agent-experience/src/conversation.ts','extensions/agent-experience/src/conversational-tools.ts','extensions/agent-experience/src/steering-note.ts','skills/agent-experience/SKILL.md','scripts/test-agent-experience-phase16-conversation.mjs','scripts/seed-steering-tui-smoke.mjs','scripts/test-steering-tui-smoke.py','runtime/agent-experience/local-embedding-worker.mjs','runtime/vendor/onnxruntime-web/ort.node.min.mjs','runtime/vendor/onnxruntime-web/ort-wasm-simd-threaded.mjs','THIRD_PARTY_NOTICES.md'];
 for(const relative of required)await access(join(packageRoot,relative));
 async function files(directory){const out=[];for(const entry of await readdir(directory,{withFileTypes:true})){const p=join(directory,entry.name);if(entry.isDirectory())out.push(...await files(p));else out.push(p);}return out;}
 const packedFiles=await files(packageRoot);
@@ -50,7 +51,7 @@ assert.equal(loaded.diagnostics.length,0,JSON.stringify(loaded.diagnostics));
 assert.deepEqual(loaded.skills.map((skill)=>skill.name),['agent-experience']);
 async function bytes(directory){let total=0;for(const path of await files(directory))total+=(await stat(path)).size;return total;}
 let installedRuntimeBytes=await bytes(packageRoot);
-for(const dependency of ['@huggingface/tokenizers','onnxruntime-common']){
+for(const dependency of ['@huggingface/tokenizers','onnxruntime-common','typebox']){
   const path=join(dirname(packageRoot),dependency);
   await access(path);
   installedRuntimeBytes+=await bytes(path);

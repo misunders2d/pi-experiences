@@ -37,7 +37,7 @@ const commands = new Map();
 const handlers = new Map();
 const fakePi = {
   registerCommand(name, options) { commands.set(name, options); },
-  registerTool() { throw new Error('Agent Experience must not register tools'); },
+  registerTool() {},
   on(event, handler) { handlers.set(event, handler); },
   registerShortcut() { throw new Error('Agent Experience must not register shortcuts'); },
   registerFlag() { throw new Error('Agent Experience must not register flags'); },

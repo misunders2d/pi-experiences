@@ -3,9 +3,9 @@ import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { canonicalJson, checksumJson, sha256Hex } from "./storage/checksum.ts";
 import { normalizeUserId, resolvePrivatePath, ensurePrivateRoot } from "./storage/private-root.ts";
-import { redactJson, containsUnredactedSensitiveText } from "./storage/redaction.ts";
-import { buildTypedStorageRow } from "./storage/sqlite.ts";
-import { runAtomicSemanticActivation } from "./semantic/service.ts";
+import { redactJson, redactText, containsUnredactedSensitiveText } from "./storage/redaction.ts";
+import { buildTypedStorageRow, insertStorageRecord } from "./storage/sqlite.ts";
+import { runAtomicSemanticActivation, runAtomicSemanticDeclaration } from "./semantic/service.ts";
 import { insertHabitDuplicateAudit, listHabitDuplicates, restoreCandidateDuplicateResolution, updateHabitDuplicateDecision } from "./semantic/storage.ts";
 import type { EmbeddingAdapter, SemanticDedupePolicy } from "./semantic/types.ts";
 
@@ -319,6 +319,136 @@ function activationDecision(db: any, input: { userId: string; row: any; law: Law
 	const law = checkHabitLaw({ condition: input.row.condition, behavior: input.row.behavior, law: input.law });
 	const conflict = checkHabitConflict(db, { userId: input.userId, habitId: input.row.id, condition: input.row.condition, behavior: input.row.behavior, polarity: Number(input.row.polarity) });
 	return { eligible: eligibility.eligible && law.pass && conflict.pass, eligibility, law, conflict };
+}
+
+export function normalizeDeclaredHabitWording(value: unknown, label: "condition" | "behavior"): string {
+	const raw = String(value ?? "");
+	if (raw.length > 2_000 || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(raw)) throw new Error(`Invalid declared habit ${label}`);
+	const normalized = redactText(raw).trim().replace(/\s+/g, " ");
+	if (!normalized || normalized.length > 1_000) throw new Error(`Invalid declared habit ${label}`);
+	return normalized;
+}
+
+export async function declareUserHabit(db: any, input: {
+	userId: string;
+	declarationId: string;
+	condition: string;
+	behavior: string;
+	polarity: 1 | -1;
+	law: LawSnapshot;
+	now: string;
+	semantic?: { policy?: Partial<SemanticDedupePolicy>; provider?: EmbeddingAdapter; signal?: AbortSignal };
+}) {
+	const userId = normalizeUserId(input.userId);
+	if (!/^[A-Za-z0-9_-]{8,128}$/.test(input.declarationId)) throw new Error("Invalid declaration identity");
+	if (input.polarity !== 1 && input.polarity !== -1) throw new Error("Invalid declared habit polarity");
+	const condition = normalizeDeclaredHabitWording(input.condition, "condition");
+	const behavior = normalizeDeclaredHabitWording(input.behavior, "behavior");
+	const habitId = stableId("habit-user-declared", { user_id: userId, declaration_id: input.declarationId });
+	const data = {
+		schema_version: 2,
+		record_kind: "candidate_habit_v1",
+		status: "candidate",
+		review_status: "user_declared_pending_activation",
+		active: false,
+		injectable: false,
+		source_kind: "user_declared",
+		explicit_user_declaration: true,
+		declaration_id: input.declarationId,
+		condition,
+		behavior,
+		polarity: input.polarity,
+		confidence_bp: 10_000,
+		source_refs: [],
+		source_dates: [],
+	};
+	const candidateRow = buildTypedStorageRow("habits", { id: habitId, userId, data, createdAt: input.now, updatedAt: input.now });
+	const target = {
+		id: candidateRow.id,
+		user_id: candidateRow.user_id,
+		status: candidateRow.status,
+		condition: candidateRow.condition,
+		behavior: candidateRow.behavior,
+		polarity: candidateRow.polarity,
+		checksum: candidateRow.checksum,
+		created_at: candidateRow.created_at,
+		updated_at: candidateRow.updated_at,
+		data_json: candidateRow.data_json,
+	};
+	const approvalIdentity = (row: any) => ({
+		candidate_id: row.id,
+		condition: normalizeText(row.condition),
+		behavior: normalizeText(row.behavior),
+		polarity: Number(row.polarity),
+		approved_at: input.now,
+		source_kind: "user_declared",
+	});
+	const outcome = await runAtomicSemanticDeclaration(db, {
+		userId,
+		target,
+		policy: input.semantic?.policy,
+		provider: input.semantic?.provider,
+		now: input.now,
+		signal: input.semantic?.signal,
+		targetKind: "user_declared_habit",
+		createTarget: () => {
+			const inserted = insertStorageRecord(db, "habits", { id: habitId, userId, data, now: input.now });
+			if (inserted.checksum !== candidateRow.checksum) throw new Error("Declared habit checksum changed during creation");
+			return getHabit(db, userId, habitId);
+		},
+		transition: (_target, semantic) => {
+			const before = getHabit(db, userId, habitId);
+			const lawSnapshot = revalidateLawSnapshotSync(input.law);
+			const law = checkHabitLaw({ condition: before.condition, behavior: before.behavior, law: lawSnapshot });
+			const conflict = checkHabitConflict(db, { userId, habitId: before.id, condition: before.condition, behavior: before.behavior, polarity: Number(before.polarity) });
+			const activated = law.pass && conflict.pass;
+			const pendingReason = !law.pass ? "law" : !conflict.pass ? "conflict" : undefined;
+			const reviewStatus = activated ? "accepted_active" : pendingReason === "law" ? "approved_pending_law_blocked" : "approved_pending_conflict";
+			const nextData = {
+				...parseJson(before.data_json),
+				condition: before.condition,
+				behavior: before.behavior,
+				polarity: before.polarity,
+				confidence_bp: before.confidence_bp,
+				record_kind: before.record_kind,
+				schema_version: before.schema_version,
+				review_status: reviewStatus,
+				active: activated,
+				injectable: false,
+				law_hash: lawSnapshot.hash,
+				approved_identity: approvalIdentity(before),
+				approved_pending_reason: pendingReason,
+				activation_decision: { declared: true, law, conflict, semantic },
+			};
+			const updated = updateHabitRow(db, { userId, id: before.id, expectedStatus: "candidate", expectedChecksum: before.checksum, data: nextData, status: activated ? "active" : "candidate", now: input.now });
+			const after = getHabit(db, userId, before.id);
+			const audit = insertReviewAudit(db, { userId, targetKind: "habit", targetId: before.id, action: activated ? "declare_user_habit_activate" : `declare_user_habit_pending_${pendingReason}`, before, after, data: { declared: true, law, conflict, semantic, approved_identity: approvalIdentity(before) }, createdAt: input.now });
+			return { status: activated ? "active" : "candidate", activated, pending_reason: pendingReason, law, conflict, semantic, checksum: updated.checksum, audit_id: audit.id };
+		},
+		onBlocked: (_target, semantic) => {
+			const before = getHabit(db, userId, habitId);
+			const nextData = {
+				...parseJson(before.data_json),
+				condition: before.condition,
+				behavior: before.behavior,
+				polarity: before.polarity,
+				confidence_bp: before.confidence_bp,
+				record_kind: before.record_kind,
+				schema_version: before.schema_version,
+				review_status: "duplicate_resolution",
+				active: false,
+				injectable: false,
+				approved_identity: approvalIdentity(before),
+				approved_pending_reason: semantic.reason,
+				activation_decision: { declared: true, semantic },
+			};
+			const updated = updateHabitRow(db, { userId, id: before.id, expectedStatus: "candidate", expectedChecksum: before.checksum, data: nextData, status: "candidate", now: input.now });
+			const after = getHabit(db, userId, before.id);
+			const audit = insertReviewAudit(db, { userId, targetKind: "habit", targetId: before.id, action: "declare_user_habit_pending_duplicate_resolution", before, after, data: { declared: true, semantic, approved_identity: approvalIdentity(before) }, createdAt: input.now });
+			return { status: "candidate", activated: false, pending_reason: "duplicate", semantic, checksum: updated.checksum, audit_id: audit.id };
+		},
+	});
+	return outcome.result || { status: "not_saved", activated: false, pending_reason: "semantic_unavailable", semantic: outcome.semantic };
 }
 
 export async function acceptCandidateHabit(db: any, input: { userId: string; habitId: string; checksum: string; law: LawSnapshot; now: string; semantic?: { policy?: Partial<SemanticDedupePolicy>; provider?: EmbeddingAdapter; signal?: AbortSignal } }) {

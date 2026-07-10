@@ -21,7 +21,7 @@ function makePi() {
   const fakePi = {
     registerCommand(name, options) { commands.set(name, options); },
     on(event, handler) { handlers.set(event, handler); },
-    registerTool() { throw new Error('no tools'); },
+    registerTool() {},
     registerFlag() { throw new Error('no flags'); },
     registerShortcut() { throw new Error('no shortcuts'); },
   };

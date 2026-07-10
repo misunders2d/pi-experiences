@@ -60,6 +60,8 @@ import { buildCompactHabitContext, compactContextIdentity, type CompactHabitCont
 import { getProposalReadWatermark } from "./src/consolidate/commit.ts";
 import { GENERALIZED_HABIT_INSTRUCTIONS } from "./src/consolidate/prompt.ts";
 import { expectedRangeFromObservations, runConsolidationOnce } from "./src/consolidate/runner.ts";
+import { noteAgentExperienceConversationInput, registerAgentExperienceConversationalTools } from "./src/conversational-tools.ts";
+import { buildHabitSteeringEntry, HABIT_STEERING_ENTRY_TYPE, renderHabitSteeringEntry, type HabitSteeringEntryData } from "./src/steering-note.ts";
 
 const captureBuffer = new CapturePairBuffer();
 let selectorModelAdapter: SelectorModelAdapter | undefined;
@@ -2473,7 +2475,7 @@ function usage(topic = "") {
 	if (normalized === "setup") {
 		return [
 			"Agent Experience setup:",
-			"/experience setup                         # the one normal-user setup panel",
+			"/experience setup                         # complete control panel and fallback",
 			"Inside that menu: save examples, choose model, analyze saved examples, review suggestions, review approved habits, disable/re-enable habits, and use approved habits.",
 			"Use arrow keys plus Space/Enter on menu rows. No typed setup subcommands are required for normal use. Checkbox rows show [x]/[ ].",
 			"Automatic schedule is Phase 2/off. Analyze saved examples from the setup menu when you want suggestions.",
@@ -2482,8 +2484,9 @@ function usage(topic = "") {
 	if (normalized === "review") {
 		return [
 			"Agent Experience review:",
-			"Open /experience setup and choose Review suggested habits.",
-			"The setup menu shows suggestions in plain English and lets you approve or reject them.",
+			"Ask Pi to show habit suggestions or possible duplicates for numbered conversational review.",
+			"Open /experience setup and choose Review suggested habits for the complete control-panel route.",
+			"Both surfaces show suggestions in plain English and require an explicit approve/reject/resolution choice.",
 			"Use Review approved habits in the same setup menu to browse actual active/disabled habits and disable or re-enable one without typing ids/checksums.",
 			"Review keeps checksum/stale-state protection. It never auto-approves habits.",
 		].join("\n");
@@ -2525,14 +2528,26 @@ function usage(topic = "") {
 	}
 	return [
 		"Agent Experience:",
-		"/experience setup                         # the one normal-user setup panel",
+		"Discuss a pattern naturally, review Pi's exact When/Do draft, then confirm it in a later message to save a directly declared habit.",
+		"Ask Pi to show numbered suggestions/duplicates for conversational review, or use /experience setup as the complete control panel.",
 		"Inside setup: save examples, choose model, analyze saved examples, review suggestions, approve/reject, and use approved habits.",
-		"No other typed command is required for normal setup, model choice, analysis, review, approval, or approved-habit reminders.",
+		"No typed subcommand, internal ID, or checksum is required for normal declaration, setup, analysis, review, approval, or approved-habit reminders.",
 		"Automatic schedule is Phase 2/off. Suggestions are never auto-approved.",
 	].join("\n");
 }
 
 export default function agentExperienceExtension(pi: ExtensionAPI) {
+	registerAgentExperienceConversationalTools(pi);
+	let steeringRendererReady = false;
+	try {
+		if (typeof pi.registerEntryRenderer === "function") {
+			pi.registerEntryRenderer<HabitSteeringEntryData>(HABIT_STEERING_ENTRY_TYPE, (entry, { expanded }, theme) => renderHabitSteeringEntry(entry.data, expanded, theme));
+			steeringRendererReady = true;
+		}
+	} catch {
+		steeringRendererReady = false;
+	}
+
 	pi.registerCommand("experience", {
 		description: "Agent Experience setup control panel; advanced/backcompat commands remain hidden for maintainers",
 		handler: async (args, ctx) => {
@@ -2600,16 +2615,35 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 		if (!config.enabled || !config.selector_enabled) return;
 		const prompt = String((event as { prompt?: unknown; text?: unknown }).prompt ?? (event as { text?: unknown }).text ?? "");
 		if (!prompt.trim()) return;
+		if (ctx.mode !== "tui" || !steeringRendererReady || typeof pi.appendEntry !== "function") {
+			notifyDedupedDiagnostic(ctx, selectorDiagnosticsShown, {
+				key: "selector-runtime:steering-provenance-unavailable",
+				message: "Agent Experience habit steering was suppressed because the visual provenance marker is unavailable in this interface. No habit guidance was injected.",
+			});
+			return;
+		}
 		if (!(await fileExists(resolvePrivatePath(paths.root, "ledger.sqlite")))) return;
 		let storage: Awaited<ReturnType<typeof openExistingExperienceStorage>> | undefined;
 		try {
 			storage = await openExistingExperienceStorage(paths.root, { userId: getConfiguredUserId() });
 			const law = await readConfiguredLawSnapshot(storage.root, config);
 			const adapter = selectorModelAdapter ?? createPiSelectorModelAdapter(ctx);
-			const result = await runSelectorRuntime(storage.db, { userId: storage.userId, prompt, config, law, now: new Date().toISOString(), adapter });
+			const now = new Date().toISOString();
+			const result = await runSelectorRuntime(storage.db, { userId: storage.userId, prompt, config, law, now, adapter });
 			if (!result.injected || !result.message) return;
 			const basePrompt = String((event as { systemPrompt?: unknown }).systemPrompt ?? "");
-			return { systemPrompt: `${basePrompt}\n\n${result.message}` };
+			const systemPrompt = `${basePrompt}\n\n${result.message}`;
+			try {
+				const entry = buildHabitSteeringEntry({ candidates: result.candidates, selected: result.selected, createdAt: now });
+				pi.appendEntry(HABIT_STEERING_ENTRY_TYPE, entry);
+			} catch {
+				notifyDedupedDiagnostic(ctx, selectorDiagnosticsShown, {
+					key: "selector-runtime:steering-provenance-append-failed",
+					message: "Agent Experience habit steering was suppressed because its visual provenance marker could not be recorded. No habit guidance was injected.",
+				});
+				return;
+			}
+			return { systemPrompt };
 		} catch (error: any) {
 			const raw = String(error?.message || error);
 			if (/law file missing/i.test(raw)) {
@@ -2635,6 +2669,7 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 	});
 
 	pi.on("input", async (event, ctx) => {
+		if (event.source !== "extension" && !event.streamingBehavior) noteAgentExperienceConversationInput(ctx);
 		const { paths, active } = await getEffectiveCapture();
 		if (!active) {
 			captureBuffer.clearAll();

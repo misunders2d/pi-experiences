@@ -56,7 +56,9 @@ function makePi() {
   const fakePi = {
     registerCommand(name, options) { commands.set(name, options); },
     on(event, handler) { handlers.set(event, handler); },
-    registerTool() { throw new Error('no tools'); },
+    registerTool() {},
+    registerEntryRenderer() {},
+    appendEntry() {},
     registerFlag() { throw new Error('no flags'); },
     registerShortcut() { throw new Error('no shortcuts'); },
   };
@@ -90,6 +92,7 @@ const modelRegistry = {
 };
 const ctx = {
   cwd: process.cwd(),
+  mode: 'tui',
   hasUI: true,
   modelRegistry,
   model: availableModel,

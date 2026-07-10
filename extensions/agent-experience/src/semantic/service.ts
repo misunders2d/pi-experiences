@@ -244,6 +244,86 @@ function auditUnavailable<T>(db: any, input: { userId: string; targetHabitId: st
 	}
 }
 
+export async function runAtomicSemanticDeclaration<T>(db: any, input: {
+	userId: string;
+	target: SemanticHabitRow;
+	policy?: Partial<SemanticDedupePolicy>;
+	provider?: EmbeddingAdapter;
+	now: string;
+	signal?: AbortSignal;
+	targetKind: string;
+	createTarget: (target: SemanticHabitRow, semantic: SemanticGateDecision) => SemanticHabitRow;
+	transition: (target: SemanticHabitRow, semantic: SemanticGateDecision) => T;
+	onBlocked?: (target: SemanticHabitRow, semantic: SemanticGateDecision) => T;
+}): Promise<{ semantic: SemanticGateDecision; transitioned: boolean; result?: T; target: SemanticHabitRow }> {
+	const policy = sanitizePolicy(input.policy);
+	const assertTargetAbsent = () => {
+		if (getSemanticHabitRow(db, { userId: input.userId, habitId: input.target.id })) throw new Error("Declared habit already exists");
+	};
+	const createExactTarget = (semantic: SemanticGateDecision): SemanticHabitRow => {
+		const created = input.createTarget(input.target, semantic);
+		if (!created || created.id !== input.target.id || created.status !== input.target.status || created.checksum !== input.target.checksum) throw new Error("Declared habit creation changed unexpectedly");
+		return created;
+	};
+	if (!policy.enabled) {
+		const semantic: SemanticGateDecision = { pass: true, reason: "disabled", matches: [], policy: policySummary(policy) };
+		db.exec("BEGIN IMMEDIATE");
+		try {
+			throwIfAborted(input.signal);
+			assertTargetAbsent();
+			const created = createExactTarget(semantic);
+			const result = input.transition(created, semantic);
+			db.exec("COMMIT");
+			return { semantic, transitioned: true, result, target: getSemanticHabitRow(db, { userId: input.userId, habitId: input.target.id })! };
+		} catch (error) {
+			try { db.exec("ROLLBACK"); } catch {}
+			throw error;
+		}
+	}
+	if (!input.provider) return { semantic: unavailableDecision(policy, "local_embedding_runtime_missing"), transitioned: false, target: input.target };
+	for (let attempt = 0; attempt < MAX_ACTIVATION_REPREPARES; attempt += 1) {
+		throwIfAborted(input.signal);
+		assertTargetAbsent();
+		const comparators = comparisonRows(db, { userId: input.userId, target: input.target, policy });
+		const comparatorState = rowSnapshot(comparators);
+		const duplicateState = relationSnapshot(db, input.userId);
+		let prepared: Map<string, PreparedEmbedding>;
+		try {
+			prepared = await prepareHabitEmbeddings(db, { userId: input.userId, habits: [input.target, ...comparators], policy, provider: input.provider, signal: input.signal, batchSize: LOCAL_EMBEDDING_MAX_BATCH });
+		} catch (error: any) {
+			return { semantic: unavailableDecision(policy, String(error?.message || error)), transitioned: false, target: input.target };
+		}
+		try {
+			db.exec("BEGIN IMMEDIATE");
+			throwIfAborted(input.signal);
+			assertTargetAbsent();
+			const freshComparators = comparisonRows(db, { userId: input.userId, target: input.target, policy });
+			if (rowSnapshot(freshComparators) !== comparatorState || relationSnapshot(db, input.userId) !== duplicateState) throw new SemanticSnapshotChanged("Semantic declaration snapshot changed");
+			const matches = computeMatches({ target: input.target, comparators: freshComparators, prepared, policy });
+			const semantic: SemanticGateDecision = matches.length
+				? { pass: false, reason: "semantic_duplicate", matches, policy: policySummary(policy) }
+				: { pass: true, reason: "pass", matches: [], policy: policySummary(policy) };
+			const created = createExactTarget(semantic);
+			for (const item of prepared.values()) persistPreparedEmbedding(db, { userId: input.userId, prepared: item, policy, now: input.now });
+			if (matches.length) {
+				writeActivationBlocks(db, { userId: input.userId, target: created, matches, policy, targetKind: input.targetKind, now: input.now });
+				const blockedTarget = getSemanticHabitRow(db, { userId: input.userId, habitId: input.target.id })!;
+				const result = input.onBlocked?.(blockedTarget, semantic);
+				db.exec("COMMIT");
+				return { semantic, transitioned: false, result, target: getSemanticHabitRow(db, { userId: input.userId, habitId: input.target.id })! };
+			}
+			const result = input.transition(created, semantic);
+			db.exec("COMMIT");
+			return { semantic, transitioned: true, result, target: getSemanticHabitRow(db, { userId: input.userId, habitId: input.target.id })! };
+		} catch (error) {
+			try { db.exec("ROLLBACK"); } catch {}
+			if (error instanceof SemanticSnapshotChanged && attempt + 1 < MAX_ACTIVATION_REPREPARES) continue;
+			throw error;
+		}
+	}
+	throw new Error("Semantic state changed repeatedly; retry the declaration");
+}
+
 export async function runAtomicSemanticActivation<T>(db: any, input: { userId: string; targetHabitId: string; expectedStatus: string; expectedChecksum: string; policy?: Partial<SemanticDedupePolicy>; provider?: EmbeddingAdapter; now: string; signal?: AbortSignal; targetKind: string; transition: (target: SemanticHabitRow, semantic: SemanticGateDecision) => T; onBlocked?: (target: SemanticHabitRow, semantic: SemanticGateDecision) => T }): Promise<{ semantic: SemanticGateDecision; transitioned: boolean; result?: T; target: SemanticHabitRow }> {
 	const policy = sanitizePolicy(input.policy);
 	if (!policy.enabled) {

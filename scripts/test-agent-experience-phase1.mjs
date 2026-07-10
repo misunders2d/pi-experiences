@@ -12,12 +12,13 @@ process.env.AX_STATE_ROOT = join(root, 'state');
 
 const commands = new Map();
 const handlers = new Map();
+const tools = new Map();
 const fakePi = {
   registerCommand(name, options) {
     commands.set(name, options);
   },
-  registerTool() {
-    throw new Error('Agent Experience must not register tools');
+  registerTool(definition) {
+    tools.set(definition.name, definition);
   },
   on(event, handler) {
     handlers.set(event, handler);
@@ -32,6 +33,7 @@ const fakePi = {
 
 agentExperienceExtension(fakePi);
 assert.deepEqual([...commands.keys()], ['experience'], 'extension should register only /experience command');
+assert.deepEqual([...tools.keys()].sort(), ['agent_experience_apply_review', 'agent_experience_confirm_habit', 'agent_experience_draft_habit', 'agent_experience_list_review'], 'extension should register only the four conversational Agent Experience tools');
 assert.deepEqual([...handlers.keys()].sort(), ['agent_end', 'before_agent_start', 'input', 'session_shutdown'], 'extension may register capture lifecycle plus fail-closed selector hook');
 
 const plainSetupLeakPattern = /capture=|learning=|guidance=|consolidation=|timer=|break_in=|selector=|selector_mode=|pre-injection/i;

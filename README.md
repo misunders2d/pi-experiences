@@ -2,9 +2,9 @@
 
 **Give your Pi coding agent a third kind of long-term improvement: human-reviewed habits.**
 
-Agent skills teach procedures. Agent memory preserves facts and context. **Experience helps Pi learn how you prefer to work**—from repeated interaction, through explicit review, without silently rewriting itself.
+Agent skills teach procedures. Agent memory preserves facts and context. **Experience helps Pi learn how you prefer to work**—from direct conversation or repeated interaction, through explicit review, without silently rewriting itself.
 
-`pi-experiences` is a local-first Pi extension and skill for persistent behavioral learning and coding-agent personalization. When you ask it to Analyze, it turns repeated patterns into candidate habits. Nothing becomes active until you approve it.
+`pi-experiences` is a local-first Pi extension and skill for persistent behavioral learning and coding-agent personalization. Tell Pi a habit directly and confirm its exact wording, or ask Analyze to turn repeated patterns into candidate habits. Nothing becomes active without your explicit approval.
 
 ![Infographic: skills give a Pi coding agent procedures, memory preserves facts, and human-reviewed habits improve how it works with you](./docs/images/pi-experiences-habits.svg)
 
@@ -25,7 +25,7 @@ Humans call those patterns **habits**. Pi Experiences gives them their own revie
 | --- | --- | --- | --- |
 | **Agent skill** | “What procedure can I follow?” | Deliberately written or installed | “Use this release checklist.” |
 | **Agent memory** | “What should I remember?” | Explicitly saved as durable knowledge | “This repository publishes from `main`.” |
-| **Experience habit** | “How should I tend to behave?” | Inferred from repetition, then reviewed by you | “Verify the packed artifact before calling a release ready.” |
+| **Experience habit** | “How should I tend to behave?” | Declared directly or inferred from repetition, then reviewed by you | “Verify the packed artifact before calling a release ready.” |
 
 This is the third layer: not more commands, not another fact store, but **human-in-the-loop behavioral learning**.
 
@@ -67,6 +67,11 @@ These are not one-off macros. They are reusable behavioral tendencies that can m
 
 Pi Experiences is a controlled answer to the self-improving-agent problem: let behavior improve, but make every change visible and reversible.
 
+There are two reviewed entry paths:
+
+- **Declare a habit naturally:** discuss a pattern with Pi, let Pi show the exact `When:` / `Do:` wording, then say yes or correct it. Only a later, explicit confirmation saves that exact draft. A declared habit does not need repetition evidence, but current safety law, conflicts, local duplicate checks, stale-state protection, and audit still apply.
+- **Learn from repetition:** opt into local examples and manually run Analyze. The repeated-pattern loop remains:
+
 1. **Observe** — after you opt in, Pi stores bounded, heuristically redacted examples from normal work.
 2. **Detect** — when you manually start Analyze, your selected Pi model/provider examines the next bounded batch for repeated behavior.
 3. **Propose** — possible habits appear as inactive “When → Do” suggestions.
@@ -102,13 +107,13 @@ Human review is the feature, not fine print.
 - No automatic approval, semantic merge, replacement activation, law modification, or scheduling occurs.
 - Missing, corrupt, stale, or incompatible state fails closed.
 
-The complete normal-user control surface is:
+You can work naturally in chat—“Do you see this pattern?”, “Draft it as a habit,” then confirm the exact wording—or open the complete control panel:
 
 ```text
 /experience setup
 ```
 
-Normal users never need IDs, checksums, thresholds, endpoints, model servers, or advanced subcommands.
+The panel remains sufficient for every setting and review action. Conversational review uses numbered plain-language items. Normal users never need IDs, checksums, thresholds, endpoints, model servers, or advanced subcommands.
 
 ## Install
 
@@ -127,7 +132,7 @@ pi update --extensions
 Pinned GitHub installation:
 
 ```bash
-pi install git:github.com/misunders2d/pi-experiences@v0.1.30
+pi install git:github.com/misunders2d/pi-experiences@v0.1.31
 ```
 
 Git refs remain pinned; they do not float to newer tags.
@@ -141,29 +146,52 @@ Pi extensions execute with your user permissions. Review third-party package sou
 
 ## Normal workflow
 
+### Record a habit in conversation
+
+1. Tell Pi the pattern you want it to remember.
+2. Pi discusses it and shows exact `When:` / `Do:` wording.
+3. Say yes to that exact wording, or correct it and review the new draft.
+4. Pi saves only after a clear confirmation in a later message. It reports whether the habit is active or waiting on safety, conflict, or duplicate review.
+
+You can also ask Pi to show habit suggestions or possible duplicates, discuss numbered items, then say things such as “approve 1,” “reject 2,” or “those are different—keep 3 separate.” Internal identifiers stay hidden.
+
+### Learn a habit from repetition
+
 1. Install the package and run `/experience setup`.
 2. Turn on **Save chat examples locally**.
 3. Use Pi normally until a behavioral pattern repeats.
 4. Select **Choose model for habit learning**.
 5. Choose **Analyze saved examples now** when you are ready.
-6. Open **Review suggested habits** and explicitly approve or reject each proposal.
+6. Review suggestions conversationally or from **Review suggested habits**, then explicitly approve or reject each proposal.
 7. Use **Review approved habits** to inspect, disable, re-enable, archive, or recheck a waiting approval.
 8. Optionally prepare **Prevent duplicate habits**.
 9. Optionally enable **Use approved habits before replies**.
 
-The setup panel also contains duplicate resolution, 7/14/30-day source-example retention, current settings, plain-language help, all-off, and the Phase 2/off schedule explanation.
+The setup panel remains the complete fallback/control panel. It also contains duplicate resolution, 7/14/30-day source-example retention, current settings, plain-language help, all-off, and the Phase 2/off schedule explanation.
 
 Analyze runs as a bounded nonblocking job. Suggestions remain inert until approval.
 
 ## Review and activation
 
-A suggestion currently needs repeated evidence: at least three cited observations across at least two days.
+An Analyze-generated suggestion currently needs repeated evidence: at least three cited observations across at least two days. A directly declared habit bypasses only that repetition threshold after you confirm its exact wording; it does not bypass safety law, conflicts, local duplicate checking, stale-state checks, or audit.
 
 Approval and activation are separate when a requirement is temporarily unmet. An approved candidate can remain visibly waiting for enough evidence, current safety-law approval, conflict resolution, or local duplicate checking.
 
 Analyze automatically rechecks approved waiting candidates after a validated commit. The same recheck is available under **Review approved habits**. Prior approval applies only while normalized condition, behavior, and polarity remain unchanged; material wording changes require approval again.
 
 Potential duplicates are never silently merged. **Resolve duplicate habits** shows both complete wordings, states exactly which habit each outcome keeps or hides, and confirms merge, replacement, and archive choices before changing anything.
+
+## See when a habit steers an answer
+
+Approved-habit reminders never steer invisibly. When the selector actually injects one or more approved habits for the upcoming answer, Pi places a muted, collapsed provenance line immediately before that answer:
+
+```text
+◇ Habit steering · 1 approved habit
+```
+
+Expand the line to see the exact approved `When:` / `Do:` wording selected for that reply. No marker means no habit guidance was injected.
+
+The marker is a local Pi session entry, not an LLM message, so it does not itself influence the answer. For traceability, the session entry retains only the selected approved wording, count, and time—never the raw prompt, IDs, checksums, confidence scores, provider/model details, source references, raw examples, private paths, or audit payloads. v0.1.31 enables reminders only in the Pi TUI where this pre-answer marker is guaranteed visible; other interfaces fail closed rather than steering without provenance.
 
 ## Local duplicate prevention
 
@@ -186,6 +214,8 @@ Capture is opt-in. Captured conversation pairs are stored under your private loc
 
 When you manually start Analyze, the next bounded batch of redacted examples is processed by the Pi model/provider you selected for habit learning. That provider's data handling still applies. Analyze creates suggestions, never approvals.
 
+When an approved habit later steers a TUI answer, its approved `When:` / `Do:` wording is retained in that local Pi session as the visible provenance marker. The marker contains no raw prompt or source example and never enters LLM context.
+
 Fully analyzed source text expires after seven days by default; setup also offers 14 or 30 days. Minimized evidence and audit history remain so reviewed habits can still be explained. Backups exclude raw observation text and downloaded duplicate-model files.
 
 ## Frequently asked questions
@@ -196,7 +226,7 @@ No. Agent memory answers “what should the agent remember?” Pi Experiences an
 
 ### Is a habit the same as an agent skill?
 
-No. A skill is an intentionally authored capability or procedure. A habit is inferred from repeated interaction, remains inactive until review, and captures a behavioral tendency rather than a full workflow.
+No. A skill is an intentionally authored capability or procedure. A habit is directly declared or inferred from repeated interaction, requires explicit review, and captures a behavioral tendency rather than a full workflow.
 
 ### Does Pi Experiences autonomously modify the agent?
 
@@ -212,7 +242,7 @@ Yes. Approved habits can be inspected, disabled, re-enabled, or archive-hidden w
 
 ## Give Pi experience
 
-Install `pi-experiences`, then open one control panel:
+Install `pi-experiences`, then discuss and confirm a habit naturally—or open the complete control panel:
 
 ```text
 /experience setup
@@ -237,7 +267,7 @@ This section is intentionally collapsed. Preserve both this technical contract a
 
 ### Hard invariants
 
-- `/experience setup` remains the complete normal-user control surface.
+- Natural conversation and `/experience setup` are complementary normal-user surfaces; setup remains the complete control panel/fallback.
 - Every new or materially reworded habit requires explicit human approval.
 - Exact normalized evidence may update support for an unchanged approved identity without rewriting it.
 - Strong exact contradictory evidence may suppress one uniquely matched old habit, but replacement wording remains a proposal.
@@ -245,7 +275,7 @@ This section is intentionally collapsed. Preserve both this technical contract a
 - Direct instructions and configured law override habits.
 - Selector candidates are active, fresh, same-user approved habits only.
 - Never inject from candidate, disabled, dormant, suppressed, archived, evidence, quarantine, report, or observation rows.
-- Selector logs never persist raw prompts, sessions, or injected guidance; `prompt_hash` remains `omitted`.
+- Selector hit logs never persist raw prompts, sessions, or injected guidance; `prompt_hash` remains `omitted`. A separate TUI-only provenance entry retains selected approved wording solely so the user can trace a steered answer.
 - Missing, corrupt, stale, incompatible, or future-version state fails closed.
 - The selector hot path must not initialize storage or run migrations.
 
@@ -265,6 +295,17 @@ A profile document is appropriate for small, stable, deliberately declared ident
 **Caveats:** selection is relevance matching, not guaranteed human-level judgment; default instant matching is lexical and intentionally simple; no reminder is injected when relevance, freshness, status, law, or budget gates fail; disabled reminders mean no habit injection; structured lifecycle control adds SQLite and migration complexity, so unavailable or inconsistent state fails closed.
 
 Do not market an ever-growing `profile.md` as equivalent to Experience. The architectural distinction is contextual selection and lifecycle control, not merely a different file format.
+
+### Conversational declaration and review contract
+
+- Conversational tools keep one short-lived draft and one numbered review snapshot per user/session in bounded process memory. They store no raw conversation or confirmation utterance.
+- Drafting changes no durable state. Saving requires `confirmed=true` after a later user input turn; correcting wording replaces the prior draft.
+- Direct declaration bypasses only the repeated-observation threshold. Law, conflicts, local semantic duplicate checks, same-user scope, stale snapshots, audit, and fail-closed behavior remain mandatory.
+- Semantic preparation occurs before the SQLite writer transaction. If it is unavailable, no candidate, relation, or approval row is created.
+- A clean declaration creates the candidate and activates it inside one `BEGIN IMMEDIATE` transaction. A possible duplicate creates an inactive candidate and pending relation in that same transaction; it never merges automatically.
+- Review lists expose numbered `When:` / `Do:` summaries and supported outcomes only. IDs, checksums, scores, thresholds, providers, source references, raw examples, paths, and audit payloads remain process-internal.
+- Review mutation resolves a number through the current hidden snapshot, revalidates relation/habit checksums inside product transactions, and invalidates stale snapshots. Merge, supersede, archive, approve, reject, and keep-separate remain explicit user decisions.
+- Drafts and snapshots expire after 15 minutes and disappear on restart; the user then drafts or lists again.
 
 ### Local embedding contract
 
@@ -360,7 +401,7 @@ Maintenance, observation, model-installation, Analyze, and consolidation operati
 - release removes only the caller's token;
 - ownership mismatch preserves the replacement lock.
 
-Habit approval, re-enable, and promotion prepare local vectors outside the SQLite writer transaction, then use one `BEGIN IMMEDIATE` transaction to revalidate target/comparator/law state and either block or activate. Concurrent duplicate activations therefore cannot both succeed.
+Habit declaration, approval, re-enable, and promotion prepare local vectors outside the SQLite writer transaction, then use one `BEGIN IMMEDIATE` transaction to revalidate target/comparator/relation/law state and either block or activate. Concurrent duplicate activations therefore cannot both succeed.
 
 ### Approved-habit reminders
 
@@ -368,7 +409,9 @@ Reminder injection is off by default.
 
 Default `instant` mode is local lexical/no-network matching. Only active, same-user, fresh approved habits are candidates. Pending, disabled, dormant, suppressed, archived, evidence, quarantine, report, and raw observation rows are excluded.
 
-Optional advanced smart matching is separately configured and fails closed on unavailable authentication, timeout, or malformed output. Selector logs never persist raw prompts, sessions, or injected guidance; `prompt_hash` is deliberately `omitted`.
+Every actual TUI injection first appends a durable custom session entry of type `agent_experience.habit_steering`. Collapsed rendering is one muted count line; expanded rendering shows only the selected approved condition/behavior wording. Custom entries do not participate in LLM context. Entry construction/renderer/append failure, malformed or sensitive wording, and non-TUI modes suppress the injection with a static sanitized diagnostic. The final prompt and validated entry are built before synchronous append; only a successful append permits prompt modification. A process crash in the tiny append-to-return window is the only irreducible false-marker case, while hidden steering remains prohibited.
+
+Optional advanced smart matching is separately configured and fails closed on unavailable authentication, timeout, or malformed output. Selector hit logs never persist raw prompts, sessions, or injected guidance; `prompt_hash` is deliberately `omitted`. The trace entry is separate, contains no prompt, and stores selected approved wording only.
 
 Timers remain Phase 2/off. The package does not install or enable bundled timer templates.
 

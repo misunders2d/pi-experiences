@@ -22,6 +22,7 @@ import {
   selectActiveSelectorSnapshot,
 } from '../extensions/agent-experience/src/selector.ts';
 import { getAgentExperiencePaths, readAgentExperienceConfig } from '../extensions/agent-experience/src/paths.ts';
+import { buildHabitSteeringEntry, formatHabitSteeringEntry, HABIT_STEERING_ENTRY_TYPE } from '../extensions/agent-experience/src/steering-note.ts';
 import { ensurePrivateRoot } from '../extensions/agent-experience/src/storage/private-root.ts';
 import { initExperienceStorage, insertStorageRecord } from '../extensions/agent-experience/src/storage/sqlite.ts';
 
@@ -52,19 +53,45 @@ function habitData(overrides = {}) {
   };
 }
 
-function makePi() {
+function makePi(options = {}) {
   const commands = new Map();
   const handlers = new Map();
+  const renderers = new Map();
+  const entries = [];
+  const operations = [];
   const fakePi = {
-    registerCommand(name, options) { commands.set(name, options); },
+    registerCommand(name, definition) { commands.set(name, definition); },
     on(event, handler) { handlers.set(event, handler); },
-    registerTool() { throw new Error('no tools'); },
+    registerTool() {},
+    registerEntryRenderer(type, renderer) {
+      if (options.rendererError) throw new Error('renderer unavailable');
+      renderers.set(type, renderer);
+    },
+    appendEntry(type, data) {
+      operations.push('append');
+      if (options.appendError) throw new Error('append unavailable');
+      entries.push({ type, data });
+    },
     registerFlag() { throw new Error('no flags'); },
     registerShortcut() { throw new Error('no shortcuts'); },
   };
   agentExperienceExtension(fakePi);
-  return { commands, handlers };
+  return { commands, handlers, renderers, entries, operations };
 }
+
+const steeringCandidate = {
+  id: 'selected-internal-id', user_id: 'owner', condition: 'When reporting status', behavior: 'Use concise evidence', polarity: 1,
+  confidence_bp: 9000, activation: 1, staleness: 0, checksum: 'a'.repeat(64), law_hash: 'law',
+};
+const steeringEntry = buildHabitSteeringEntry({ candidates: [steeringCandidate], selected: [{ id: steeringCandidate.id }], createdAt: '2026-07-08T00:00:00.000Z' });
+assert.deepEqual(Object.keys(steeringEntry).sort(), ['count', 'created_at', 'habits', 'schema_version']);
+assert.deepEqual(steeringEntry.habits, [{ condition: steeringCandidate.condition, behavior: steeringCandidate.behavior }]);
+assert.doesNotMatch(JSON.stringify(steeringEntry), /selected-internal-id|confidence|checksum|provider|source|prompt/i);
+assert.equal(formatHabitSteeringEntry(steeringEntry, false), '◇ Habit steering · 1 approved habit');
+assert.match(formatHabitSteeringEntry(steeringEntry, true), /When: When reporting status\n   Do: Use concise evidence/);
+assert.equal(formatHabitSteeringEntry({ broken: true }, true), '◇ Habit steering · details unavailable');
+assert.throws(() => buildHabitSteeringEntry({ candidates: [{ ...steeringCandidate, behavior: 'Email user@example.invalid' }], selected: [{ id: steeringCandidate.id }], createdAt: '2026-07-08T00:00:00.000Z' }), /sensitive/i);
+assert.throws(() => buildHabitSteeringEntry({ candidates: [{ ...steeringCandidate, behavior: 'x'.repeat(1001) }], selected: [{ id: steeringCandidate.id }], createdAt: '2026-07-08T00:00:00.000Z' }), /wording/i);
 
 const temp = await mkdtemp(join(tmpdir(), 'agent-experience-phase6-'));
 process.env.AX_STATE_ROOT = join(temp, 'state');
@@ -166,11 +193,12 @@ try {
   assert.equal(storage.db.prepare("SELECT status FROM habits WHERE id = 'pending-pass'").get().status, 'active');
   assert.equal(storage.db.prepare("SELECT status FROM habits WHERE id = 'pending-law-fail'").get().status, 'suppressed_by_law');
 
-  const { commands, handlers } = makePi();
+  const { commands, handlers, renderers, entries, operations } = makePi();
   assert.ok(handlers.has('before_agent_start'));
   assert.deepEqual([...commands.keys()], ['experience']);
+  assert.ok(renderers.has(HABIT_STEERING_ENTRY_TYPE), 'extension must register the TUI-only steering provenance renderer');
   const notes = [];
-  const ctx = { cwd: liveCwd, ui: { notify(message, level) { notes.push({ message, level }); } } };
+  const ctx = { cwd: liveCwd, mode: 'tui', ui: { notify(message, level) { notes.push({ message, level }); } } };
   await commands.get('experience').handler('enable', ctx);
   let readConfig = await readAgentExperienceConfig(getAgentExperiencePaths());
   assert.equal(readConfig.config.selector_enabled, false, 'master enable must not enable selector');
@@ -183,14 +211,47 @@ try {
   insertStorageRecord(storage.db, 'habits', { id: 'hook-active', userId: 'owner', data: habitData({ status: 'active', active: true, condition: 'hook prompt', behavior: 'use hook guidance', law_hash: realLaw.hash, confidence_bp: 9500 }), now: '2026-07-08T03:00:00.000Z' });
   __setAgentExperienceSelectorAdapterForTest({ async select({ candidateIds }) { return { schema_version: 1, selected: [{ id: candidateIds[0], confidence_bp: 9500 }] }; } });
   const beforeStatus = storage.db.prepare("SELECT status FROM habits WHERE id = 'hook-active'").get().status;
-  const hookResult = await handlers.get('before_agent_start')({ prompt: 'hook prompt please', systemPrompt: 'base system prompt' }, { cwd: liveCwd, ui: ctx.ui });
+  const hookResult = await handlers.get('before_agent_start')({ prompt: 'hook prompt please', systemPrompt: 'base system prompt' }, { cwd: liveCwd, mode: 'tui', ui: ctx.ui });
+  operations.push('returned');
+  assert.deepEqual(operations, ['append', 'returned'], 'steering provenance must append before the injected system prompt is returned');
   assert.equal(storage.db.prepare("SELECT status FROM habits WHERE id = 'hook-active'").get().status, beforeStatus, 'selector hook must not mutate habit status');
   assert.ok(hookResult?.systemPrompt, 'selector hook should append generated guidance to systemPrompt when enabled and selected');
   assert.equal('message' in hookResult, false, 'selector hook must not return session-history message injection');
   assert.match(hookResult.systemPrompt, /base system prompt/);
   assert.match(hookResult.systemPrompt, /Agent Experience generated guidance/);
   assert.doesNotMatch(hookResult.systemPrompt, /pending row|quarantine|habits-report|other user|candidate-1/);
+  assert.equal(entries.length, 1, 'one actual injection must append exactly one provenance entry');
+  assert.equal(entries[0].type, HABIT_STEERING_ENTRY_TYPE);
+  assert.deepEqual(entries[0].data.habits, [{ condition: 'hook prompt', behavior: 'use hook guidance' }]);
+  assert.doesNotMatch(JSON.stringify(entries[0]), /hook-active|"confidence|"checksum|"provider|"source_ref|"prompt_hash|"audit/i, 'session provenance must contain approved wording only');
+  const entryCountBeforeNoSelection = entries.length;
+  const noSelectionResult = await handlers.get('before_agent_start')({ prompt: 'words with no matching habit', systemPrompt: 'base' }, { cwd: liveCwd, mode: 'tui', ui: ctx.ui });
+  assert.equal(noSelectionResult, undefined);
+  assert.equal(entries.length, entryCountBeforeNoSelection, 'an unsteered answer must append no marker');
   __setAgentExperienceSelectorAdapterForTest(undefined);
+
+  const appendFailure = makePi({ appendError: true });
+  const appendFailureNotes = [];
+  const appendFailureResult = await appendFailure.handlers.get('before_agent_start')({ prompt: 'hook prompt please', systemPrompt: 'base' }, { cwd: liveCwd, mode: 'tui', ui: { notify(message, level) { appendFailureNotes.push({ message, level }); } } });
+  assert.equal(appendFailureResult, undefined, 'append failure must suppress habit guidance');
+  assert.equal(appendFailure.entries.length, 0);
+  assert.ok(appendFailureNotes.some((note) => /visual provenance marker could not be recorded/.test(note.message)));
+  assert.doesNotMatch(JSON.stringify(appendFailureNotes), /hook prompt|hook guidance|provider|model|checksum/i, 'provenance failure diagnostic must be static and sanitized');
+
+  const rendererFailure = makePi({ rendererError: true });
+  const rendererFailureNotes = [];
+  const logsBeforeRendererFailure = storage.db.prepare('SELECT COUNT(*) count FROM selector_hit_log').get().count;
+  const rendererFailureResult = await rendererFailure.handlers.get('before_agent_start')({ prompt: 'hook prompt please', systemPrompt: 'base' }, { cwd: liveCwd, mode: 'tui', ui: { notify(message, level) { rendererFailureNotes.push({ message, level }); } } });
+  assert.equal(rendererFailureResult, undefined, 'unrenderable provenance must suppress habit guidance before selection');
+  assert.equal(storage.db.prepare('SELECT COUNT(*) count FROM selector_hit_log').get().count, logsBeforeRendererFailure, 'renderer-unavailable path must not run selector or log an injection');
+  assert.ok(rendererFailureNotes.some((note) => /visual provenance marker is unavailable/.test(note.message)));
+
+  const nonTui = makePi();
+  const logsBeforeNonTui = storage.db.prepare('SELECT COUNT(*) count FROM selector_hit_log').get().count;
+  const nonTuiResult = await nonTui.handlers.get('before_agent_start')({ prompt: 'hook prompt please', systemPrompt: 'base' }, { cwd: liveCwd, mode: 'rpc', ui: { notify() {} } });
+  assert.equal(nonTuiResult, undefined, 'non-TUI interfaces must not receive invisible habit steering');
+  assert.equal(storage.db.prepare('SELECT COUNT(*) count FROM selector_hit_log').get().count, logsBeforeNonTui);
+  assert.equal(nonTui.entries.length, 0);
 
   await commands.get('experience').handler('capture on', ctx);
   await handlers.get('input')({ text: 'hello', source: 'interactive' }, { sessionManager: { getSessionId: () => 's1', getSessionFile: () => join(temp, 's1.jsonl') } });
@@ -220,7 +281,7 @@ try {
   await missingLaw.commands.get('experience').handler('enable', missingLawCtx);
   await missingLaw.commands.get('experience').handler('selector on', missingLawCtx);
   __setAgentExperienceSelectorAdapterForTest({ async select() { throw new Error('selector must not run without configured law'); } });
-  const missingLawResult = await missingLaw.handlers.get('before_agent_start')({ prompt: 'hook prompt please', systemPrompt: 'base' }, { cwd: liveCwd, ui: missingLawCtx.ui });
+  const missingLawResult = await missingLaw.handlers.get('before_agent_start')({ prompt: 'hook prompt please', systemPrompt: 'base' }, { cwd: liveCwd, mode: 'tui', ui: missingLawCtx.ui });
   assert.equal(missingLawResult, undefined, 'selector hook must fail closed when configured law file is missing');
   const missingLawWarning = missingLawNotes.find((note) => /safety file is missing/.test(note.message) && note.level === 'warn');
   assert.ok(missingLawWarning, 'missing safety file must emit one bounded visible diagnostic');
@@ -228,14 +289,14 @@ try {
   assert.doesNotMatch(missingLawWarning.message, /setup use-habits off|law file missing|selector skipped/i);
   assert.equal((await readAgentExperienceConfig(getAgentExperiencePaths())).config.selector_enabled, false, 'missing safety file turns reminders off to stop repeated warnings');
   const missingLawNoteCount = missingLawNotes.length;
-  await missingLaw.handlers.get('before_agent_start')({ prompt: 'hook prompt again', systemPrompt: 'base' }, { cwd: liveCwd, ui: missingLawCtx.ui });
+  await missingLaw.handlers.get('before_agent_start')({ prompt: 'hook prompt again', systemPrompt: 'base' }, { cwd: liveCwd, mode: 'tui', ui: missingLawCtx.ui });
   assert.equal(missingLawNotes.length, missingLawNoteCount, 'disabled selector must not keep warning every turn');
   await missingLaw.commands.get('experience').handler('selector on', missingLawCtx);
   const schemaMismatchStorage = await initExperienceStorage(missingLawRoot, { allowInit: true, userId: 'owner' });
   schemaMismatchStorage.db.exec('PRAGMA user_version = 999');
   schemaMismatchStorage.db.close();
   await writeFile(join(missingLawRoot, 'law.md'), 'configured law after missing-law diagnostic\n');
-  await missingLaw.handlers.get('before_agent_start')({ prompt: 'hook prompt after schema mismatch', systemPrompt: 'base' }, { cwd: liveCwd, ui: missingLawCtx.ui });
+  await missingLaw.handlers.get('before_agent_start')({ prompt: 'hook prompt after schema mismatch', systemPrompt: 'base' }, { cwd: liveCwd, mode: 'tui', ui: missingLawCtx.ui });
   assert.ok(missingLawNotes.length > missingLawNoteCount, 'distinct selector runtime diagnostics must not be suppressed by the first error');
   assert.ok(missingLawNotes.some((note) => /newer than this extension|schema mismatch/.test(note.message)), 'schema mismatch must emit its own diagnostic');
   __setAgentExperienceSelectorAdapterForTest(undefined);
@@ -247,7 +308,7 @@ try {
   const noLedgerCtx = { cwd: liveCwd, ui: { notify(message, level) { noLedgerNotes.push({ message, level }); } } };
   await noLedger.commands.get('experience').handler('enable', noLedgerCtx);
   await noLedger.commands.get('experience').handler('selector on', noLedgerCtx);
-  const noLedgerResult = await noLedger.handlers.get('before_agent_start')({ prompt: 'nothing stored yet', systemPrompt: 'base' }, { cwd: liveCwd, ui: noLedgerCtx.ui });
+  const noLedgerResult = await noLedger.handlers.get('before_agent_start')({ prompt: 'nothing stored yet', systemPrompt: 'base' }, { cwd: liveCwd, mode: 'tui', ui: noLedgerCtx.ui });
   assert.equal(noLedgerResult, undefined, 'selector hook must fail closed when ledger is absent');
   assert.equal(existsSync(join(noLedgerRoot, 'ledger.sqlite')), false, 'selector hook must not initialize storage on missing ledger');
   process.env.AX_STATE_ROOT = join(temp, 'state');

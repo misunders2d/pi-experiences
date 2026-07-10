@@ -175,7 +175,9 @@ try {
     const fakePi = {
       registerCommand(name, options) { commands.set(name, options); },
       on(event, handler) { handlers.set(event, handler); },
-      registerTool() { throw new Error('no tools'); },
+      registerTool() {},
+      registerEntryRenderer() {},
+      appendEntry() {},
       registerFlag() { throw new Error('no flags'); },
       registerShortcut() { throw new Error('no shortcuts'); },
     };
@@ -196,6 +198,7 @@ try {
   __setAgentExperienceSelectorAdapterForTest({ async select({ candidateIds, signal }) { assert.ok(signal instanceof AbortSignal); return { schema_version: 1, selected: [{ id: candidateIds[0], confidence_bp: 9500 }] }; } });
   const hookResult = await handlers.get('before_agent_start')({ prompt: 'hook adapter prompt', systemPrompt: 'base' }, {
     cwd: liveCwd,
+    mode: 'tui',
     ui: ctx.ui,
     modelRegistry: fakeRegistry(),
   });
@@ -209,7 +212,7 @@ try {
   const noLedgerCtx = { cwd: liveCwd, ui: { notify() {} } };
   await noLedger.commands.get('experience').handler('enable', noLedgerCtx);
   await noLedger.commands.get('experience').handler('selector on', noLedgerCtx);
-  const noLedgerResult = await noLedger.handlers.get('before_agent_start')({ prompt: 'no ledger', systemPrompt: 'base' }, { cwd: liveCwd, ui: noLedgerCtx.ui, modelRegistry: fakeRegistry({ auth: { ok: false, error: 'SECRET should not matter' } }) });
+  const noLedgerResult = await noLedger.handlers.get('before_agent_start')({ prompt: 'no ledger', systemPrompt: 'base' }, { cwd: liveCwd, mode: 'tui', ui: noLedgerCtx.ui, modelRegistry: fakeRegistry({ auth: { ok: false, error: 'SECRET should not matter' } }) });
   assert.equal(noLedgerResult, undefined);
   assert.equal(existsSync(join(noLedgerRoot, 'ledger.sqlite')), false, 'selector hook must not initialize storage on missing ledger');
   process.env.AX_STATE_ROOT = join(temp, 'state');
