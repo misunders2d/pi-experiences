@@ -234,6 +234,12 @@ const liveSystemPrompt = __buildAgentExperienceConsolidationSystemPromptForTest(
 assert.match(liveSystemPrompt, /reusable behavioral essence/, 'live setup analyzer prompt must require generalized habits');
 assert.match(liveSystemPrompt, /one-off names such as Agent Experience/, 'live setup analyzer prompt must reject one-project habit labels');
 assert.match(liveSystemPrompt, /return no proposal/, 'live setup analyzer prompt must suppress project-specific-only patterns');
+const rotatedGeneration = 'g-20260710132454239-test';
+const rotatedSystemPrompt = __buildAgentExperienceConsolidationSystemPromptForTest(rotatedGeneration);
+const rotatedOutputSchema = JSON.parse(rotatedSystemPrompt.split('\n').at(-1));
+assert.equal(rotatedOutputSchema.file_generation, rotatedGeneration, 'Analyze schema must use the current rotated observation generation');
+assert.equal(rotatedOutputSchema.proposals[0].source_refs[0].file_generation, rotatedGeneration, 'Analyze source-ref schema must use the current rotated observation generation');
+assert.ok(!rotatedSystemPrompt.includes('"file_generation":"active"'), 'rotated Analyze schema must not retain the legacy active-generation placeholder');
 assert.match(__formatAgentExperienceAnalyzeFailureForTest(new Error('Watermark would move backward')), /already analyzed/, 'stale duplicate analyze errors must be translated to human action');
 assert.equal(__getAgentExperienceDetailPanelOptionsForTest().overlay, false, 'review/status detail panels should replace the editor instead of overlaying image preview lines');
 assert.equal(__normalizeAgentExperienceConsolidationModelOutputForTest(strictRawOutput, strictNormalizeInput).proposals.length, 1);
@@ -247,6 +253,12 @@ assert.deepEqual(canonicalizedRefs.proposals[0].source_refs, [
   { file_generation: 'active', seq: 3, checksum: r3.checksum },
 ], 'live normalizer must canonicalize source ref checksums from local observations');
 assert.throws(() => __normalizeAgentExperienceConsolidationModelOutputForTest({ ...strictRawOutput, proposals: [{ ...strictRawOutput.proposals[0], source_refs: [{ file_generation: 'wrong-generation', seq: 1, checksum: 'wrong' }, { file_generation: 'wrong-generation', seq: 2, checksum: 'wrong' }, { file_generation: 'wrong-generation', seq: 3, checksum: 'wrong' }] }] }, strictNormalizeInput), /generation_mismatch/, 'normalizer must reject wrong model source ref generation');
+const rotatedNormalizeInput = {
+  ...strictNormalizeInput,
+  observations: strictNormalizeInput.observations.map((record) => ({ ...record, file_generation: rotatedGeneration })),
+  expected: { ...strictNormalizeInput.expected, file_generation: rotatedGeneration },
+};
+assert.throws(() => __normalizeAgentExperienceConsolidationModelOutputForTest(strictRawOutput, rotatedNormalizeInput), /generation_mismatch/, 'strict normalizer must still reject a copied active placeholder for rotated observations');
 assert.throws(() => __normalizeAgentExperienceConsolidationModelOutputForTest({ ...strictRawOutput, proposals: [{ ...strictRawOutput.proposals[0], source_refs: [{ seq: 999 }] }] }, strictNormalizeInput), /invalid_source_ref/);
 
 __setAgentExperienceConsolidationAdapterForTest({

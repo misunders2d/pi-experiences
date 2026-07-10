@@ -3,8 +3,8 @@ import fcntl, os, pty, re, select, signal, struct, sys, termios, time
 from pathlib import Path
 if len(sys.argv)<3: raise SystemExit('usage: test-installed-tui-smoke.py INSTALLED_PACKAGE TRANSCRIPT')
 package=str(Path(sys.argv[1]).resolve()); transcript=Path(sys.argv[2]).resolve()
-state=Path(os.environ.get('AX_STATE_ROOT','/tmp/pi-experiences-029-tui-smoke-state')).resolve(); state.mkdir(parents=True,exist_ok=True)
-work=state.parent/'pi-experiences-0.1.29-tui-work'; work.mkdir(parents=True,exist_ok=True)
+state=Path(os.environ.get('AX_STATE_ROOT','/tmp/pi-experiences-030-tui-smoke-state')).resolve(); state.mkdir(parents=True,exist_ok=True)
+work=state.parent/'pi-experiences-0.1.30-tui-work'; work.mkdir(parents=True,exist_ok=True)
 raw=bytearray(); csi=re.compile(rb'\x1b\[[0-?]*[ -/]*[@-~]'); osc=re.compile(rb'\x1b\][^\x07]*(?:\x07|\x1b\\)')
 def clean(data): return csi.sub(b'',osc.sub(b'',data)).replace(b'\r',b'\n').decode('utf-8','replace')
 def text(start=0): return clean(bytes(raw[start:]))

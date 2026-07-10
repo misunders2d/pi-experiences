@@ -127,7 +127,7 @@ pi update --extensions
 Pinned GitHub installation:
 
 ```bash
-pi install git:github.com/misunders2d/pi-experiences@v0.1.29
+pi install git:github.com/misunders2d/pi-experiences@v0.1.30
 ```
 
 Git refs remain pinned; they do not float to newer tags.

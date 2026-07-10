@@ -805,7 +805,28 @@ function extractAssistantText(message: AssistantMessage | undefined): string {
 		.slice(0, 20000);
 }
 
-function buildConsolidationSystemPrompt(): string {
+function buildConsolidationSystemPrompt(fileGeneration: string): string {
+	const outputSchema = {
+		schema_version: 1,
+		user_id: "owner",
+		file_generation: fileGeneration,
+		batch_id: "manual-id",
+		model: "provider/model",
+		created_at: "ISO",
+		observations_read: { seq_start: 1, seq_end: 3, checksum: "last-read-checksum" },
+		proposals: [{
+			proposal_id: "p1",
+			kind: "habit_candidate",
+			candidate_key: "stable-kebab-key",
+			condition: "When ...",
+			behavior: "Do ...",
+			polarity: 1,
+			confidence_bp: 8000,
+			source_refs: [{ file_generation: fileGeneration, seq: 1, checksum: "..." }],
+			evidence_summary: "short redacted summary",
+			ambiguous: false,
+		}],
+	};
 	return [
 		"You are Agent Experience habit learning.",
 		"Return JSON only. No prose. No markdown unless JSON object only.",
@@ -819,7 +840,7 @@ function buildConsolidationSystemPrompt(): string {
 		...GENERALIZED_HABIT_INSTRUCTIONS,
 		"Every proposal must cite source_refs using only provided seq/checksum values.",
 		"Exact output schema:",
-		'{"schema_version":1,"user_id":"owner","file_generation":"active","batch_id":"manual-id","model":"provider/model","created_at":"ISO","observations_read":{"seq_start":1,"seq_end":3,"checksum":"last-read-checksum"},"proposals":[{"proposal_id":"p1","kind":"habit_candidate","candidate_key":"stable-kebab-key","condition":"When ...","behavior":"Do ...","polarity":1,"confidence_bp":8000,"source_refs":[{"file_generation":"active","seq":1,"checksum":"..."}],"evidence_summary":"short redacted summary","ambiguous":false}]}',
+		JSON.stringify(outputSchema),
 	].join("\n");
 }
 
@@ -942,8 +963,8 @@ export function __normalizeAgentExperienceConsolidationModelOutputForTest(raw: a
 	return normalizeConsolidationModelOutput(raw, input);
 }
 
-export function __buildAgentExperienceConsolidationSystemPromptForTest(): string {
-	return buildConsolidationSystemPrompt();
+export function __buildAgentExperienceConsolidationSystemPromptForTest(fileGeneration = "active"): string {
+	return buildConsolidationSystemPrompt(fileGeneration);
 }
 
 function createPiConsolidationModelAdapter(ctx: Pick<ExtensionContext, "modelRegistry" | "signal">): ConsolidationModelAdapter {
@@ -956,7 +977,7 @@ function createPiConsolidationModelAdapter(ctx: Pick<ExtensionContext, "modelReg
 			const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
 			if (!auth.ok || !auth.apiKey) throw new Error("habit_learning_model_auth_unavailable");
 			const response = await completeSimple(model, {
-				systemPrompt: buildConsolidationSystemPrompt(),
+				systemPrompt: buildConsolidationSystemPrompt(input.expected.file_generation),
 				messages: [{ role: "user", content: buildConsolidationUserPrompt(input), timestamp: Date.now() }],
 			}, {
 				apiKey: auth.apiKey,
