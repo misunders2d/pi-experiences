@@ -1,5 +1,5 @@
-import { constants, existsSync } from "node:fs";
-import { readFile, rm, stat } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { readFile, stat } from "node:fs/promises";
 import { completeSimple } from "@earendil-works/pi-ai/compat";
 import type { AssistantMessage, Model } from "@earendil-works/pi-ai/compat";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -12,8 +12,8 @@ import {
 	setAgentExperienceConsolidationEnabled,
 	setAgentExperienceConsolidationModel,
 	setAgentExperienceEmbeddingEnabledAfterScan,
-	setAgentExperienceEmbeddingOptIn,
 	setAgentExperienceEnabled,
+	setAgentExperienceObservationRetentionDays,
 	setAgentExperienceSelectorEnabled,
 	setAgentExperienceSimpleOn,
 	setAgentExperienceTimerEnabled,
@@ -30,6 +30,7 @@ import {
 	explainHabit,
 	generateHabitsReport,
 	listApprovedHabitsForSetup,
+	listApprovedPendingHabitsForSetup,
 	listPendingReviewItems,
 	readConfiguredLawSnapshot,
 	rejectCandidateHabit,
@@ -38,18 +39,24 @@ import {
 	showPendingReviewItem,
 } from "./src/review.ts";
 import { semanticPolicyFromConfig, createEmbeddingAdapterFromConfig } from "./src/semantic/config.ts";
+import { ensureLocalEmbeddingAssets, getLocalEmbeddingAssetStatus, removeLocalEmbeddingAssets } from "./src/semantic/local-model.ts";
+import { LOCAL_EMBEDDING_DOWNLOAD_BYTES } from "./src/semantic/local-model-manifest.ts";
 import { scanAndBackfillSemanticDuplicates } from "./src/semantic/service.ts";
 import { listHabitDuplicates } from "./src/semantic/storage.ts";
+import { acquireOwnedLock } from "./src/storage/locks.ts";
 import { normalizeUserId, openSensitiveFileForWrite, resolvePrivatePath } from "./src/storage/private-root.ts";
+import { purgeExpiredObservationArchives, readCurrentObservationManifest, readValidatedObservationRange, rotateObservationGenerationIfFullyRead } from "./src/storage/observations.ts";
 import { redactText } from "./src/storage/redaction.ts";
 import { classifyCaptureInput, type CaptureKey } from "./src/capture/origin.ts";
 import { CapturePairBuffer, buildPairPayload, type CompletedPair, type CloseReason } from "./src/capture/buffer.ts";
 import { extractSingleFinalAssistantText } from "./src/capture/extract.ts";
-import { runSelectorRuntime, type SelectorModelAdapter } from "./src/selector.ts";
+import { promoteApprovedPendingCandidates, runSelectorRuntime, type SelectorModelAdapter } from "./src/selector.ts";
 import { createPiSelectorModelAdapter } from "./src/selector-model.ts";
 import { collectAgentExperienceMetrics, formatAgentExperienceMetrics } from "./src/metrics.ts";
 import type { AgentExperienceConfig } from "./src/config.ts";
-import { defaultObservationManifest, readValidatedObservationGeneration, type ValidatedObservationRecord } from "./src/consolidate/observations.ts";
+import type { ValidatedObservationRecord } from "./src/consolidate/observations.ts";
+import { buildCompactHabitContext, compactContextIdentity, type CompactHabitContextItem } from "./src/consolidate/context.ts";
+import { getProposalReadWatermark } from "./src/consolidate/commit.ts";
 import { GENERALIZED_HABIT_INSTRUCTIONS } from "./src/consolidate/prompt.ts";
 import { expectedRangeFromObservations, runConsolidationOnce } from "./src/consolidate/runner.ts";
 
@@ -62,6 +69,7 @@ interface ConsolidationModelAdapterInput {
 	model: string;
 	userId: string;
 	observations: ValidatedObservationRecord[];
+	habitContext: CompactHabitContextItem[];
 	expected: { file_generation: string; seq_start: number; seq_end: number; read_checksum: string };
 	signal?: AbortSignal;
 }
@@ -79,7 +87,7 @@ type SetupHabitAction = "Disable habit" | "Re-enable habit" | "Archive/hide habi
 const DETAIL_PANEL_CUSTOM_OPTIONS = { overlay: false } as const;
 
 type LiveModelSearchResult = { model?: string; exact?: true };
-type SetupAction = "save" | "model" | "analyze" | "review" | "duplicates" | "habits" | "embedding" | "use" | "schedule" | "status" | "help" | "off" | "done";
+type SetupAction = "save" | "model" | "analyze" | "review" | "duplicates" | "habits" | "embedding" | "retention" | "use" | "schedule" | "status" | "help" | "off" | "done";
 
 const RESET = "\x1b[0m";
 const PANEL_BG = "\x1b[48;5;235m";
@@ -152,7 +160,7 @@ function modelValueForSetup(config: { consolidation_model: string }): string {
 	return config.consolidation_model || "choose model";
 }
 
-function buildSetupSettingItems(config: { enabled: boolean; capture_enabled: boolean; consolidation_enabled: boolean; consolidation_model: string; selector_enabled: boolean; embedding_enabled?: boolean }): SettingItem[] {
+function buildSetupSettingItems(config: { enabled: boolean; capture_enabled: boolean; consolidation_enabled: boolean; consolidation_model: string; selector_enabled: boolean; embedding_enabled?: boolean; observation_retention_days?: number }): SettingItem[] {
 	const captureActive = config.enabled && config.capture_enabled;
 	const anythingEnabled = config.enabled || config.capture_enabled || config.consolidation_enabled || config.selector_enabled || config.embedding_enabled;
 	return [
@@ -162,7 +170,8 @@ function buildSetupSettingItems(config: { enabled: boolean; capture_enabled: boo
 		{ id: "review", label: "Review suggested habits", currentValue: "open", values: ["open"], description: "Inspect each suggestion in a boxed panel, then approve/reject/back." },
 		{ id: "duplicates", label: "Resolve duplicate habits", currentValue: "open", values: ["open"], description: "Review semantically similar habits and choose merge/supersede/keep/archive." },
 		{ id: "habits", label: "Review approved habits", currentValue: "open", values: ["open"], description: "Browse active/disabled habits, then disable, re-enable, or archive/hide one." },
-		{ id: "embedding", label: "Prevent duplicate habits", currentValue: checkboxValue(config.embedding_enabled === true), values: ["[ ] OFF", "[x] ON"], description: "Space/Enter runs a duplicate scan before enabling semantic duplicate gates." },
+		{ id: "embedding", label: "Prevent duplicate habits", currentValue: checkboxValue(config.embedding_enabled === true), values: ["[ ] OFF", "[x] ON"], description: "Space/Enter checks current habits before turning on private local duplicate prevention." },
+		{ id: "retention", label: "Keep analyzed source examples", currentValue: `${config.observation_retention_days || 7} days`, values: ["7 days", "14 days", "30 days"], description: "Choose short private retention for rotated redacted source text." },
 		{ id: "use", label: "Use approved habits before replies", currentValue: checkboxValue(config.selector_enabled), values: ["[ ] OFF", "[x] ON"], description: "Space/Enter toggles approved-habit reminders. Suggestions still require review first." },
 		{ id: "schedule", label: "Automatic schedule", currentValue: "Phase 2 / off", values: ["Phase 2 / off"], description: "No timer is installed or enabled by setup." },
 		{ id: "status", label: "Show current settings", currentValue: "open", values: ["open"], description: "Show current Agent Experience status." },
@@ -176,7 +185,7 @@ class SetupSettingsComponent implements Component {
 	private readonly box: Box;
 	private readonly list: SettingsList;
 
-	constructor(config: { enabled: boolean; capture_enabled: boolean; consolidation_enabled: boolean; consolidation_model: string; selector_enabled: boolean; embedding_enabled?: boolean }, done: (result: SetupAction | undefined) => void) {
+	constructor(config: { enabled: boolean; capture_enabled: boolean; consolidation_enabled: boolean; consolidation_model: string; selector_enabled: boolean; embedding_enabled?: boolean; observation_retention_days?: number }, done: (result: SetupAction | undefined) => void) {
 		this.box = new Box(2, 1, panelBg);
 		this.box.addChild(new Text(style("Agent Experience setup", FG_ACCENT, BOLD), 0, 0));
 		this.box.addChild(new Text(style("Space/Enter toggles checkbox rows or opens action rows. Esc closes.", FG_DIM), 0, 0));
@@ -188,6 +197,66 @@ class SetupSettingsComponent implements Component {
 	render(width: number): string[] { return this.box.render(width); }
 	handleInput(data: string): void { this.list.handleInput(data); }
 	invalidate(): void { this.box.invalidate(); }
+}
+
+interface SetupProgressUpdate {
+	label: string;
+	completed?: number;
+	total?: number;
+	unit?: "bytes" | "items";
+}
+
+class SetupProgressComponent implements Component, Focusable {
+	private focusedValue = false;
+	private updateValue: SetupProgressUpdate = { label: "Starting safely" };
+	private cancelling = false;
+	private readonly tui: { requestRender: () => void };
+	private readonly title: string;
+	private readonly cancel: () => void;
+	constructor(tui: { requestRender: () => void }, title: string, cancel: () => void) {
+		this.tui = tui;
+		this.title = title;
+		this.cancel = cancel;
+	}
+	get focused(): boolean { return this.focusedValue; }
+	set focused(value: boolean) { this.focusedValue = value; }
+	update(value: SetupProgressUpdate): void { this.updateValue = value; this.tui.requestRender(); }
+	handleInput(data: string): void {
+		if (!this.cancelling && (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c")))) {
+			this.cancelling = true;
+			this.updateValue = { label: "Cancelling and cleaning incomplete files" };
+			this.cancel();
+			this.tui.requestRender();
+		}
+	}
+	render(width: number): string[] {
+		const w = Math.max(50, width);
+		const { label, completed, total, unit } = this.updateValue;
+		let amount = "";
+		if (typeof completed === "number" && typeof total === "number" && total > 0) {
+			amount = unit === "bytes" ? `${Math.floor(Math.min(total, completed) / 1_000_000)} / ${Math.ceil(total / 1_000_000)} MB` : `${Math.min(total, completed)} / ${total}`;
+		}
+		return boxedLines([this.title, "", `${label}${amount ? ` — ${amount}` : ""}`, "", this.cancelling ? "Please wait for safe cleanup." : "Esc cancels safely; existing habits and settings remain unchanged."], w);
+	}
+	invalidate(): void {}
+}
+
+async function runSetupProgress<T>(ctx: ExtensionCommandContext, title: string, task: (signal: AbortSignal, update: (value: SetupProgressUpdate) => void) => Promise<T>): Promise<{ ok: true; value: T } | { ok: false; error: unknown; cancelled: boolean }> {
+	const custom = (ctx as any)?.ui?.custom;
+	if ((ctx as any).hasUI === false || typeof custom !== "function") {
+		const controller = new AbortController();
+		try { return { ok: true, value: await task(controller.signal, () => undefined) }; }
+		catch (error) { return { ok: false, error, cancelled: controller.signal.aborted }; }
+	}
+	return custom((tui: any, _theme: any, _keybindings: any, done: (value: any) => void) => {
+		const controller = new AbortController();
+		const component = new SetupProgressComponent(tui, title, () => controller.abort(new Error("setup_action_cancelled")));
+		queueMicrotask(async () => {
+			try { done({ ok: true, value: await task(controller.signal, (value) => component.update(value)) }); }
+			catch (error) { done({ ok: false, error, cancelled: controller.signal.aborted }); }
+		});
+		return component;
+	}, { overlay: true, overlayOptions: { width: "70%", minWidth: 60, maxHeight: "45%", anchor: "center", margin: 1 } });
 }
 
 class LiveModelSearchComponent implements Component, Focusable {
@@ -722,8 +791,9 @@ function buildConsolidationSystemPrompt(): string {
 		"Only propose habits supported by the provided examples. Do not invent facts.",
 		"Do not include secrets, emails, phone numbers, file paths, tokens, raw prompts, or private identifiers.",
 		"Prefer 1-6 concise candidate habits. Return zero proposals if evidence is weak.",
-		"Only propose repeated patterns: cite at least 3 supporting examples across at least 2 different days when available.",
-		"Similar meanings in different wording or languages may support the same habit; cite each matching example separately.",
+		"Only propose repeated patterns: use compact existing habit context plus the new unread examples. Cite source_refs only from the new examples provided in this request.",
+		"A repeated habit needs at least 3 total supporting examples across at least 2 days, combining existing_habit_context counts with new source_refs. Reuse the same normalized condition/behavior/polarity wording when adding evidence to an existing identity.",
+		"Similar meanings in different wording or languages may support the same habit; cite each new matching example separately.",
 		...GENERALIZED_HABIT_INSTRUCTIONS,
 		"Every proposal must cite source_refs using only provided seq/checksum values.",
 		"Exact output schema:",
@@ -739,6 +809,7 @@ function buildConsolidationUserPrompt(input: ConsolidationModelAdapterInput): st
 		model: input.model,
 		created_at: new Date().toISOString(),
 		observations_read: { seq_start: input.expected.seq_start, seq_end: input.expected.seq_end, checksum: input.expected.read_checksum },
+		existing_habit_context: input.habitContext || [],
 		observations: observationsForModelPrompt(input.observations),
 	}, null, 2);
 }
@@ -762,11 +833,23 @@ function normalizeSourceRefs(rawRefs: unknown, input: ConsolidationModelAdapterI
 	return refs.filter((ref, index, array) => array.findIndex((candidate) => candidate.seq === ref.seq) === index);
 }
 
-function hasEnoughRepeatedEvidence(refs: { seq: number }[], input: ConsolidationModelAdapterInput): boolean {
+function newEvidenceStats(refs: { seq: number }[], input: ConsolidationModelAdapterInput) {
 	const bySeq = new Map(input.observations.map((record) => [record.seq, record]));
 	const uniqueSeqs = [...new Set(refs.map((ref) => ref.seq))];
 	const days = new Set(uniqueSeqs.map((seq) => bySeq.get(seq)?.created_at).filter(Boolean).map((iso) => new Date(String(iso)).toISOString().slice(0, 10)));
-	return uniqueSeqs.length >= 3 && days.size >= 2;
+	return { count: uniqueSeqs.length, days };
+}
+
+function matchingHabitContext(input: ConsolidationModelAdapterInput, candidate: { condition: unknown; behavior: unknown; polarity: unknown }): CompactHabitContextItem | undefined {
+	const identity = compactContextIdentity(candidate);
+	return (input.habitContext || []).find((item) => compactContextIdentity(item) === identity);
+}
+
+function hasEnoughRepeatedEvidence(refs: { seq: number }[], input: ConsolidationModelAdapterInput, candidate: { condition: unknown; behavior: unknown; polarity: unknown }): boolean {
+	const fresh = newEvidenceStats(refs, input);
+	const existing = matchingHabitContext(input, candidate);
+	const days = new Set([...(existing?.source_dates || []), ...fresh.days]);
+	return fresh.count + Number(existing?.unique_observations || 0) >= 3 && days.size >= 2;
 }
 
 function normalizeConfidence(value: unknown): number {
@@ -777,32 +860,46 @@ function normalizeConfidence(value: unknown): number {
 function normalizeConsolidationModelOutput(raw: any, input: ConsolidationModelAdapterInput): unknown {
 	const proposals = Array.isArray(raw?.proposals) ? raw.proposals.slice(0, 50).flatMap((proposal: any) => {
 		const source_refs = normalizeSourceRefs(proposal?.source_refs, input);
-		if (!hasEnoughRepeatedEvidence(source_refs, input)) return [];
 		if (proposal?.kind === "correction_split") {
+			const old_condition = requireNonEmptyString(proposal.old_condition, "old_condition");
+			const old_behavior = requireNonEmptyString(proposal.old_behavior, "old_behavior");
+			const new_condition = requireNonEmptyString(proposal.new_condition, "new_condition");
+			const new_behavior = requireNonEmptyString(proposal.new_behavior, "new_behavior");
+			const confidence_bp = normalizeConfidence(proposal.confidence_bp);
+			const repeatedReplacement = hasEnoughRepeatedEvidence(source_refs, input, { condition: new_condition, behavior: new_behavior, polarity: 1 });
+			const oldContext = matchingHabitContext(input, { condition: old_condition, behavior: old_behavior, polarity: 1 });
+			const explicitCorrection = confidence_bp >= 8500 && source_refs.length >= 1 && oldContext?.status === "active";
+			const evidence_stage = repeatedReplacement || explicitCorrection ? "reviewable" : "collecting";
 			return [{
 				proposal_id: requireNonEmptyString(proposal.proposal_id, "proposal_id"),
 				kind: "correction_split",
 				candidate_key: requireNonEmptyString(proposal.candidate_key, "candidate_key"),
-				old_condition: requireNonEmptyString(proposal.old_condition, "old_condition"),
-				old_behavior: requireNonEmptyString(proposal.old_behavior, "old_behavior"),
-				new_condition: requireNonEmptyString(proposal.new_condition, "new_condition"),
-				new_behavior: requireNonEmptyString(proposal.new_behavior, "new_behavior"),
-				confidence_bp: normalizeConfidence(proposal.confidence_bp),
+				old_condition,
+				old_behavior,
+				new_condition,
+				new_behavior,
+				confidence_bp,
 				source_refs,
+				evidence_stage,
 				...(proposal.evidence_summary ? { evidence_summary: redactText(String(proposal.evidence_summary)).slice(0, 1000) } : {}),
 				ambiguous: proposal.ambiguous === true,
 			}];
 		}
 		if (proposal?.kind !== "habit_candidate") throw new Error("habit_learning_model_invalid_proposal_kind");
+		const condition = requireNonEmptyString(proposal.condition, "condition");
+		const behavior = requireNonEmptyString(proposal.behavior, "behavior");
+		const polarity = proposal.polarity === -1 ? -1 : 1;
+		const evidence_stage = hasEnoughRepeatedEvidence(source_refs, input, { condition, behavior, polarity }) ? "reviewable" : "collecting";
 		return [{
 			proposal_id: requireNonEmptyString(proposal.proposal_id, "proposal_id"),
 			kind: "habit_candidate",
 			candidate_key: requireNonEmptyString(proposal.candidate_key, "candidate_key"),
-			condition: requireNonEmptyString(proposal.condition, "condition"),
-			behavior: requireNonEmptyString(proposal.behavior, "behavior"),
-			polarity: proposal.polarity === -1 ? -1 : 1,
+			condition,
+			behavior,
+			polarity,
 			confidence_bp: normalizeConfidence(proposal.confidence_bp),
 			source_refs,
+			evidence_stage,
 			...(proposal.evidence_summary ? { evidence_summary: redactText(String(proposal.evidence_summary)).slice(0, 1000) } : {}),
 			ambiguous: proposal.ambiguous === true,
 		}];
@@ -860,7 +957,7 @@ function createPiConsolidationModelAdapter(ctx: Pick<ExtensionContext, "modelReg
 
 async function reviewSummary(root: string, userId: string): Promise<{ ledger: boolean; pending: number; active: number; candidate: number; error?: string }> {
 	const dbPath = resolvePrivatePath(root, "ledger.sqlite");
-	if (!(await fileExists(dbPath))) return { ledger: false, pending: 0, active: 0, candidate: 0 };
+	if (!(await fileExists(dbPath))) return { ledger: false, pending: 0, active: 0, candidate: 0, approvedWaiting: 0 };
 	let storage: Awaited<ReturnType<typeof openExistingExperienceStorage>> | undefined;
 	try {
 		storage = await openExistingExperienceStorage(root, { userId });
@@ -870,10 +967,11 @@ async function reviewSummary(root: string, userId: string): Promise<{ ledger: bo
 		const pending = visible.items.filter((item: any) => item.type === "pending_review").length;
 		const candidate = visible.items.filter((item: any) => item.type === "candidate").length;
 		const active = Number(db.prepare("SELECT COUNT(*) AS count FROM habits WHERE user_id = ? AND status = 'active'").get(normalizedUserId).count);
-		return { ledger: true, pending, active, candidate };
+		const approvedWaiting = listApprovedPendingHabitsForSetup(db, { userId: normalizedUserId }).length;
+		return { ledger: true, pending, active, candidate, approvedWaiting };
 	} catch (error) {
 		const raw = error instanceof Error ? error.message : String(error);
-		return { ledger: true, pending: 0, active: 0, candidate: 0, error: redactText(raw).slice(0, 300) };
+		return { ledger: true, pending: 0, active: 0, candidate: 0, approvedWaiting: 0, error: redactText(raw).slice(0, 300) };
 	} finally {
 		storage?.db.close();
 	}
@@ -887,8 +985,15 @@ async function buildStatusText(): Promise<{ text: string; enabled: boolean }> {
 	const captureActive = config.enabled && config.capture_enabled;
 	const selectorActive = config.enabled && config.selector_enabled;
 	const reviewCount = summary.pending + summary.candidate;
+	let duplicateStatus = "OFF";
+	if (config.embedding_enabled || existsSync(resolvePrivatePath(paths.root, "models"))) {
+		const assets = await getLocalEmbeddingAssetStatus(paths.root, { deep: false });
+		duplicateStatus = config.embedding_enabled ? (assets.ready ? "ON (private local files ready)" : "ON but local files need repair") : (assets.ready ? "OFF (private local files preserved)" : "OFF");
+	}
 	const nextStep = !config.enabled
 		? "Choose Save chat examples locally in /experience setup."
+		: summary.approvedWaiting > 0
+			? "Choose Review approved habits in /experience setup to recheck habits that are waiting."
 		: reviewCount > 0
 			? "Choose Review suggested habits in /experience setup."
 			: "Choose Analyze saved examples now in /experience setup to create suggestions.";
@@ -898,7 +1003,8 @@ async function buildStatusText(): Promise<{ text: string; enabled: boolean }> {
 		`Save chat examples locally: ${captureActive ? "ON" : "OFF"}${observations === undefined ? "" : ` (${plural(observations, "saved example")})`}`,
 		`Habit-learning model: ${config.consolidation_model}`,
 		`Analyze saved examples now: ${config.consolidation_enabled ? "available from setup" : "available when you choose it in setup"}`,
-		`Review suggested habits: ${summary.error ? `ledger unreadable (${summary.error})` : summary.ledger ? `${plural(reviewCount, "suggestion")} waiting, ${plural(summary.active, "approved habit")}` : "no review list yet"}`,
+		`Review suggested habits: ${summary.error ? `ledger unreadable (${summary.error})` : summary.ledger ? `${plural(reviewCount, "suggestion")} waiting, ${plural(summary.active, "approved habit")}${summary.approvedWaiting ? `, ${plural(summary.approvedWaiting, "approved habit")} waiting for activation` : ""}` : "no review list yet"}`,
+		`Prevent duplicate habits: ${duplicateStatus}`,
 		`Use approved habits before replies: ${selectorActive ? (config.selector_mode === "instant" ? "ON (local/no-network)" : `ON (${config.selector_mode})`) : config.selector_enabled ? "configured ON, inactive because Experience is OFF" : "OFF"}`,
 		"Automatic schedule: Phase 2 / OFF",
 		`Next: ${nextStep}`,
@@ -922,7 +1028,7 @@ async function handleHelpSetup(ctx: ExtensionCommandContext, config: AgentExperi
 	notify(ctx, message, "info");
 }
 
-function buildSetupOptions(config: { enabled: boolean; capture_enabled: boolean; consolidation_enabled: boolean; consolidation_model: string; selector_enabled: boolean; embedding_enabled?: boolean }): string[] {
+function buildSetupOptions(config: { enabled: boolean; capture_enabled: boolean; consolidation_enabled: boolean; consolidation_model: string; selector_enabled: boolean; embedding_enabled?: boolean; observation_retention_days?: number }): string[] {
 	const captureActive = config.enabled && config.capture_enabled;
 	const anythingEnabled = config.enabled || config.capture_enabled || config.consolidation_enabled || config.selector_enabled || config.embedding_enabled;
 	return [
@@ -933,6 +1039,7 @@ function buildSetupOptions(config: { enabled: boolean; capture_enabled: boolean;
 		"Resolve duplicate habits",
 		"Review approved habits",
 		`${config.embedding_enabled ? "[x]" : "[ ]"} Prevent duplicate habits`,
+		`Keep analyzed source examples (${config.observation_retention_days || 7} days)`,
 		`${config.selector_enabled ? "[x]" : "[ ]"} Use approved habits before replies`,
 		"Automatic schedule: Phase 2 / off (explain)",
 		"Show current settings",
@@ -956,7 +1063,7 @@ function setupUnavailableMessage(): string {
 	return setupControlsMessage();
 }
 
-function setupHelpMessage(config: { enabled: boolean; capture_enabled: boolean; consolidation_enabled: boolean; selector_enabled: boolean; embedding_enabled?: boolean; selector_mode: string; selector_model: string }): string {
+function setupHelpMessage(config: { enabled: boolean; capture_enabled: boolean; consolidation_enabled: boolean; selector_enabled: boolean; embedding_enabled?: boolean; observation_retention_days?: number; selector_mode: string; selector_model: string }): string {
 	const anythingEnabled = config.enabled || config.capture_enabled || config.consolidation_enabled || config.selector_enabled || config.embedding_enabled;
 	return [
 		"Agent Experience setup help:",
@@ -966,12 +1073,13 @@ function setupHelpMessage(config: { enabled: boolean; capture_enabled: boolean; 
 		"Analyze saved examples now: runs from this setup menu, reads saved redacted examples, calls the chosen model once, and creates suggested habits for review.",
 		config.selector_mode === "instant"
 			? "Use approved habits before replies: lets Pi add only human-approved habits as reminders before future replies. Current mode is local/no-network."
-			: `Use approved habits before replies: lets Pi add only human-approved habits as reminders before future replies. Current mode may call ${config.selector_model} with bounded redacted selector payloads.`,
+			: "Use approved habits before replies: lets Pi add only human-approved habits as reminders before future replies. Optional advanced matching remains separately controlled and fail-closed.",
 		"Automatic schedule: Phase 2 / off in this release. Setup will not install, enable, or start a timer.",
 		"Review suggested habits: opens the list of proposed habits for you to approve or reject. Nothing is auto-approved.",
-		"Resolve duplicate habits: opens semantically similar habits for merge/supersede/keep-separate/archive choices inside setup, without typing ids or checksums.",
+		"Resolve duplicate habits: opens possible duplicate habits for merge/supersede/keep-separate/archive choices inside setup.",
 		"Review approved habits: opens actual active/disabled approved habits so you can inspect, disable, re-enable, or archive/hide one without typing ids or checksums.",
-		"Prevent duplicate habits: embeds only normalized condition plus behavior after explicit opt-in; it never sends raw examples, source refs, evidence summaries, residual JSON, checksums, or audit text.",
+		"Prevent duplicate habits: compares only normalized When/Do wording on this computer after you explicitly prepare it; saved examples and audit details are never compared.",
+		`Keep analyzed source examples: rotated redacted source text is deleted after ${config.observation_retention_days || 7} days. Choose 7, 14, or 30 days; minimized evidence and audit remain.`,
 		anythingEnabled
 			? "Turn all experience features off: stops capture and all runtime gates. Existing local records are preserved."
 			: "When a setting is on, a Turn all experience features off row appears here to stop all runtime gates.",
@@ -1022,50 +1130,87 @@ async function handleSetupConsolidation(ctx: ExtensionCommandContext) {
 async function handleSetupEmbedding(ctx: ExtensionCommandContext) {
 	const paths = getAgentExperiencePaths();
 	const { config } = await readAgentExperienceConfig(paths);
-	let choice: string | undefined;
-	if (config.embedding_enabled) {
-		choice = await chooseSetup(ctx, "Prevent duplicate habits", ["Keep semantic duplicate prevention ON", "Turn semantic duplicate prevention OFF", "Scan for duplicate habits now", "Back/cancel (no changes)"], false);
-		if (!choice || choice === "Back/cancel (no changes)" || choice === "Keep semantic duplicate prevention ON") return;
-		if (choice === "Turn semantic duplicate prevention OFF") {
-			const { path } = await setAgentExperienceEmbeddingEnabledAfterScan(false, paths);
-			return notify(ctx, [`Prevent duplicate habits: OFF`, `Config file: ${path}`].join("\n"), "info");
-		}
-	}
-	choice = choice || await chooseSetup(ctx, "Prevent duplicate habits", [
-		"Explain semantic duplicate prevention (no changes)",
-		"Enable and scan for duplicate habits",
+	const choices = config.embedding_enabled ? [
+		"Keep duplicate prevention ON",
+		"Turn duplicate prevention OFF",
 		"Scan for duplicate habits now",
+		"Turn off and remove local duplicate-check files",
+		"Back/cancel (no changes)",
+	] : [
+		"Explain duplicate prevention (no changes)",
+		"Prepare local duplicate prevention and scan",
+		"Scan using already prepared local files",
+		"Remove local duplicate-check files",
+		"Back/cancel (no changes)",
+	];
+	const choice = await chooseSetup(ctx, "Prevent duplicate habits", choices, false);
+	if (!choice || choice === "Back/cancel (no changes)" || choice === "Keep duplicate prevention ON") return;
+	if (choice === "Explain duplicate prevention (no changes)") return notify(ctx, [
+		"Duplicate prevention compares only normalized When/Do habit wording on this computer.",
+		"It never sends saved examples, source references, evidence summaries, paths, checksums, audit text, credentials, or tokens.",
+		"Preparing it downloads about 150 MB of private local files once. No external app, account, key, service, or setup is required.",
+		"Similarity only routes possible duplicates for your review; it never merges or approves habits automatically.",
+	].join("\n"), "info");
+	if (choice === "Turn duplicate prevention OFF") {
+		const { path } = await setAgentExperienceEmbeddingEnabledAfterScan(false, paths);
+		return notify(ctx, [`Prevent duplicate habits: OFF`, `Local files are preserved for quick offline re-enable.`, `Config file: ${path}`].join("\n"), "info");
+	}
+	if (choice === "Turn off and remove local duplicate-check files" || choice === "Remove local duplicate-check files") {
+		await setAgentExperienceEmbeddingEnabledAfterScan(false, paths);
+		await removeLocalEmbeddingAssets(paths.root);
+		return notify(ctx, "Duplicate prevention is OFF and its local model files were removed. Habits, review decisions, and audit remain.", "info");
+	}
+	const preparing = choice === "Prepare local duplicate prevention and scan";
+	const operation = await runSetupProgress(ctx, preparing ? `Preparing duplicate prevention (up to ${Math.ceil(LOCAL_EMBEDDING_DOWNLOAD_BYTES / 1_000_000)} MB once)` : "Checking for duplicate habits", async (signal, update) => {
+		let provider: any;
+		try {
+			if (preparing) {
+				await ensureLocalEmbeddingAssets(paths.root, { signal, onProgress: (progress) => {
+					const labels = { checking: "Checking private local files", downloading: "Downloading private local files", verifying: "Verifying downloaded files", ready: "Local files ready", removing: "Removing local files" } as const;
+					update({ label: labels[progress.phase], completed: progress.downloaded_bytes, total: progress.total_bytes, unit: "bytes" });
+				} });
+			} else {
+				update({ label: "Verifying private local files" });
+				const status = await getLocalEmbeddingAssetStatus(paths.root, { deep: true });
+				if (!status.ready) throw new Error("Local duplicate-check files are not ready. Choose Prepare local duplicate prevention and scan first.");
+			}
+			const current = await readAgentExperienceConfig(paths);
+			const policy = semanticPolicyFromConfig(current.config, { enabled: true });
+			provider = createEmbeddingAdapterFromConfig({ ...current.config, embedding_enabled: true }, paths.root);
+			if (!provider) throw new Error("Local duplicate prevention is unavailable");
+			return withReviewStorage(async (storage) => scanAndBackfillSemanticDuplicates(storage.db, { userId: storage.userId, policy, provider, now: new Date().toISOString(), signal, onProgress: (progress) => {
+				const labels = { snapshot: "Reading current habits", embedding: "Preparing habit comparisons", comparing: "Comparing habit meanings", saving: "Saving possible duplicates", done: "Duplicate check complete" } as const;
+				update({ label: labels[progress.phase], completed: progress.completed, total: progress.total, unit: "items" });
+			} }));
+		} finally {
+			await provider?.close?.().catch(() => undefined);
+		}
+	});
+	if (!operation.ok) {
+		if (preparing) await setAgentExperienceEmbeddingEnabledAfterScan(false, paths).catch(() => undefined);
+		return notify(ctx, operation.cancelled ? "Duplicate-prevention setup cancelled safely. Incomplete files were removed and the setting remains OFF." : `Duplicate prevention was left unchanged. ${formatReviewReadError(operation.error)}`, operation.cancelled ? "info" : "warn");
+	}
+	if (preparing) await setAgentExperienceEmbeddingEnabledAfterScan(true, paths);
+	const scan = operation.value;
+	const reconciliation = (scan as any).threshold_reconciliation || { dismissed: [], refreshed: [] };
+	notify(ctx, [`Duplicate check complete: ${plural(scan.checked, "habit")} checked, ${plural(scan.relations.length, "possible duplicate")} found.`, `${plural(reconciliation.dismissed?.length || 0, "outdated duplicate suggestion")} cleared; ${plural(reconciliation.refreshed?.length || 0, "existing suggestion")} refreshed.`, preparing ? "Prevent duplicate habits: ON" : `Prevent duplicate habits: ${config.embedding_enabled ? "ON" : "OFF"}`, "Next: choose Resolve duplicate habits if any were found."].join("\n"), "info");
+}
+
+async function handleSetupRetention(ctx: ExtensionCommandContext) {
+	const paths = getAgentExperiencePaths();
+	const { config } = await readAgentExperienceConfig(paths);
+	const choice = await chooseSetup(ctx, "Keep analyzed source examples", [
+		"7 days (most private; recommended)",
+		"14 days",
+		"30 days",
 		"Back/cancel (no changes)",
 	], false);
-	if (!choice || choice === "Back/cancel (no changes)") return notify(ctx, "Duplicate-prevention setup cancelled. No config changed.", "info");
-	if (choice === "Explain semantic duplicate prevention (no changes)") return notify(ctx, [
-		"Semantic duplicate prevention compares approved/suggested habit meanings before they can become separate active habits.",
-		"Embedding payload is only normalized When/Do text: condition plus behavior.",
-		"It does not embed raw examples, source refs, evidence summaries, residual JSON, checksums, prompts, or audit text.",
-		"OpenAI-compatible embeddings require explicit opt-in and an API key in the environment. Local providers can use the same adapter later.",
-	].join("\n"), "info");
-	try {
-		const current = await readAgentExperienceConfig(paths);
-		if (current.config.embedding_provider === "openai-compatible" && !current.config.embedding_openai_compatible_opt_in) {
-			const optIn = await chooseSetup(ctx, "OpenAI-compatible embedding opt-in", [
-				"I understand: send only normalized When/Do habit text for embeddings",
-				"Back/cancel (no changes)",
-			], false);
-			if (optIn !== "I understand: send only normalized When/Do habit text for embeddings") return notify(ctx, "Semantic duplicate prevention was not enabled. Remote embedding opt-in was not confirmed.", "warn");
-			await setAgentExperienceEmbeddingOptIn(true, paths);
-		}
-		const afterOptIn = await readAgentExperienceConfig(paths);
-		const provider = createEmbeddingAdapterFromConfig(afterOptIn.config);
-		if (!provider) throw new Error("No semantic embedding provider is available. For openai-compatible, set OPENAI_API_KEY or AX_OPENAI_EMBEDDING_API_KEY, or configure a local provider later.");
-		const policy = semanticPolicyFromConfig(afterOptIn.config, { enabled: true });
-		const scan = await withReviewStorage(async (storage) => scanAndBackfillSemanticDuplicates(storage.db, { userId: storage.userId, policy, provider, now: new Date().toISOString() }));
-		if (choice === "Enable and scan for duplicate habits") await setAgentExperienceEmbeddingEnabledAfterScan(true, paths);
-		const reconciliation = (scan as any).threshold_reconciliation || { dismissed: [], refreshed: [] };
-		notify(ctx, [`Semantic duplicate scan complete: ${plural(scan.checked, "habit")} checked, ${plural(scan.relations.length, "possible duplicate")} found.`, `${plural(reconciliation.dismissed?.length || 0, "pending duplicate")} dismissed by current threshold; ${plural(reconciliation.refreshed?.length || 0, "pending duplicate")} refreshed.`, choice === "Enable and scan for duplicate habits" ? "Prevent duplicate habits: ON" : `Prevent duplicate habits: ${config.embedding_enabled ? "ON" : "OFF"}`, "Next: choose Resolve duplicate habits if any were found."].join("\n"), "info");
-	} catch (error) {
-		if (choice === "Enable and scan for duplicate habits") await setAgentExperienceEmbeddingEnabledAfterScan(false, paths).catch(() => undefined);
-		notify(ctx, `Semantic duplicate prevention was not enabled. ${formatReviewReadError(error)}`, "warn");
-	}
+	if (!choice || choice === "Back/cancel (no changes)") return;
+	const retentionDays = Number.parseInt(choice, 10) as 7 | 14 | 30;
+	if (![7, 14, 30].includes(retentionDays)) return notify(ctx, "Saved-example retention was left unchanged.", "warn");
+	if (retentionDays === config.observation_retention_days) return notify(ctx, `Analyzed source examples already use ${retentionDays}-day private retention.`, "info");
+	await setAgentExperienceObservationRetentionDays(retentionDays, paths);
+	return notify(ctx, `Analyzed redacted source examples will be deleted after ${retentionDays} days. Minimized evidence, integrity records, and review audit remain.`, "info");
 }
 
 async function handleSetupSelector(ctx: ExtensionCommandContext) {
@@ -1080,7 +1225,7 @@ async function handleSetupSelector(ctx: ExtensionCommandContext) {
 		return notify(ctx, [
 			"Approved-habit reminders means Pi can add only human-approved habits as reminders before a reply.",
 			"It never uses unreviewed suggestions and never approves habits by itself.",
-			"Default mode is local/no-network. Advanced smart mode may call a configured model/provider only if separately configured.",
+			"Default mode uses private local matching. Optional advanced matching remains separately controlled and fail-closed.",
 		].join("\n"), "info");
 	}
 	if (choice === "Use approved habits before replies") return handleSetupUseHabitsToggle(ctx, true);
@@ -1199,27 +1344,11 @@ async function handleSetupModel(ctx: ExtensionCommandContext) {
 }
 
 async function acquireAnalyzeLock(root: string) {
-	const lockPath = resolvePrivatePath(root, "analyze.lock");
-	async function create() {
-		const handle = await openSensitiveFileForWrite(root, lockPath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY);
-		await handle.writeFile(JSON.stringify({ pid: process.pid, started_at: new Date().toISOString() }) + "\n");
-		return { path: lockPath, release: async () => { await handle.close().catch(() => undefined); await rm(lockPath, { force: true }).catch(() => undefined); } };
-	}
 	try {
-		return await create();
+		return await acquireOwnedLock(root, "analyze", { waitMs: 0, staleMs: 2 * 60 * 60_000 });
 	} catch (error: any) {
-		if (error?.code !== "EEXIST") throw error;
-		try {
-			const info = await stat(lockPath);
-			if (Date.now() - info.mtimeMs > 10 * 60 * 1000) {
-				await rm(lockPath, { force: true });
-				return await create();
-			}
-		} catch (lockError: any) {
-			if (lockError?.code !== "ENOENT") throw lockError;
-			return await create();
-		}
-		return undefined;
+		if (/Could not acquire/.test(String(error?.message || error))) return undefined;
+		throw error;
 	}
 }
 
@@ -1237,41 +1366,75 @@ function formatAnalyzeFailure(error: unknown): string {
 	return `Habit learning failed safely. No suggestions were approved. Detail: ${detail}`;
 }
 
-async function runAnalyzeNowJob(ctx: ExtensionCommandContext, preflight: { lock: { release: () => Promise<void> }; observations: ValidatedObservationRecord[] }) {
+async function runAnalyzeNowJob(ctx: ExtensionCommandContext, preflight: { lock: { release: () => Promise<void> }; observations: ValidatedObservationRecord[]; habitContext: CompactHabitContextItem[]; hasMore: boolean; totalUnread: number }) {
 	const paths = getAgentExperiencePaths();
 	const { config } = await readAgentExperienceConfig(paths);
 	const model = config.consolidation_model;
 	const lock = preflight.lock;
-	const observations = preflight.observations;
-	const batch = observations;
+	const batch = preflight.observations;
 	const expected = expectedRangeFromObservations(batch, getConfiguredUserId());
 	const adapter = consolidationModelAdapter ?? createPiConsolidationModelAdapter(ctx);
 	let storage: Awaited<ReturnType<typeof initExperienceStorage>> | undefined;
 	try {
 		const userId = getConfiguredUserId();
-		const output = await adapter.generate({ model, userId, observations: batch, expected, signal: (ctx as any).signal });
+		const output = await adapter.generate({ model, userId, observations: batch, habitContext: preflight.habitContext, expected, signal: (ctx as any).signal });
 		storage = await initExperienceStorage(paths.root, { allowInit: true, userId });
 		const result = await runConsolidationOnce({ root: paths.root, db: storage.db, userId: storage.userId, observations: batch, modelOutput: output, model, config, dryRun: false, breakIn: false, now: new Date().toISOString() });
 		if (!result.ok) return notify(ctx, `Habit learning did not create suggestions: ${redactText(String(result.reason || "model output invalid"))}`, "warn");
+		let promotionNote = "";
+		let promotionProvider: any;
+		try {
+			const policy = semanticPolicyFromConfig(config);
+			promotionProvider = createEmbeddingAdapterFromConfig(config, paths.root);
+			const promotion = await promoteApprovedPendingCandidates(storage.db, { userId, law: await readConfiguredLawForRoot(paths.root), now: new Date().toISOString(), semantic: { policy, provider: promotionProvider, signal: (ctx as any).signal } });
+			if (promotion.promoted.length) promotionNote = `${plural(promotion.promoted.length, "previously approved habit")} became active after receiving enough evidence.`;
+			else if (promotion.blocked.length) promotionNote = `${plural(promotion.blocked.length, "previously approved habit")} remains safely waiting; review its reason in setup.`;
+		} catch (error: any) {
+			promotionNote = `Previously approved waiting habits need a later recheck. ${redactText(String(error?.message || error)).slice(0, 180)}`;
+		} finally {
+			await promotionProvider?.close?.().catch(() => undefined);
+		}
+		let retentionNote = "";
+		if (!preflight.hasMore) {
+			try {
+				const last = batch.at(-1)!;
+				const rotation = await rotateObservationGenerationIfFullyRead(paths.root, { userId, fileGeneration: last.file_generation, seq: last.seq, checksum: last.checksum, retentionDays: config.observation_retention_days });
+				await purgeExpiredObservationArchives(paths.root);
+				if (rotation.rotated) retentionNote = `Saved source examples moved into ${config.observation_retention_days}-day private retention.`;
+			} catch (error: any) {
+				retentionNote = `Source-example cleanup needs retry; learned suggestions remain safely committed. ${redactText(String(error?.message || error)).slice(0, 180)}`;
+			}
+		}
 		const candidateIds = Array.isArray((result as any).result?.candidate_ids) ? (result as any).result.candidate_ids : [];
 		const pendingId = (result as any).result?.pending_review_id;
 		const inserted = (result as any).result?.inserted || {};
 		const newSuggestionCount = Number(inserted.candidates || 0) + Number(inserted.pending_review || 0);
 		const modelProposalCount = Number((result as any).diff?.proposal_count ?? candidateIds.length ?? 0);
+		const rangeLine = `Analyze saved examples finished: ${plural(batch.length, "new saved example")} checked${preflight.totalUnread > batch.length ? ` of ${preflight.totalUnread} waiting` : ""}.`;
+		const moreLine = preflight.hasMore ? "More unread examples remain; choose Analyze saved examples now again for the next bounded batch." : "All currently saved examples are analyzed.";
 		return notify(ctx, newSuggestionCount > 0 ? [
-			`Analyze saved examples finished: ${plural(batch.length, "saved example")} checked.`,
+			rangeLine,
 			`New suggested habits created: ${newSuggestionCount}`,
 			candidateIds.length || pendingId ? "Review list updated." : "Review list updated.",
+			moreLine,
+			promotionNote,
+			retentionNote,
 			"Next: open /experience setup and choose Review suggested habits.",
 		].filter(Boolean).join("\n") : modelProposalCount > 0 ? [
-			`Analyze saved examples finished: ${plural(batch.length, "saved example")} checked.`,
-			"No new suggestions were created; these examples were already analyzed or matched existing suggestions.",
+			rangeLine,
+			"No new suggestions were created; these examples matched existing suggestions.",
+			moreLine,
+			promotionNote,
+			retentionNote,
 			"Next: open /experience setup and choose Review suggested habits, or capture more examples before analyzing again.",
-		].join("\n") : [
-			`Analyze saved examples finished: ${plural(batch.length, "saved example")} checked.`,
+		].filter(Boolean).join("\n") : [
+			rangeLine,
 			"No repeated habit was strong enough to review yet.",
-			"A suggestion needs at least 3 supporting examples across 2 different days.",
-		].join("\n"), "info");
+			"A suggestion needs at least 3 supporting examples across 2 different days, including prior compact evidence.",
+			moreLine,
+			promotionNote,
+			retentionNote,
+		].filter(Boolean).join("\n"), "info");
 	} catch (error: any) {
 		return notify(ctx, formatAnalyzeFailure(error), "warn");
 	} finally {
@@ -1294,19 +1457,33 @@ async function handleAnalyzeNow(ctx: ExtensionCommandContext) {
 	if (analyzeJobs.has(jobKey)) return notify(ctx, "Analyze saved examples is already running. Pi remains usable; come back to /experience setup and choose Review suggested habits after it finishes.", "info");
 	const lock = await acquireAnalyzeLock(paths.root);
 	if (!lock) return notify(ctx, "Analyze saved examples is already running. Pi remains usable; come back to /experience setup and choose Review suggested habits after it finishes.", "info");
-	let observations: ValidatedObservationRecord[];
+	let range: Awaited<ReturnType<typeof readValidatedObservationRange>>;
+	let habitContext: CompactHabitContextItem[] = [];
 	try {
-		observations = await readValidatedObservationGeneration(paths.root, defaultObservationManifest(), getConfiguredUserId());
+		const userId = getConfiguredUserId();
+		let storage: Awaited<ReturnType<typeof initExperienceStorage>> | undefined;
+		let generation: string;
+		let watermark: ReturnType<typeof getProposalReadWatermark> = null;
+		try {
+			storage = await initExperienceStorage(paths.root, { allowInit: true, userId });
+			generation = (await readCurrentObservationManifest(paths.root)).file_generation;
+			watermark = getProposalReadWatermark(storage.db, userId, generation);
+			habitContext = buildCompactHabitContext(storage.db, { userId, limit: 60 });
+		} finally {
+			storage?.db.close();
+		}
+		range = await readValidatedObservationRange(paths.root, { userId, afterSeq: watermark?.seq || 0, afterChecksum: watermark?.checksum || null, maxRecords: config.analyze_batch_max_records, maxBytes: config.analyze_batch_max_bytes });
+		if (range.manifest.file_generation !== generation) throw new Error("Observation generation changed during Analyze preflight; retry");
 	} catch (error: any) {
 		await lock.release();
 		const raw = String(error?.message || error);
 		return notify(ctx, `No readable saved examples yet. Turn on Save chat examples locally, have a normal conversation, then choose Analyze saved examples now. Detail: ${redactText(raw).slice(0, 300)}`, "warn");
 	}
-	if (observations.length < 1) {
+	if (range.records.length < 1) {
 		await lock.release();
-		return notify(ctx, "No saved examples yet. Turn on Save chat examples locally, have a normal conversation, then choose Analyze saved examples now.", "warn");
+		return notify(ctx, range.manifest.last_seq > 0 ? "All currently saved examples were already analyzed. Capture more examples before analyzing again." : "No saved examples yet. Turn on Save chat examples locally, have a normal conversation, then choose Analyze saved examples now.", "info");
 	}
-	const job = runAnalyzeNowJob(ctx, { lock, observations }).finally(() => analyzeJobs.delete(jobKey));
+	const job = runAnalyzeNowJob(ctx, { lock, observations: range.records, habitContext, hasMore: range.has_more, totalUnread: range.total_unread }).finally(() => analyzeJobs.delete(jobKey));
 	analyzeJobs.set(jobKey, job);
 	void job.catch((error) => notify(ctx, formatAnalyzeFailure(error), "warn"));
 	return notify(ctx, "Analyze saved examples started. Pi remains usable while the model works. I’ll post a message here when suggestions are ready, then use /experience setup → Review suggested habits.", "info");
@@ -1430,7 +1607,7 @@ function setupHabitActions(habit: any): SetupHabitAction[] {
 function formatSetupHabitActionForHuman(action: SetupHabitAction, result?: any): string {
 	if (action === "Disable habit") return "Habit disabled. It stays in history but will not be used before replies.";
 	if (action === "Re-enable habit" && result?.enabled === false && result?.semantic?.reason === "semantic_duplicate") return "Habit was not re-enabled because it looks like another approved habit. Open /experience setup → Resolve duplicate habits to decide what to keep.";
-	if (action === "Re-enable habit" && result?.enabled === false && result?.semantic?.reason === "semantic_unavailable") return "Habit was not re-enabled because semantic duplicate checking is enabled but unavailable. Fix the embedding provider or turn duplicate prevention off in /experience setup.";
+	if (action === "Re-enable habit" && result?.enabled === false && result?.semantic?.reason === "semantic_unavailable") return "Habit was not re-enabled because local duplicate checking is not ready. Re-prepare duplicate prevention or turn it off in /experience setup.";
 	if (action === "Re-enable habit") return "Habit re-enabled. It can be used before replies when approved-habit reminders are on.";
 	if (action === "Archive/hide habit") return "Habit archived/hidden. It stays in audit history but is hidden from normal approved-habit lists and will not be used before replies.";
 	return "Back to approved habits.";
@@ -1459,9 +1636,8 @@ async function chooseApprovedHabitActionInPanel(ctx: ExtensionCommandContext, ti
 	return chooseSetup(ctx, "What do you want to do with this approved habit?", actions, false) as Promise<SetupHabitAction | undefined>;
 }
 
-function duplicateLabel(item: any, index: number): string {
-	const score = `${Math.round(Number(item.similarity_bp || 0) / 100)}%`;
-	return `${index + 1}. Possible duplicate (${score})`;
+function duplicateLabel(_item: any, index: number): string {
+	return `${index + 1}. Possible duplicate`;
 }
 
 function formatDuplicateForHuman(item: any, habits: any[]): string {
@@ -1470,7 +1646,7 @@ function formatDuplicateForHuman(item: any, habits: any[]): string {
 	const right = byId.get(item.habit_b) || {};
 	const lines = [
 		"Possible duplicate habits",
-		`Similarity: ${Number(item.similarity_bp || 0)}bp (threshold ${Number(item.threshold_bp || 0)}bp)`,
+		"These two habits may express the same working preference. You decide what to keep.",
 		"",
 		"Habit A:",
 		`Status: ${left.status || "unknown"}`,
@@ -1530,17 +1706,43 @@ async function handleDuplicateResolutionSetup(ctx: ExtensionCommandContext) {
 	}
 }
 
+async function recheckApprovedWaitingHabits(ctx: ExtensionCommandContext) {
+	if (!(await ensureLawFileForSetup(ctx))) return;
+	let runtime: any;
+	try {
+		runtime = await semanticRuntimeForConfig();
+		const result = await withReviewStorage(async (storage) => promoteApprovedPendingCandidates(storage.db, { userId: storage.userId, law: await readConfiguredLawForRoot(storage.root), now: new Date().toISOString(), semantic: runtime }));
+		const remaining = await withExistingReviewStorage(async (storage) => listApprovedPendingHabitsForSetup(storage.db, { userId: storage.userId }));
+		const reasons = [...new Set(remaining.map((row: any) => row.waiting_reason === "law" ? "current safety instructions" : row.waiting_reason === "conflict" ? "a conflicting habit" : row.waiting_reason === "semantic_unavailable" ? "local duplicate checking" : "more repeated evidence"))];
+		notify(ctx, [
+			`${plural(result.promoted.length, "approved habit")} became active.`,
+			`${plural(remaining.length, "approved habit")} still waiting${reasons.length ? ` for ${reasons.join(", ")}` : ""}.`,
+			remaining.length ? "No new approval is required unless its wording changes." : "All approved waiting habits are resolved.",
+		].join("\n"), remaining.length ? "warn" : "info");
+	} catch (error: any) {
+		notify(ctx, `Approved habits were left unchanged. ${formatReviewReadError(error)}`, "warn");
+	} finally {
+		await runtime?.provider?.close?.().catch(() => undefined);
+	}
+}
+
 async function handleApprovedHabitsSetup(ctx: ExtensionCommandContext) {
 	const paths = getAgentExperiencePaths();
 	if (!(await fileExists(resolvePrivatePath(paths.root, "ledger.sqlite")))) return notify(ctx, "No approved habits yet. Choose Analyze saved examples now, then Review suggested habits and approve one first.", "info");
 	while (true) {
 		let habits: any[];
+		let waiting: any[];
 		try {
-			habits = await withExistingReviewStorage(async (storage) => listApprovedHabitsForSetup(storage.db, { userId: storage.userId }));
+			({ habits, waiting } = await withExistingReviewStorage(async (storage) => ({ habits: listApprovedHabitsForSetup(storage.db, { userId: storage.userId }), waiting: listApprovedPendingHabitsForSetup(storage.db, { userId: storage.userId }) })));
 		} catch (error) {
 			return notify(ctx, formatReviewReadError(error), "warn");
 		}
-		if (!habits.length) return notify(ctx, "No approved habits yet. Approve a suggested habit first; candidates stay under Review suggested habits.", "info");
+		if (waiting.length) {
+			const choice = await chooseSetup(ctx, "Approved habits", [...(habits.length ? ["Browse active and disabled habits"] : []), `Recheck ${plural(waiting.length, "approved habit")} that is waiting`, "Back to setup"], false);
+			if (!choice || choice === "Back to setup") return;
+			if (choice.startsWith("Recheck ")) { await recheckApprovedWaitingHabits(ctx); continue; }
+		}
+		if (!habits.length) return notify(ctx, "No active or disabled approved habits yet. Waiting approvals remain visible here until their requirements are met.", "info");
 		const selected = await chooseApprovedHabitInPanel(ctx, habits);
 		if (!selected) return;
 		const refreshed = await withExistingReviewStorage(async (storage) => listApprovedHabitsForSetup(storage.db, { userId: storage.userId }))
@@ -1797,6 +1999,7 @@ async function handleSetup(ctx: ExtensionCommandContext, args: string[] = []) {
 			else if (choice === "Resolve duplicate habits") await handleDuplicateResolutionSetup(ctx);
 			else if (choice === "Review approved habits") await handleApprovedHabitsSetup(ctx);
 			else if (choice.endsWith("Prevent duplicate habits")) await handleSetupEmbedding(ctx);
+			else if (choice.startsWith("Keep analyzed source examples")) await handleSetupRetention(ctx);
 			else if (choice === "Explain these settings") await handleHelpSetup(ctx, config);
 			else if (choice === "Turn all experience features off") await handleOff(ctx);
 			else if (choice.startsWith("Choose model for habit learning")) await handleSetupModel(ctx);
@@ -1822,6 +2025,7 @@ async function handleSetup(ctx: ExtensionCommandContext, args: string[] = []) {
 		else if (action === "duplicates") await handleDuplicateResolutionSetup(ctx);
 		else if (action === "habits") await handleApprovedHabitsSetup(ctx);
 		else if (action === "embedding") await handleSetupEmbedding(ctx);
+		else if (action === "retention") await handleSetupRetention(ctx);
 		else if (action === "use") await handleSetupUseHabitsToggle(ctx, !config.selector_enabled);
 		else if (action === "schedule") await handleSetupTimer(ctx);
 		else if (action === "status") await handleStatusSetup(ctx);
@@ -1928,11 +2132,12 @@ async function readConfiguredLawForRoot(root: string) {
 }
 
 async function semanticRuntimeForConfig() {
-	const { config } = await readAgentExperienceConfig(getAgentExperiencePaths());
+	const paths = getAgentExperiencePaths();
+	const { config } = await readAgentExperienceConfig(paths);
 	const policy = semanticPolicyFromConfig(config);
 	if (!policy.enabled) return { policy, provider: undefined };
 	try {
-		return { policy, provider: createEmbeddingAdapterFromConfig(config) };
+		return { policy, provider: createEmbeddingAdapterFromConfig(config, paths.root) };
 	} catch {
 		return { policy, provider: undefined };
 	}

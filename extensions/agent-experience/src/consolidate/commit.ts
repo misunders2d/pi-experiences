@@ -43,6 +43,8 @@ function stableId(prefix: string, value: unknown): string {
 	return `${prefix}-${sha256Hex(canonicalJson(value)).slice(0, 40)}`;
 }
 
+export const CONTRADICTION_SUPPRESS_MIN_CONFIDENCE_BP = 8500;
+
 function normalizeIdentityText(value: string): string {
 	return value.trim().replace(/\s+/g, " ").toLowerCase();
 }
@@ -86,6 +88,7 @@ function mergeCandidateData(existingResidual: any, incoming: any): unknown {
 		"active",
 		"injectable",
 	]) {
+		if (key === "review_status" && existingResidual?.review_status === "collecting_evidence" && (incoming as any)?.review_status === "awaiting_review") continue;
 		if (existingResidual && Object.prototype.hasOwnProperty.call(existingResidual, key)) merged[key] = existingResidual[key];
 	}
 	merged.source_refs = uniqueArrayByCanonical([...(Array.isArray(existingResidual?.source_refs) ? existingResidual.source_refs : []), ...(Array.isArray((incoming as any)?.source_refs) ? (incoming as any).source_refs : [])]);
@@ -141,6 +144,10 @@ function getWatermarkFromTable(db: any, table: "consolidation_watermarks" | "pro
 
 function getWatermark(db: any, userId: string, fileGeneration: string): Watermark | null {
 	return getWatermarkFromTable(db, "consolidation_watermarks", userId, fileGeneration);
+}
+
+export function getProposalReadWatermark(db: any, userId: string, fileGeneration: string): Watermark | null {
+	return getWatermarkFromTable(db, "proposal_read_watermarks", normalizeUserId(userId), fileGeneration);
 }
 
 function upsertWatermarkTable(db: any, table: "consolidation_watermarks" | "proposal_read_watermarks", row: Omit<Watermark, "row_checksum">): { row: Watermark; changed: 0 | 1 } {
@@ -235,6 +242,7 @@ function proposalCandidateData(batch: ValidatedProposalBatch, proposal: HabitCan
 		schema_version: 2,
 		record_kind: "candidate_habit_v1",
 		status: "candidate",
+		review_status: proposal.evidence_stage === "collecting" ? "collecting_evidence" : "awaiting_review",
 		active: false,
 		injectable: false,
 		source_kind: "phase4a_fixture",
@@ -245,8 +253,10 @@ function proposalCandidateData(batch: ValidatedProposalBatch, proposal: HabitCan
 		behavior: proposal.behavior,
 		polarity: proposal.polarity,
 		confidence_bp: proposal.confidence_bp,
+		evidence_stage: proposal.evidence_stage || "reviewable",
 		source_refs: proposal.source_refs,
 		source_dates: sourceDates,
+		...(proposal.correction_role ? { correction_role: proposal.correction_role, correction_group_id: proposal.correction_group_id } : {}),
 	};
 }
 
@@ -261,10 +271,63 @@ function proposalEvidenceData(_batch: ValidatedProposalBatch, proposal: HabitCan
 		source_kind: "phase4_model_or_fixture",
 		polarity: proposal.polarity,
 		confidence_bp: proposal.confidence_bp,
+		evidence_stage: proposal.evidence_stage || "reviewable",
 		source_refs: proposal.source_refs,
 		source_dates: sourceDates,
 		...(proposal.evidence_summary === undefined ? {} : { evidence_summary: proposal.evidence_summary }),
+		...(proposal.correction_role ? { correction_role: proposal.correction_role, correction_group_id: proposal.correction_group_id } : {}),
 	};
+}
+
+function exactActiveCorrectionMatches(db: any, userId: string, proposal: HabitCandidateProposal): any[] {
+	const condition = normalizeIdentityText(proposal.condition);
+	const behavior = normalizeIdentityText(proposal.behavior);
+	return db.prepare("SELECT * FROM habits WHERE user_id = ? AND status = 'active' ORDER BY id").all(userId)
+		.filter((row: any) => normalizeIdentityText(String(row.condition || "")) === condition && normalizeIdentityText(String(row.behavior || "")) === behavior);
+}
+
+function suppressContradictedHabit(db: any, input: { userId: string; before: any; proposal: HabitCandidateProposal; sourceDates: string[]; now: string }) {
+	let residual: any = {};
+	try { residual = JSON.parse(input.before.data_json || "{}"); } catch {}
+	const contradiction = {
+		correction_group_id: input.proposal.correction_group_id,
+		proposal_id: input.proposal.proposal_id,
+		source_refs: input.proposal.source_refs,
+		source_dates: input.sourceDates,
+		prior_checksum: input.before.checksum,
+		suppressed_at: input.now,
+	};
+	const data = {
+		...residual,
+		record_kind: input.before.record_kind,
+		schema_version: input.before.schema_version,
+		status: "dormant",
+		habit_id: input.before.habit_id,
+		condition: input.before.condition,
+		behavior: input.before.behavior,
+		polarity: input.before.polarity,
+		confidence_bp: input.before.confidence_bp,
+		activation: input.before.activation,
+		staleness: input.before.staleness,
+		active: false,
+		injectable: false,
+		review_status: "contradicted_pending_review",
+		contradiction,
+	};
+	const updated = buildTypedStorageRow("habits", { id: input.before.id, userId: input.userId, data, createdAt: input.before.created_at, updatedAt: input.now });
+	const changes = db.prepare("UPDATE habits SET record_kind=?, schema_version=?, status=?, habit_id=?, condition=?, behavior=?, polarity=?, confidence_bp=?, activation=?, staleness=?, data_json=?, checksum=?, updated_at=? WHERE user_id=? AND id=? AND status='active' AND checksum=?")
+		.run(updated.record_kind, updated.schema_version, updated.status, updated.habit_id, updated.condition, updated.behavior, updated.polarity, updated.confidence_bp, updated.activation, updated.staleness, updated.data_json, updated.checksum, updated.updated_at, input.userId, input.before.id, input.before.checksum).changes;
+	if (changes !== 1) throw new Error("Contradicted habit suppression raced; retry Analyze");
+	const after = db.prepare("SELECT * FROM habits WHERE user_id = ? AND id = ?").get(input.userId, input.before.id);
+	const beforeJson = canonicalJson(input.before);
+	const afterJson = canonicalJson(after);
+	const dataJson = canonicalJson({ contradiction, replacement_requires_approval: true });
+	const auditBase = { user_id: input.userId, target_kind: "habit", target_id: input.before.id, action: "suppress_contradicted_habit", before_json: beforeJson, after_json: afterJson, data_json: dataJson, created_at: input.now };
+	const checksum = checksumJson({ table: "experience_review_audit", row: auditBase });
+	const id = stableId("review-audit", { ...auditBase, checksum });
+	db.prepare("INSERT OR IGNORE INTO experience_review_audit (id, user_id, target_kind, target_id, action, before_json, after_json, data_json, checksum, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+		.run(id, input.userId, "habit", input.before.id, "suppress_contradicted_habit", beforeJson, afterJson, dataJson, checksum, input.now);
+	return { after, audit_id: id };
 }
 
 export async function consolidateProposalBatch(input: CommitInput): Promise<ConsolidationResult> {
@@ -288,11 +351,12 @@ export async function consolidateProposalBatch(input: CommitInput): Promise<Cons
 		let evidenceHabitId = candidateId;
 		let duplicateMatch: any;
 		let stagedRow: any;
-		if (policy.enabled && input.semantic?.provider) {
+		if (policy.enabled && input.semantic?.provider && proposal.correction_role !== "old_negative") {
 			stagedRow = buildTypedStorageRow("habits", { id: candidateId, userId, data: candidateData, now: batch.created_at });
 			const targetRow = { id: stagedRow.id, user_id: stagedRow.user_id, status: stagedRow.status, condition: stagedRow.condition, behavior: stagedRow.behavior, polarity: stagedRow.polarity, checksum: stagedRow.checksum, created_at: stagedRow.created_at, updated_at: stagedRow.updated_at, data_json: stagedRow.data_json };
 			const matches = await findSemanticDuplicateMatches(input.db, { userId, target: targetRow, policy, provider: input.semantic.provider, now: batch.created_at, signal: input.semantic.signal });
 			for (const previous of stagedSemanticRows) {
+				if (previous.polarity !== targetRow.polarity) continue;
 				const left = await ensureHabitEmbedding(input.db, { userId, habit: targetRow, policy, provider: input.semantic.provider, now: batch.created_at, signal: input.semantic.signal });
 				const right = await ensureHabitEmbedding(input.db, { userId, habit: previous, policy, provider: input.semantic.provider, now: batch.created_at, signal: input.semantic.signal });
 				const similarityBp = cosineBp(left.vector, right.vector);
@@ -322,6 +386,20 @@ export async function consolidateProposalBatch(input: CommitInput): Promise<Cons
 		let insertedCandidates = 0;
 		let insertedEvidence = 0;
 		for (const item of staged) {
+			if (item.proposal.correction_role === "old_negative" && item.proposal.confidence_bp >= CONTRADICTION_SUPPRESS_MIN_CONFIDENCE_BP) {
+				const matches = exactActiveCorrectionMatches(input.db, userId, item.proposal);
+				if (matches.length === 1) {
+					const target = matches[0];
+					suppressContradictedHabit(input.db, { userId, before: target, proposal: item.proposal, sourceDates: item.sourceDates, now: batch.created_at });
+					const evidenceData = proposalEvidenceData(batch, item.proposal, item.sourceDates, target.id);
+					const evidenceId = stableId("evidence", { schema_version: 2, user_id: userId, payload: evidenceData });
+					const evidence = insertIdempotentStorageRecord(input.db, "evidence", { id: evidenceId, userId, data: evidenceData, now: batch.created_at });
+					candidateIds.push(target.id);
+					evidenceIds.push(evidence.id);
+					if (evidence.inserted) insertedEvidence++;
+					continue;
+				}
+			}
 			const candidate = insertIdempotentStorageRecord(input.db, "habits", { id: item.candidateId, userId, data: item.candidateData, now: batch.created_at });
 			const evidence = insertIdempotentStorageRecord(input.db, "evidence", { id: item.evidenceId, userId, data: item.evidenceData, now: batch.created_at });
 			if (item.duplicateMatch && policy.enabled) {

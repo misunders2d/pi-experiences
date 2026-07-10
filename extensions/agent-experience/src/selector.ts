@@ -2,8 +2,8 @@ import { canonicalJson, checksumJson, sha256Hex } from "./storage/checksum.ts";
 import { normalizeUserId } from "./storage/private-root.ts";
 import { containsUnredactedSensitiveText, redactJson, redactText } from "./storage/redaction.ts";
 import { buildTypedStorageRow } from "./storage/sqlite.ts";
-import { activationEligibilityFromHabit, checkHabitConflict, checkHabitLaw, type LawSnapshot } from "./review.ts";
-import { checkSemanticActivationGate } from "./semantic/service.ts";
+import { activationEligibilityFromHabit, checkHabitConflict, checkHabitLaw, revalidateLawSnapshotSync, type LawSnapshot } from "./review.ts";
+import { runAtomicSemanticActivation } from "./semantic/service.ts";
 import type { EmbeddingAdapter, SemanticDedupePolicy } from "./semantic/types.ts";
 import type { AgentExperienceConfig } from "./config.ts";
 
@@ -284,56 +284,103 @@ export async function measureSelectorLatency(input: { adapter: SelectorModelAdap
 	return { samples, p95_ms: p95, compatible_with_1500ms: p95 <= 1500, compatible_with_configured_threshold: p95 <= input.timeoutMs };
 }
 
-export async function promoteApprovedPendingCandidates(db: any, input: { userId: string; law: LawSnapshot; now: string; semantic: { policy: Partial<SemanticDedupePolicy>; provider?: EmbeddingAdapter; signal?: AbortSignal } }) {
+function normalizedApprovalIdentity(row: any) {
+	return { candidate_id: row.id, condition: String(row.condition ?? "").trim().replace(/\s+/g, " ").toLowerCase(), behavior: String(row.behavior ?? "").trim().replace(/\s+/g, " ").toLowerCase(), polarity: Number(row.polarity) };
+}
+
+function insertPromotionAudit(db: any, input: { userId: string; rowId: string; action: string; before: any; after: any; data: any; now: string }) {
+	const beforeJson = boundedJson(input.before);
+	const afterJson = boundedJson(input.after);
+	const dataJson = boundedJson(input.data);
+	const base = { user_id: input.userId, target_kind: "habit", target_id: input.rowId, action: input.action, before_json: beforeJson, after_json: afterJson, data_json: dataJson, created_at: input.now };
+	const checksum = checksumJson({ table: "experience_review_audit", row: base });
+	const id = stableId("review-audit", { ...base, checksum });
+	db.prepare("INSERT OR IGNORE INTO experience_review_audit (id, user_id, target_kind, target_id, action, before_json, after_json, data_json, checksum, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+		.run(id, input.userId, "habit", input.rowId, input.action, beforeJson, afterJson, dataJson, checksum, input.now);
+	return id;
+}
+
+function updatePromotedHabit(db: any, input: { userId: string; before: any; data: any; status: string; now: string }) {
+	const updated = buildTypedStorageRow("habits", { id: input.before.id, userId: input.userId, data: { ...input.data, status: input.status }, createdAt: input.before.created_at, updatedAt: input.now });
+	const changes = db.prepare("UPDATE habits SET record_kind=?, schema_version=?, status=?, habit_id=?, condition=?, behavior=?, polarity=?, confidence_bp=?, activation=?, staleness=?, data_json=?, checksum=?, updated_at=? WHERE user_id=? AND id=? AND status=? AND checksum=?")
+		.run(updated.record_kind, updated.schema_version, updated.status, updated.habit_id, updated.condition, updated.behavior, updated.polarity, updated.confidence_bp, updated.activation, updated.staleness, updated.data_json, updated.checksum, updated.updated_at, input.userId, input.before.id, input.before.status, input.before.checksum).changes;
+	if (changes !== 1) throw new Error("Approved habit recheck raced; retry");
+	return db.prepare("SELECT * FROM habits WHERE user_id = ? AND id = ?").get(input.userId, input.before.id);
+}
+
+export async function promoteApprovedPendingCandidates(db: any, input: { userId: string; law: LawSnapshot; now: string; semantic: { policy: Partial<SemanticDedupePolicy>; provider?: EmbeddingAdapter; signal?: AbortSignal }; candidateIdsForTest?: string[] }) {
 	if (!input.semantic?.policy) throw new Error("Background promotion requires an explicit semantic dedupe policy");
 	const userId = normalizeUserId(input.userId);
-	let result: any;
-	db.exec("BEGIN IMMEDIATE");
-	try {
-		const rows = db.prepare("SELECT * FROM habits WHERE user_id = ? AND status = 'candidate' ORDER BY id").all(userId).filter((row: any) => parseJson(row.data_json).review_status === "approved_pending_eligibility");
-		const promoted: string[] = [];
-		const blocked: Array<{ id: string; reason: string }> = [];
-		for (const row of rows) {
-			const eligibility = activationEligibilityFromHabit(row);
-			if (!eligibility.eligible) continue;
-			const law = checkHabitLaw({ condition: row.condition, behavior: row.behavior, law: input.law });
-			const conflict = checkHabitConflict(db, { userId, habitId: row.id, condition: row.condition, behavior: row.behavior, polarity: Number(row.polarity) });
-			const data = { ...parseJson(row.data_json), condition: row.condition, behavior: row.behavior, polarity: row.polarity, confidence_bp: row.confidence_bp, record_kind: row.record_kind, schema_version: row.schema_version, law_hash: input.law.hash, promotion_decision: { eligibility, law, conflict } };
-			let semantic: any = { pass: true, reason: "disabled" };
-			if (law.pass && conflict.pass) {
+	const waitingStatuses = new Set(["approved_pending_eligibility", "approved_pending_conflict", "approved_pending_law_blocked", "kept_separate"]);
+	const testIds = input.candidateIdsForTest ? new Set(input.candidateIdsForTest) : undefined;
+	const rows = db.prepare("SELECT * FROM habits WHERE user_id = ? AND status IN ('candidate','suppressed_by_law') ORDER BY id").all(userId)
+		.filter((row: any) => waitingStatuses.has(parseJson(row.data_json).review_status))
+		.filter((row: any) => !testIds || testIds.has(row.id));
+	const promoted: string[] = [];
+	const blocked: Array<{ id: string; reason: string }> = [];
+	for (const initial of rows) {
+		const initialData = parseJson(initial.data_json);
+		const currentIdentity = normalizedApprovalIdentity(initial);
+		const approvedIdentity = initialData.approved_identity ? { candidate_id: initialData.approved_identity.candidate_id, condition: initialData.approved_identity.condition, behavior: initialData.approved_identity.behavior, polarity: Number(initialData.approved_identity.polarity) } : currentIdentity;
+		if (canonicalJson(approvedIdentity) !== canonicalJson(currentIdentity)) {
+			db.exec("BEGIN IMMEDIATE");
+			try {
+				const before = db.prepare("SELECT * FROM habits WHERE user_id = ? AND id = ?").get(userId, initial.id);
+				if (!before || before.checksum !== initial.checksum) throw new Error("Approved habit identity changed concurrently");
+				const after = updatePromotedHabit(db, { userId, before, status: "candidate", now: input.now, data: { ...parseJson(before.data_json), review_status: "candidate_reapproval_required", active: false, injectable: false, approved_identity: null, approval_invalidated: { reason: "material_identity_change", at: input.now } } });
+				insertPromotionAudit(db, { userId, rowId: before.id, action: "promotion_requires_reapproval", before, after, data: { approved_identity: approvedIdentity, current_identity: currentIdentity }, now: input.now });
 				db.exec("COMMIT");
-				semantic = await checkSemanticActivationGate(db, { userId, targetHabitId: row.id, policy: input.semantic.policy, provider: input.semantic.provider, now: input.now, signal: input.semantic.signal, targetKind: "promote_pending_candidate" });
-				db.exec("BEGIN IMMEDIATE");
-			}
-			if (law.pass && conflict.pass && semantic.pass) {
-				const updated = buildTypedStorageRow("habits", { id: row.id, userId, data: { ...data, status: "active", review_status: "promoted_active", active: true, injectable: false, promoted_at: input.now }, createdAt: row.created_at, updatedAt: input.now });
-				const changes = db.prepare("UPDATE habits SET record_kind=?, schema_version=?, status=?, habit_id=?, condition=?, behavior=?, polarity=?, confidence_bp=?, activation=?, staleness=?, data_json=?, checksum=?, updated_at=? WHERE user_id=? AND id=? AND status='candidate' AND checksum=?")
-					.run(updated.record_kind, updated.schema_version, updated.status, updated.habit_id, updated.condition, updated.behavior, updated.polarity, updated.confidence_bp, updated.activation, updated.staleness, updated.data_json, updated.checksum, updated.updated_at, userId, row.id, row.checksum).changes;
-				if (changes !== 1) throw new Error("Promotion update failed");
-				promoted.push(row.id);
-				db.prepare("INSERT INTO experience_review_audit (id, user_id, target_kind, target_id, action, before_json, after_json, data_json, checksum, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-					.run(stableId("review-audit", { row: row.id, action: "promote_approved_candidate", now: input.now }), userId, "habit", row.id, "promote_approved_candidate", boundedJson(row), boundedJson({ ...row, status: "active", checksum: updated.checksum }), boundedJson({ eligibility, law, conflict }), checksumJson({ table: "experience_review_audit", row: { user_id: userId, target_kind: "habit", target_id: row.id, action: "promote_approved_candidate", before_json: boundedJson(row), after_json: boundedJson({ ...row, status: "active", checksum: updated.checksum }), data_json: boundedJson({ eligibility, law, conflict }), created_at: input.now } }), input.now);
-			} else if (law.pass && conflict.pass && !semantic.pass) {
-				const after = db.prepare("SELECT * FROM habits WHERE user_id = ? AND id = ?").get(userId, row.id) || row;
-				blocked.push({ id: row.id, reason: semantic.reason === "semantic_unavailable" ? "semantic_unavailable" : "semantic_duplicate" });
-				db.prepare("INSERT INTO experience_review_audit (id, user_id, target_kind, target_id, action, before_json, after_json, data_json, checksum, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-					.run(stableId("review-audit", { row: row.id, action: "promotion_semantic_blocked", now: input.now }), userId, "habit", row.id, "promotion_semantic_blocked", boundedJson(row), boundedJson(after), boundedJson({ eligibility, law, conflict, semantic }), checksumJson({ table: "experience_review_audit", row: { user_id: userId, target_kind: "habit", target_id: row.id, action: "promotion_semantic_blocked", before_json: boundedJson(row), after_json: boundedJson(after), data_json: boundedJson({ eligibility, law, conflict, semantic }), created_at: input.now } }), input.now);
-			} else {
-				const status = law.pass ? "candidate" : "suppressed_by_law";
-				const updated = buildTypedStorageRow("habits", { id: row.id, userId, data: { ...data, status, review_status: law.pass ? "approved_pending_conflict" : "approved_pending_law_blocked", active: false, injectable: false }, createdAt: row.created_at, updatedAt: input.now });
-				const changes = db.prepare("UPDATE habits SET record_kind=?, schema_version=?, status=?, habit_id=?, condition=?, behavior=?, polarity=?, confidence_bp=?, activation=?, staleness=?, data_json=?, checksum=?, updated_at=? WHERE user_id=? AND id=? AND status='candidate' AND checksum=?")
-					.run(updated.record_kind, updated.schema_version, updated.status, updated.habit_id, updated.condition, updated.behavior, updated.polarity, updated.confidence_bp, updated.activation, updated.staleness, updated.data_json, updated.checksum, updated.updated_at, userId, row.id, row.checksum).changes;
-				if (changes !== 1) throw new Error("Promotion block update failed");
-				blocked.push({ id: row.id, reason: law.pass ? "conflict" : "law" });
-				db.prepare("INSERT INTO experience_review_audit (id, user_id, target_kind, target_id, action, before_json, after_json, data_json, checksum, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-					.run(stableId("review-audit", { row: row.id, action: "promotion_blocked", now: input.now }), userId, "habit", row.id, "promotion_blocked", boundedJson(row), boundedJson({ ...row, status: updated.status, checksum: updated.checksum }), boundedJson({ eligibility, law, conflict }), checksumJson({ table: "experience_review_audit", row: { user_id: userId, target_kind: "habit", target_id: row.id, action: "promotion_blocked", before_json: boundedJson(row), after_json: boundedJson({ ...row, status: updated.status, checksum: updated.checksum }), data_json: boundedJson({ eligibility, law, conflict }), created_at: input.now } }), input.now);
+				blocked.push({ id: initial.id, reason: "identity_changed" });
+				continue;
+			} catch (error) {
+				try { db.exec("ROLLBACK"); } catch {}
+				throw error;
 			}
 		}
-		result = { user_id: userId, checked: rows.length, promoted, blocked };
-		db.exec("COMMIT");
-	} catch (error) {
-		try { db.exec("ROLLBACK"); } catch {}
-		throw error;
+		const outcome = await runAtomicSemanticActivation(db, {
+			userId,
+			targetHabitId: initial.id,
+			expectedStatus: initial.status,
+			expectedChecksum: initial.checksum,
+			policy: input.semantic.policy,
+			provider: input.semantic.provider,
+			now: input.now,
+			signal: input.semantic.signal,
+			targetKind: "promote_pending_candidate",
+			transition: (target, semantic) => {
+				const before = db.prepare("SELECT * FROM habits WHERE user_id = ? AND id = ?").get(userId, target.id);
+				const data = parseJson(before.data_json);
+				const identity = data.approved_identity ? { candidate_id: data.approved_identity.candidate_id, condition: data.approved_identity.condition, behavior: data.approved_identity.behavior, polarity: Number(data.approved_identity.polarity) } : normalizedApprovalIdentity(before);
+				if (canonicalJson(identity) !== canonicalJson(normalizedApprovalIdentity(before))) throw new Error("Approved habit wording changed; explicit reapproval required");
+				const eligibility = activationEligibilityFromHabit(before);
+				const lawSnapshot = revalidateLawSnapshotSync(input.law);
+				const law = checkHabitLaw({ condition: before.condition, behavior: before.behavior, law: lawSnapshot });
+				const conflict = checkHabitConflict(db, { userId, habitId: before.id, condition: before.condition, behavior: before.behavior, polarity: Number(before.polarity) });
+				const baseData = { ...data, condition: before.condition, behavior: before.behavior, polarity: before.polarity, confidence_bp: before.confidence_bp, record_kind: before.record_kind, schema_version: before.schema_version, approved_identity: { ...identity, approved_at: data.approved_identity?.approved_at || input.now }, law_hash: lawSnapshot.hash, promotion_decision: { eligibility, law, conflict, semantic }, active: false, injectable: false };
+				if (!eligibility.eligible || !law.pass || !conflict.pass) {
+					const reason = !eligibility.eligible ? "evidence" : !law.pass ? "law" : "conflict";
+					const status = reason === "law" ? "suppressed_by_law" : "candidate";
+					const reviewStatus = reason === "law" ? "approved_pending_law_blocked" : reason === "conflict" ? "approved_pending_conflict" : "approved_pending_eligibility";
+					const after = updatePromotedHabit(db, { userId, before, status, now: input.now, data: { ...baseData, review_status: reviewStatus, approved_pending_reason: reason } });
+					const auditId = insertPromotionAudit(db, { userId, rowId: before.id, action: "promotion_blocked", before, after, data: { eligibility, law, conflict, semantic, reason }, now: input.now });
+					return { promoted: false, id: before.id, reason, audit_id: auditId };
+				}
+				const after = updatePromotedHabit(db, { userId, before, status: "active", now: input.now, data: { ...baseData, review_status: "promoted_active", active: true, promoted_at: input.now } });
+				const auditId = insertPromotionAudit(db, { userId, rowId: before.id, action: "promote_approved_candidate", before, after, data: { eligibility, law, conflict, semantic, approved_identity: identity }, now: input.now });
+				return { promoted: true, id: before.id, audit_id: auditId };
+			},
+			onBlocked: (target, semantic) => {
+				const before = db.prepare("SELECT * FROM habits WHERE user_id = ? AND id = ?").get(userId, target.id);
+				const duplicate = semantic.reason === "semantic_duplicate";
+				const data = parseJson(before.data_json);
+				const after = updatePromotedHabit(db, { userId, before, status: before.status, now: input.now, data: { ...data, review_status: duplicate ? "duplicate_resolution" : "approved_pending_eligibility", active: false, injectable: false, approved_identity: data.approved_identity || { ...normalizedApprovalIdentity(before), approved_at: input.now }, approved_pending_reason: semantic.reason, promotion_decision: { semantic } } });
+				const reason = duplicate ? "semantic_duplicate" : "semantic_unavailable";
+				const auditId = insertPromotionAudit(db, { userId, rowId: before.id, action: "promotion_semantic_blocked", before, after, data: { semantic, reason }, now: input.now });
+				return { promoted: false, id: before.id, reason, audit_id: auditId };
+			},
+		});
+		if (outcome.result?.promoted) promoted.push(initial.id);
+		else blocked.push({ id: initial.id, reason: outcome.result?.reason || outcome.semantic.reason });
 	}
-	return result;
+	return { user_id: userId, checked: rows.length, promoted, blocked };
 }

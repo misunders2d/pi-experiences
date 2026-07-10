@@ -20,6 +20,7 @@ export interface HabitCandidateModelProposal {
 	confidence_bp: number;
 	source_refs: ModelOutputSourceRef[];
 	evidence_summary?: string;
+	evidence_stage?: "collecting" | "reviewable";
 	ambiguous?: false;
 }
 
@@ -34,6 +35,7 @@ export interface CorrectionSplitModelProposal {
 	confidence_bp: number;
 	source_refs: ModelOutputSourceRef[];
 	evidence_summary?: string;
+	evidence_stage?: "collecting" | "reviewable";
 	ambiguous?: false;
 }
 
@@ -55,8 +57,8 @@ export interface ValidatedModelOutputBatch {
 
 const MODEL_OUTPUT_KEYS = new Set(["schema_version", "user_id", "file_generation", "batch_id", "model", "created_at", "observations_read", "proposals"]);
 const OBSERVATIONS_READ_KEYS = new Set(["seq_start", "seq_end", "checksum"]);
-const HABIT_KEYS = new Set(["proposal_id", "kind", "candidate_key", "condition", "behavior", "polarity", "confidence_bp", "source_refs", "evidence_summary", "ambiguous"]);
-const CORRECTION_KEYS = new Set(["proposal_id", "kind", "candidate_key", "old_condition", "old_behavior", "new_condition", "new_behavior", "confidence_bp", "source_refs", "evidence_summary", "ambiguous"]);
+const HABIT_KEYS = new Set(["proposal_id", "kind", "candidate_key", "condition", "behavior", "polarity", "confidence_bp", "source_refs", "evidence_summary", "evidence_stage", "ambiguous"]);
+const CORRECTION_KEYS = new Set(["proposal_id", "kind", "candidate_key", "old_condition", "old_behavior", "new_condition", "new_behavior", "confidence_bp", "source_refs", "evidence_summary", "evidence_stage", "ambiguous"]);
 const REF_KEYS = new Set(["file_generation", "seq", "checksum"]);
 
 function assertExactKeys(value: Record<string, unknown>, allowed: Set<string>, label: string): void {
@@ -149,6 +151,7 @@ function validateProposal(value: unknown, seenIds: Set<string>, generation: stri
 		confidence_bp: assertConfidence(proposal.confidence_bp),
 		source_refs: validateRefs(proposal.source_refs, generation, seqStart, seqEnd),
 		...(proposal.evidence_summary === undefined ? {} : { evidence_summary: assertSafeText(proposal.evidence_summary, "evidence_summary") }),
+		...(proposal.evidence_stage === undefined ? {} : { evidence_stage: proposal.evidence_stage === "collecting" || proposal.evidence_stage === "reviewable" ? proposal.evidence_stage : (() => { throw new Error("Invalid evidence_stage"); })() }),
 		...(proposal.ambiguous === undefined ? {} : { ambiguous: false as const }),
 	};
 	if (kind === "habit_candidate") {
@@ -219,6 +222,7 @@ export function modelOutputToProposalBatch(batch: ValidatedModelOutputBatch): Pr
 				confidence_bp: proposal.confidence_bp,
 				source_refs: proposal.source_refs,
 				...(proposal.evidence_summary === undefined ? {} : { evidence_summary: proposal.evidence_summary }),
+				...(proposal.evidence_stage === undefined ? {} : { evidence_stage: proposal.evidence_stage }),
 			}];
 		}
 		return [
@@ -232,6 +236,9 @@ export function modelOutputToProposalBatch(batch: ValidatedModelOutputBatch): Pr
 				confidence_bp: proposal.confidence_bp,
 				source_refs: proposal.source_refs,
 				...(proposal.evidence_summary === undefined ? {} : { evidence_summary: proposal.evidence_summary }),
+				correction_role: "old_negative",
+				correction_group_id: proposal.proposal_id,
+				...(proposal.evidence_stage === undefined ? {} : { evidence_stage: proposal.evidence_stage }),
 			},
 			{
 				proposal_id: `${proposal.proposal_id}-new-positive`,
@@ -243,6 +250,9 @@ export function modelOutputToProposalBatch(batch: ValidatedModelOutputBatch): Pr
 				confidence_bp: proposal.confidence_bp,
 				source_refs: proposal.source_refs,
 				...(proposal.evidence_summary === undefined ? {} : { evidence_summary: proposal.evidence_summary }),
+				correction_role: "replacement",
+				correction_group_id: proposal.proposal_id,
+				...(proposal.evidence_stage === undefined ? {} : { evidence_stage: proposal.evidence_stage }),
 			},
 		];
 	});

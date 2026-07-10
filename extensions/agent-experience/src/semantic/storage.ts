@@ -2,7 +2,7 @@ import { canonicalJson, checksumJson, sha256Hex } from "../storage/checksum.ts";
 import { normalizeUserId } from "../storage/private-root.ts";
 import { containsUnredactedSensitiveText, redactJson } from "../storage/redaction.ts";
 import { buildTypedStorageRow } from "../storage/sqlite.ts";
-import { blobToVector, SEMANTIC_EMBEDDING_INPUT_VERSION, semanticPairKey, vectorChecksum, vectorToBlob } from "./core.ts";
+import { blobToVector, embeddingInputChecksum, habitEmbeddingInputV1, SEMANTIC_EMBEDDING_INPUT_VERSION, semanticPairKey, vectorChecksum, vectorToBlob } from "./core.ts";
 import type { CachedHabitEmbedding, SemanticHabitRow } from "./types.ts";
 
 function boundedJson(value: unknown, max = 24000): string {
@@ -102,9 +102,17 @@ export function upsertHabitDuplicate(db: any, input: { userId: string; habitId: 
 }
 
 export function getKeptSeparateDuplicate(db: any, input: { userId: string; habitId: string; otherHabitId: string; provider: string; model: string; dimensions: number }) {
+	const userId = normalizeUserId(input.userId);
 	const pair = semanticPairKey(input.habitId, input.otherHabitId);
-	return db.prepare("SELECT * FROM habit_duplicates WHERE user_id = ? AND pair_key = ? AND method = ? AND decision = 'kept_separate'")
-		.get(normalizeUserId(input.userId), pair.pairKey, duplicateMethod(input));
+	const habits = db.prepare("SELECT id, condition, behavior FROM habits WHERE user_id = ? AND id IN (?, ?) ORDER BY id").all(userId, pair.habitA, pair.habitB);
+	if (habits.length !== 2) return undefined;
+	const inputChecksums = new Map(habits.map((habit: any) => [habit.id, embeddingInputChecksum(habitEmbeddingInputV1({ condition: habit.condition, behavior: habit.behavior }))]));
+	const prior = db.prepare("SELECT * FROM habit_duplicates WHERE user_id = ? AND pair_key = ? AND decision = 'kept_separate' ORDER BY updated_at DESC, id").all(userId, pair.pairKey);
+	for (const relation of prior) {
+		const cached = db.prepare("SELECT habit_id, embedding_input_checksum FROM habit_embeddings WHERE user_id = ? AND habit_id IN (?, ?) AND provider = ? AND model = ? AND dimensions = ? AND embedding_input_version = ?").all(userId, pair.habitA, pair.habitB, relation.provider, relation.model, Number(relation.dimensions), SEMANTIC_EMBEDDING_INPUT_VERSION);
+		if (cached.length === 2 && cached.every((row: any) => inputChecksums.get(row.habit_id) === row.embedding_input_checksum)) return relation;
+	}
+	return undefined;
 }
 
 function updateCandidateReviewStatus(db: any, input: { userId: string; habitId: string; expectedReviewStatus?: string; nextReviewStatus: string; data?: unknown; now: string }) {

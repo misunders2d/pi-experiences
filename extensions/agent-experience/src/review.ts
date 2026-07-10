@@ -1,11 +1,11 @@
 import { lstat, readFile, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, lstatSync, readFileSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
 import { canonicalJson, checksumJson, sha256Hex } from "./storage/checksum.ts";
 import { normalizeUserId, resolvePrivatePath, ensurePrivateRoot } from "./storage/private-root.ts";
 import { redactJson, containsUnredactedSensitiveText } from "./storage/redaction.ts";
 import { buildTypedStorageRow } from "./storage/sqlite.ts";
-import { checkSemanticActivationGate } from "./semantic/service.ts";
+import { runAtomicSemanticActivation } from "./semantic/service.ts";
 import { insertHabitDuplicateAudit, listHabitDuplicates, restoreCandidateDuplicateResolution, updateHabitDuplicateDecision } from "./semantic/storage.ts";
 import type { EmbeddingAdapter, SemanticDedupePolicy } from "./semantic/types.ts";
 
@@ -122,7 +122,7 @@ export function listPendingReviewItems(db: any, input: { userId: string }) {
 		.map((row: any) => ({ type: "pending_review", ...row, payload: parseJson(row.payload_json) }));
 	const candidates = db.prepare("SELECT id, user_id, record_kind, status, condition, behavior, polarity, confidence_bp, data_json, checksum, created_at, updated_at FROM habits WHERE user_id = ? AND status = 'candidate' ORDER BY updated_at, id").all(userId)
 		.map((row: any) => ({ type: "candidate", ...row, payload: parseJson(row.data_json) }))
-		.filter((row: any) => row.payload?.review_status !== "approved_pending_eligibility" && row.payload?.review_status !== "duplicate_resolution");
+		.filter((row: any) => !["collecting_evidence", "approved_pending_eligibility", "approved_pending_conflict", "approved_pending_law_blocked", "duplicate_resolution"].includes(row.payload?.review_status));
 	const items = [...pending, ...candidates];
 	const groups: Record<string, string[]> = {};
 	let groupNumber = 1;
@@ -200,6 +200,7 @@ export async function readConfiguredLawSnapshot(root: string, config: { law_path
 	if (!existsSync(file)) throw new Error(`Agent Experience law file missing: ${file}`);
 	const info = await lstat(file);
 	if (!info.isFile() || info.isSymbolicLink()) throw new Error("Agent Experience safety file is not a regular private file");
+	if (info.size > 1_000_000) throw new Error("Agent Experience safety file exceeds the 1 MB limit");
 	const text = await readFile(file, "utf8");
 	const checksum = sha256Hex(text);
 	const files = [{ path: file, checksum, required: true }];
@@ -229,6 +230,26 @@ export function lawSnapshotForTest(text = "test law"): LawSnapshot {
 	const checksum = sha256Hex(text);
 	const files = [{ path: "test-law", checksum, required: true }];
 	return { version: LAW_CHECKER_VERSION, hash: checksumJson({ version: LAW_CHECKER_VERSION, files }), files, text };
+}
+
+export function revalidateLawSnapshotSync(snapshot: LawSnapshot): LawSnapshot {
+	const absoluteFiles = snapshot.files.filter((file) => isAbsolute(file.path));
+	if (!absoluteFiles.length) return snapshot;
+	const files: LawSnapshot["files"] = [];
+	const parts: string[] = [];
+	for (const file of snapshot.files) {
+		if (!isAbsolute(file.path)) throw new Error("Agent Experience safety snapshot contains an invalid path");
+		const info = lstatSync(file.path);
+		if (!info.isFile() || info.isSymbolicLink() || info.size > 1_000_000) throw new Error("Agent Experience safety file changed or is unsafe");
+		const text = readFileSync(file.path, "utf8");
+		const checksum = sha256Hex(text);
+		if (checksum !== file.checksum) throw new Error("Agent Experience safety file changed; retry the action");
+		files.push({ ...file, checksum });
+		parts.push(`FILE: ${file.path}\n${text}`);
+	}
+	const hash = checksumJson({ version: LAW_CHECKER_VERSION, files });
+	if (hash !== snapshot.hash) throw new Error("Agent Experience safety snapshot changed; retry the action");
+	return { version: LAW_CHECKER_VERSION, hash, files, text: parts.join("\n\n") };
 }
 
 export function checkHabitLaw(input: { condition: string | null; behavior: string | null; law: LawSnapshot }) {
@@ -304,27 +325,41 @@ export async function acceptCandidateHabit(db: any, input: { userId: string; hab
 	const userId = normalizeUserId(input.userId);
 	const preflight = getHabit(db, userId, input.habitId);
 	if (preflight.status !== "candidate" || preflight.checksum !== input.checksum) throw new Error("Stale candidate state");
-	const semantic = await checkSemanticActivationGate(db, { userId, targetHabitId: input.habitId, policy: input.semantic?.policy, provider: input.semantic?.provider, now: input.now, signal: input.semantic?.signal, targetKind: "accept_candidate" });
-	if (!semantic.pass) return { status: "candidate", habit_id: input.habitId, activated: false, semantic, checksum: preflight.checksum };
-	let result: any;
-	db.exec("BEGIN IMMEDIATE");
-	try {
-		const before = getHabit(db, userId, input.habitId);
-		if (before.status !== "candidate" || before.checksum !== input.checksum) throw new Error("Stale candidate state");
-		const data = { ...parseJson(before.data_json), condition: before.condition, behavior: before.behavior, polarity: before.polarity, confidence_bp: before.confidence_bp, record_kind: before.record_kind, schema_version: before.schema_version };
-		const decision = activationDecision(db, { userId, row: before, law: input.law });
-		const nextStatus = decision.eligible ? "active" : "candidate";
-		const nextData = { ...data, review_status: decision.eligible ? "accepted_active" : "approved_pending_eligibility", active: decision.eligible, injectable: false, law_hash: input.law.hash, activation_decision: { ...decision, semantic } };
-		const updated = updateHabitRow(db, { userId, id: before.id, expectedStatus: "candidate", expectedChecksum: input.checksum, data: nextData, status: nextStatus, now: input.now });
-		const after = getHabit(db, userId, before.id);
-		const audit = insertReviewAudit(db, { userId, targetKind: "habit", targetId: before.id, action: decision.eligible ? "accept_activate" : "accept_pending_eligibility", before, after, data: { ...decision, semantic }, createdAt: input.now });
-		result = { status: nextStatus, habit_id: before.id, activated: decision.eligible, eligibility: decision.eligibility, law: decision.law, conflict: decision.conflict, semantic, checksum: updated.checksum, audit_id: audit.id };
-		db.exec("COMMIT");
-	} catch (error) {
-		try { db.exec("ROLLBACK"); } catch {}
-		throw error;
-	}
-	return result;
+	const approvalIdentity = (row: any) => ({ candidate_id: row.id, condition: normalizeText(row.condition), behavior: normalizeText(row.behavior), polarity: Number(row.polarity), approved_at: input.now });
+	const outcome = await runAtomicSemanticActivation(db, {
+		userId,
+		targetHabitId: input.habitId,
+		expectedStatus: "candidate",
+		expectedChecksum: input.checksum,
+		policy: input.semantic?.policy,
+		provider: input.semantic?.provider,
+		now: input.now,
+		signal: input.semantic?.signal,
+		targetKind: "accept_candidate",
+		transition: (target, semantic) => {
+			const before = getHabit(db, userId, target.id);
+			const lawSnapshot = revalidateLawSnapshotSync(input.law);
+			const decision = activationDecision(db, { userId, row: before, law: lawSnapshot });
+			const nextStatus = decision.eligible ? "active" : "candidate";
+			const pendingReason = !decision.eligibility.eligible ? "evidence" : !decision.law.pass ? "law" : !decision.conflict.pass ? "conflict" : undefined;
+			const reviewStatus = decision.eligible ? "accepted_active" : pendingReason === "law" ? "approved_pending_law_blocked" : pendingReason === "conflict" ? "approved_pending_conflict" : "approved_pending_eligibility";
+			const data = { ...parseJson(before.data_json), condition: before.condition, behavior: before.behavior, polarity: before.polarity, confidence_bp: before.confidence_bp, record_kind: before.record_kind, schema_version: before.schema_version, review_status: reviewStatus, active: decision.eligible, injectable: false, law_hash: lawSnapshot.hash, approved_identity: approvalIdentity(before), approved_pending_reason: pendingReason, activation_decision: { ...decision, semantic } };
+			const updated = updateHabitRow(db, { userId, id: before.id, expectedStatus: "candidate", expectedChecksum: before.checksum, data, status: nextStatus, now: input.now });
+			const after = getHabit(db, userId, before.id);
+			const audit = insertReviewAudit(db, { userId, targetKind: "habit", targetId: before.id, action: decision.eligible ? "accept_activate" : `accept_pending_${pendingReason || "eligibility"}`, before, after, data: { ...decision, semantic, approved_identity: approvalIdentity(before) }, createdAt: input.now });
+			return { status: nextStatus, habit_id: before.id, activated: decision.eligible, eligibility: decision.eligibility, law: decision.law, conflict: decision.conflict, semantic, checksum: updated.checksum, audit_id: audit.id };
+		},
+		onBlocked: (target, semantic) => {
+			const before = getHabit(db, userId, target.id);
+			const duplicate = semantic.reason === "semantic_duplicate";
+			const data = { ...parseJson(before.data_json), condition: before.condition, behavior: before.behavior, polarity: before.polarity, confidence_bp: before.confidence_bp, record_kind: before.record_kind, schema_version: before.schema_version, review_status: duplicate ? "duplicate_resolution" : "approved_pending_eligibility", active: false, injectable: false, approved_identity: approvalIdentity(before), approved_pending_reason: semantic.reason, activation_decision: { semantic } };
+			const updated = updateHabitRow(db, { userId, id: before.id, expectedStatus: "candidate", expectedChecksum: before.checksum, data, status: "candidate", now: input.now });
+			const after = getHabit(db, userId, before.id);
+			const audit = insertReviewAudit(db, { userId, targetKind: "habit", targetId: before.id, action: duplicate ? "accept_pending_duplicate_resolution" : "accept_pending_semantic_unavailable", before, after, data: { semantic, approved_identity: approvalIdentity(before) }, createdAt: input.now });
+			return { status: "candidate", habit_id: before.id, activated: false, semantic, checksum: updated.checksum, audit_id: audit.id };
+		},
+	});
+	return outcome.result || { status: outcome.target.status, habit_id: outcome.target.id, activated: false, semantic: outcome.semantic, checksum: outcome.target.checksum };
 }
 
 export function rejectCandidateHabit(db: any, input: { userId: string; habitId: string; checksum: string; now: string }) {
@@ -406,27 +441,30 @@ export async function enableHabit(db: any, input: { userId: string; habitId: str
 	const userId = normalizeUserId(input.userId);
 	const preflight = getHabit(db, userId, input.habitId);
 	if (preflight.status !== "disabled" || preflight.checksum !== input.checksum) throw new Error("Only disabled habits can be enabled");
-	const semantic = await checkSemanticActivationGate(db, { userId, targetHabitId: input.habitId, policy: input.semantic?.policy, provider: input.semantic?.provider, now: input.now, signal: input.semantic?.signal, targetKind: "enable_habit" });
-	if (!semantic.pass) return { status: "disabled", habit_id: input.habitId, enabled: false, semantic, checksum: preflight.checksum };
-	let result: any;
-	db.exec("BEGIN IMMEDIATE");
-	try {
-		const before = getHabit(db, userId, input.habitId);
-		if (before.status !== "disabled" || before.checksum !== input.checksum) throw new Error("Only disabled habits can be enabled");
-		const law = checkHabitLaw({ condition: before.condition, behavior: before.behavior, law: input.law });
-		const conflict = checkHabitConflict(db, { userId, habitId: before.id, condition: before.condition, behavior: before.behavior, polarity: Number(before.polarity) });
-		if (!law.pass || !conflict.pass) throw new Error("Habit enable blocked by law/conflict check");
-		const data = { ...parseJson(before.data_json), condition: before.condition, behavior: before.behavior, polarity: before.polarity, confidence_bp: before.confidence_bp, record_kind: before.record_kind, schema_version: before.schema_version, active: true, injectable: false, law_hash: input.law.hash, enabled_at: input.now };
-		const updated = updateHabitRow(db, { userId, id: before.id, expectedStatus: "disabled", expectedChecksum: input.checksum, data, status: "active", now: input.now });
-		const after = getHabit(db, userId, before.id);
-		const audit = insertReviewAudit(db, { userId, targetKind: "habit", targetId: before.id, action: "enable_habit", before, after, data: { law, conflict, semantic }, createdAt: input.now });
-		result = { status: "active", habit_id: before.id, enabled: true, checksum: updated.checksum, audit_id: audit.id, semantic };
-		db.exec("COMMIT");
-	} catch (error) {
-		try { db.exec("ROLLBACK"); } catch {}
-		throw error;
-	}
-	return result;
+	const outcome = await runAtomicSemanticActivation(db, {
+		userId,
+		targetHabitId: input.habitId,
+		expectedStatus: "disabled",
+		expectedChecksum: input.checksum,
+		policy: input.semantic?.policy,
+		provider: input.semantic?.provider,
+		now: input.now,
+		signal: input.semantic?.signal,
+		targetKind: "enable_habit",
+		transition: (target, semantic) => {
+			const before = getHabit(db, userId, target.id);
+			const lawSnapshot = revalidateLawSnapshotSync(input.law);
+			const law = checkHabitLaw({ condition: before.condition, behavior: before.behavior, law: lawSnapshot });
+			const conflict = checkHabitConflict(db, { userId, habitId: before.id, condition: before.condition, behavior: before.behavior, polarity: Number(before.polarity) });
+			if (!law.pass || !conflict.pass) throw new Error("Habit enable blocked by law/conflict check");
+			const data = { ...parseJson(before.data_json), condition: before.condition, behavior: before.behavior, polarity: before.polarity, confidence_bp: before.confidence_bp, record_kind: before.record_kind, schema_version: before.schema_version, active: true, injectable: false, law_hash: lawSnapshot.hash, enabled_at: input.now };
+			const updated = updateHabitRow(db, { userId, id: before.id, expectedStatus: "disabled", expectedChecksum: before.checksum, data, status: "active", now: input.now });
+			const after = getHabit(db, userId, before.id);
+			const audit = insertReviewAudit(db, { userId, targetKind: "habit", targetId: before.id, action: "enable_habit", before, after, data: { law, conflict, semantic }, createdAt: input.now });
+			return { status: "active", habit_id: before.id, enabled: true, checksum: updated.checksum, audit_id: audit.id, semantic };
+		},
+	});
+	return outcome.result || { status: outcome.target.status, habit_id: outcome.target.id, enabled: false, semantic: outcome.semantic, checksum: outcome.target.checksum };
 }
 
 export function resolveHabitDuplicate(db: any, input: { userId: string; duplicateId: string; checksum: string; action: "merge" | "supersede" | "keep_separate" | "archive_duplicate"; reason?: string; law?: LawSnapshot; now: string }) {
@@ -475,7 +513,8 @@ export function resolveHabitDuplicate(db: any, input: { userId: string; duplicat
 				if (habit.status !== "candidate") continue;
 				const habitData = { ...parseJson(habit.data_json), condition: habit.condition, behavior: habit.behavior, polarity: habit.polarity, confidence_bp: habit.confidence_bp, record_kind: habit.record_kind, schema_version: habit.schema_version };
 				if (habitData.review_status !== "duplicate_resolution") continue;
-				const visibleData = { ...habitData, review_status: "kept_separate", semantic_duplicate_resolution: { action: "keep_separate", duplicate_id: before.id, resolved_at: input.now, reason: input.reason || "setup" } };
+				const previouslyApproved = !!habitData.approved_identity;
+				const visibleData = { ...habitData, review_status: previouslyApproved ? "approved_pending_eligibility" : "kept_separate", ...(previouslyApproved ? { approved_pending_reason: "duplicate_resolved" } : {}), semantic_duplicate_resolution: { action: "keep_separate", duplicate_id: before.id, resolved_at: input.now, reason: input.reason || "setup" } };
 				updateHabitRow(db, { userId, id: habit.id, expectedStatus: "candidate", expectedChecksum: habit.checksum, data: visibleData, status: "candidate", now: input.now });
 				const visibleAfter = getHabit(db, userId, habit.id);
 				insertReviewAudit(db, { userId, targetKind: "habit", targetId: habit.id, action: "resolve_duplicate_keep_separate_unhide", before: habit, after: visibleAfter, data: { duplicate_id: before.id, reason: input.reason || "setup" }, createdAt: input.now });
@@ -556,6 +595,15 @@ export function listApprovedHabitsForSetup(db: any, input: { userId: string }) {
 	return db.prepare("SELECT id, user_id, status, condition, behavior, polarity, confidence_bp, activation, staleness, data_json, checksum, created_at, updated_at FROM habits WHERE user_id = ? AND status IN ('active','disabled') ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END, updated_at DESC, id")
 		.all(normalizeUserId(input.userId))
 		.map((row: any) => ({ ...row, data: parseJson(row.data_json) }));
+}
+
+export function listApprovedPendingHabitsForSetup(db: any, input: { userId: string }) {
+	const waiting = new Set(["approved_pending_eligibility", "approved_pending_conflict", "approved_pending_law_blocked"]);
+	return db.prepare("SELECT id, user_id, status, condition, behavior, polarity, confidence_bp, data_json, checksum, created_at, updated_at FROM habits WHERE user_id = ? AND status IN ('candidate','suppressed_by_law') ORDER BY updated_at DESC, id")
+		.all(normalizeUserId(input.userId))
+		.map((row: any) => ({ ...row, data: parseJson(row.data_json) }))
+		.filter((row: any) => waiting.has(row.data.review_status))
+		.map((row: any) => ({ ...row, waiting_reason: row.data.approved_pending_reason || (row.data.review_status === "approved_pending_law_blocked" ? "law" : row.data.review_status === "approved_pending_conflict" ? "conflict" : "evidence") }));
 }
 
 export function recheckActiveHabitsForLaw(db: any, input: { userId: string; law: LawSnapshot; now: string }) {

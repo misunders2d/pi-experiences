@@ -155,7 +155,21 @@ function migrateUserTable(db: any, table: typeof USER_TABLES[number], now: strin
 	db.exec(`ALTER TABLE ${tmp} RENAME TO ${table}`);
 }
 
+export function readStorageSchemaVersion(db: any): number {
+	const version = Number(db.prepare("PRAGMA user_version").get()?.user_version ?? 0);
+	if (!Number.isInteger(version) || version < 0) throw new Error("Invalid Agent Experience storage schema version");
+	return version;
+}
+
+export function assertSupportedStorageVersion(db: any): number {
+	const version = readStorageSchemaVersion(db);
+	if (version > STORAGE_SCHEMA_VERSION) throw new Error(`Agent Experience storage schema is newer than this extension: expected <= ${STORAGE_SCHEMA_VERSION}, got ${version}`);
+	return version;
+}
+
 export function applyStorageMigrations(db: any, now = new Date().toISOString()): void {
+	const beforeVersion = assertSupportedStorageVersion(db);
+	if (beforeVersion === STORAGE_SCHEMA_VERSION) return;
 	db.exec("BEGIN IMMEDIATE");
 	try {
 		db.exec("CREATE TABLE IF NOT EXISTS migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)");

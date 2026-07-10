@@ -1,66 +1,15 @@
 #!/usr/bin/env node
-
-// bin/experience-consolidate.mjs
-import { existsSync } from "node:fs";
-import { readFile as readFile3 } from "node:fs/promises";
-import { dirname as dirname3, resolve as resolve3 } from "node:path";
-
-// extensions/agent-experience/src/paths.ts
-import { chmod, lstat, mkdir, open, readFile, stat } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
-import { homedir } from "node:os";
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __esm = (fn, res, err) => function __init() {
+  if (err) throw err[0];
+  try {
+    return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
+  } catch (e) {
+    throw err = [e], e;
+  }
+};
 
 // extensions/agent-experience/src/config.ts
-var DEFAULT_AGENT_EXPERIENCE_CONFIG = Object.freeze({
-  enabled: false,
-  capture_enabled: false,
-  selector_enabled: false,
-  embedding_enabled: false,
-  consolidation_enabled: false,
-  timer_enabled: false,
-  break_in_enabled: false,
-  break_in_auto_apply_min_confidence_bp: 10001,
-  selector_mode: "instant",
-  selector_model: "openai-codex/gpt-5.4-mini",
-  selector_timeout_ms: 5e3,
-  selector_daily_budget: 20,
-  selector_min_confidence_bp: 7500,
-  selector_min_overlap_score: 1,
-  selector_max_habits: 3,
-  selector_staleness_max: 0.8,
-  embedding_provider: "openai-compatible",
-  embedding_model: "text-embedding-3-small",
-  embedding_dimensions: 1536,
-  embedding_review_threshold_bp: 7500,
-  embedding_strong_threshold_bp: 8500,
-  embedding_timeout_ms: 1e4,
-  embedding_openai_compatible_opt_in: false,
-  consolidation_model: "openai-codex/gpt-5.5",
-  law_path: "law.md"
-});
-var BOOLEAN_KEYS = /* @__PURE__ */ new Set([
-  "enabled",
-  "capture_enabled",
-  "selector_enabled",
-  "embedding_enabled",
-  "consolidation_enabled",
-  "timer_enabled",
-  "break_in_enabled",
-  "embedding_openai_compatible_opt_in"
-]);
-var NUMBER_KEYS = /* @__PURE__ */ new Set([
-  "break_in_auto_apply_min_confidence_bp",
-  "selector_timeout_ms",
-  "selector_daily_budget",
-  "selector_min_confidence_bp",
-  "selector_min_overlap_score",
-  "selector_max_habits",
-  "selector_staleness_max",
-  "embedding_dimensions",
-  "embedding_review_threshold_bp",
-  "embedding_strong_threshold_bp",
-  "embedding_timeout_ms"
-]);
 function parseTomlScalar(raw) {
   const value = raw.trim();
   if (value === "true") return true;
@@ -70,30 +19,16 @@ function parseTomlScalar(raw) {
   if (quoted) return quoted[1].replace(/\\"/g, '"').replace(/\\\\/g, "\\");
   return void 0;
 }
-var SECTION_KEY_MAP = {
-  "selector.mode": "selector_mode",
-  "selector.model": "selector_model",
-  "selector.timeout_ms": "selector_timeout_ms",
-  "selector.daily_budget": "selector_daily_budget",
-  "selector.min_confidence_bp": "selector_min_confidence_bp",
-  "selector.min_overlap_score": "selector_min_overlap_score",
-  "selector.max_habits": "selector_max_habits",
-  "selector.staleness_max": "selector_staleness_max",
-  "break_in.auto_apply_min_confidence_bp": "break_in_auto_apply_min_confidence_bp"
-};
-var ENV_KEY_MAP = {
-  AX_SELECTOR_MODE: "selector_mode",
-  AX_SELECTOR_MODEL: "selector_model",
-  AX_SELECTOR_TIMEOUT_MS: "selector_timeout_ms",
-  AX_SELECTOR_MIN_OVERLAP_SCORE: "selector_min_overlap_score"
-};
 function normalizeConfigKey(raw, section) {
   const dotted = raw.includes(".") ? raw : section ? `${section}.${raw}` : raw;
   const mapped = SECTION_KEY_MAP[dotted] || raw;
   return mapped in DEFAULT_AGENT_EXPERIENCE_CONFIG ? mapped : void 0;
 }
 function applyConfigValue(config, key, parsed) {
-  if (BOOLEAN_KEYS.has(key) && typeof parsed === "boolean") config[key] = parsed;
+  if (key === "observation_retention_days" && typeof parsed === "number" && [7, 14, 30].includes(Math.trunc(parsed))) config.observation_retention_days = Math.trunc(parsed);
+  else if (key === "analyze_batch_max_records" && typeof parsed === "number" && Number.isFinite(parsed)) config.analyze_batch_max_records = Math.max(1, Math.min(500, Math.trunc(parsed)));
+  else if (key === "analyze_batch_max_bytes" && typeof parsed === "number" && Number.isFinite(parsed)) config.analyze_batch_max_bytes = Math.max(65537, Math.min(2e6, Math.trunc(parsed)));
+  else if (BOOLEAN_KEYS.has(key) && typeof parsed === "boolean") config[key] = parsed;
   else if (NUMBER_KEYS.has(key) && typeof parsed === "number" && Number.isFinite(parsed)) config[key] = parsed;
   else if (key === "selector_mode" && (parsed === "instant" || parsed === "smart")) config[key] = parsed;
   else if (!BOOLEAN_KEYS.has(key) && !NUMBER_KEYS.has(key) && key !== "selector_mode" && typeof parsed === "string") config[key] = parsed;
@@ -125,8 +60,77 @@ function parseAgentExperienceConfig(text, env) {
   }
   return applyAgentExperienceEnvOverrides(config, env ?? {});
 }
+var DEFAULT_AGENT_EXPERIENCE_CONFIG, BOOLEAN_KEYS, NUMBER_KEYS, SECTION_KEY_MAP, ENV_KEY_MAP;
+var init_config = __esm({
+  "extensions/agent-experience/src/config.ts"() {
+    DEFAULT_AGENT_EXPERIENCE_CONFIG = Object.freeze({
+      enabled: false,
+      capture_enabled: false,
+      selector_enabled: false,
+      embedding_enabled: false,
+      consolidation_enabled: false,
+      observation_retention_days: 7,
+      analyze_batch_max_records: 200,
+      analyze_batch_max_bytes: 8e4,
+      timer_enabled: false,
+      break_in_enabled: false,
+      break_in_auto_apply_min_confidence_bp: 10001,
+      selector_mode: "instant",
+      selector_model: "openai-codex/gpt-5.4-mini",
+      selector_timeout_ms: 5e3,
+      selector_daily_budget: 20,
+      selector_min_confidence_bp: 7500,
+      selector_min_overlap_score: 1,
+      selector_max_habits: 3,
+      selector_staleness_max: 0.8,
+      consolidation_model: "openai-codex/gpt-5.5",
+      law_path: "law.md"
+    });
+    BOOLEAN_KEYS = /* @__PURE__ */ new Set([
+      "enabled",
+      "capture_enabled",
+      "selector_enabled",
+      "embedding_enabled",
+      "consolidation_enabled",
+      "timer_enabled",
+      "break_in_enabled"
+    ]);
+    NUMBER_KEYS = /* @__PURE__ */ new Set([
+      "break_in_auto_apply_min_confidence_bp",
+      "selector_timeout_ms",
+      "selector_daily_budget",
+      "selector_min_confidence_bp",
+      "selector_min_overlap_score",
+      "selector_max_habits",
+      "selector_staleness_max",
+      "observation_retention_days",
+      "analyze_batch_max_records",
+      "analyze_batch_max_bytes"
+    ]);
+    SECTION_KEY_MAP = {
+      "selector.mode": "selector_mode",
+      "selector.model": "selector_model",
+      "selector.timeout_ms": "selector_timeout_ms",
+      "selector.daily_budget": "selector_daily_budget",
+      "selector.min_confidence_bp": "selector_min_confidence_bp",
+      "selector.min_overlap_score": "selector_min_overlap_score",
+      "selector.max_habits": "selector_max_habits",
+      "selector.staleness_max": "selector_staleness_max",
+      "break_in.auto_apply_min_confidence_bp": "break_in_auto_apply_min_confidence_bp"
+    };
+    ENV_KEY_MAP = {
+      AX_SELECTOR_MODE: "selector_mode",
+      AX_SELECTOR_MODEL: "selector_model",
+      AX_SELECTOR_TIMEOUT_MS: "selector_timeout_ms",
+      AX_SELECTOR_MIN_OVERLAP_SCORE: "selector_min_overlap_score"
+    };
+  }
+});
 
 // extensions/agent-experience/src/paths.ts
+import { chmod, lstat, mkdir, open, readFile, stat } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
+import { homedir } from "node:os";
 function expandHome(path) {
   if (path === "~") return homedir();
   if (path.startsWith("~/")) return join(homedir(), path.slice(2));
@@ -163,15 +167,16 @@ async function assertRegularConfigFile(path) {
     throw error;
   }
 }
-
-// extensions/agent-experience/src/storage/sqlite.ts
-import { chmod as chmod3, lstat as lstat3 } from "node:fs/promises";
+var init_paths = __esm({
+  "extensions/agent-experience/src/paths.ts"() {
+    init_config();
+  }
+});
 
 // extensions/agent-experience/src/storage/private-root.ts
 import { chmod as chmod2, copyFile, lstat as lstat2, mkdir as mkdir2, open as open2, realpath, stat as stat2 } from "node:fs/promises";
+import { constants } from "node:fs";
 import { dirname as dirname2, isAbsolute, relative, resolve as resolve2, sep } from "node:path";
-var PRIVATE_DIR_MODE = 448;
-var SENSITIVE_FILE_MODE = 384;
 function normalizeUserId(userId = "owner") {
   const value = String(userId ?? "owner").trim() || "owner";
   if (/[/\\\0\r\n\t]/.test(value) || /[\x00-\x1f\x7f]/.test(value)) {
@@ -209,6 +214,41 @@ async function ensurePrivateRoot(root = getPrivateStateRoot()) {
   await chmod2(resolvedRoot, PRIVATE_DIR_MODE);
   return resolvedRoot;
 }
+async function assertPathInsidePrivateRoot(root, candidate) {
+  const lexicalRoot = resolve2(root);
+  const lexicalCandidate = resolve2(candidate);
+  assertContained(lexicalRoot, lexicalCandidate);
+  const realRoot = await realpath(lexicalRoot);
+  const realParent = await realpath(dirname2(lexicalCandidate));
+  assertContained(realRoot, realParent);
+  try {
+    const info = await lstat2(lexicalCandidate);
+    if (info.isSymbolicLink()) throw new Error(`Refusing symlinked Agent Experience path: ${lexicalCandidate}`);
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+}
+async function openSensitiveFileForWrite(root, path, flags = constants.O_CREAT | constants.O_TRUNC | constants.O_WRONLY) {
+  await ensurePrivateRoot(root);
+  await mkdir2(dirname2(path), { recursive: true, mode: PRIVATE_DIR_MODE });
+  await chmod2(dirname2(path), PRIVATE_DIR_MODE);
+  await assertPathInsidePrivateRoot(root, path);
+  const nofollow = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
+  const handle = await open2(path, flags | nofollow, SENSITIVE_FILE_MODE);
+  await chmod2(path, SENSITIVE_FILE_MODE);
+  return handle;
+}
+async function chmodSensitiveFile(path) {
+  await chmod2(path, SENSITIVE_FILE_MODE);
+}
+var PRIVATE_DIR_MODE, SENSITIVE_FILE_MODE;
+var init_private_root = __esm({
+  "extensions/agent-experience/src/storage/private-root.ts"() {
+    init_paths();
+    PRIVATE_DIR_MODE = 448;
+    SENSITIVE_FILE_MODE = 384;
+  }
+});
 
 // extensions/agent-experience/src/storage/checksum.ts
 import { createHash } from "node:crypto";
@@ -229,10 +269,12 @@ function sha256Hex(data) {
 function checksumJson(value) {
   return sha256Hex(canonicalJson(value));
 }
+var init_checksum = __esm({
+  "extensions/agent-experience/src/storage/checksum.ts"() {
+  }
+});
 
 // extensions/agent-experience/src/storage/redaction.ts
-var REDACTED = "[REDACTED]";
-var SENSITIVE_KEY = /(?:token|api[_-]?key|secret|password|authorization|private[_-]?key|credential|path|file)/i;
 function redactText(input) {
   return String(input).replace(/-----BEGIN [A-Z ]*(?:PRIVATE KEY|SECRET KEY)[\s\S]*?-----END [A-Z ]*(?:PRIVATE KEY|SECRET KEY)-----/g, REDACTED).replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, REDACTED).replace(/(?:\+?1[-.\s])?(?:\(?\d{3}\)?[-.\s])\d{3}[-.\s]\d{4}\b/g, REDACTED).replace(/\b(?:sk|pk|ghp|xox[baprs]|ya29|AKIA)[A-Za-z0-9_\-]{8,}\b/g, REDACTED).replace(/\b[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\b/g, REDACTED).replace(/(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi, REDACTED).replace(/\b(?:api[_-]?key|secret|password|token|credential)\s*[:=]\s*["'`]?[^\s"'`]{8,}["'`]?/gi, REDACTED).replace(/(?:~\/|\/(?:home|Users|var\/folders|tmp|media|mnt|Volumes)\/[^\s"']+|[A-Za-z]:\\Users\\[^\s"']+)/g, REDACTED);
 }
@@ -254,9 +296,587 @@ function containsUnredactedSensitiveText(value) {
   const text = typeof value === "string" ? value : JSON.stringify(value);
   return /-----BEGIN [A-Z ]*(?:PRIVATE KEY|SECRET KEY)|[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}|(?:\+?1[-.\s])?(?:\(?\d{3}\)?[-.\s])\d{3}[-.\s]\d{4}|(?:sk|pk|ghp|xox[baprs]|ya29|AKIA)[A-Za-z0-9_\-]{8,}|\b[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\b|(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}|\b(?:api[_-]?key|secret|password|token|credential)\s*[:=]\s*["'`]?[^\s"'`]{8,}["'`]?|(?:~\/|\/(?:home|Users|var\/folders|tmp|media|mnt|Volumes)\/[^\s"']+|[A-Za-z]:\\Users\\[^\s"']+)/i.test(text || "");
 }
+var REDACTED, SENSITIVE_KEY;
+var init_redaction = __esm({
+  "extensions/agent-experience/src/storage/redaction.ts"() {
+    REDACTED = "[REDACTED]";
+    SENSITIVE_KEY = /(?:token|api[_-]?key|secret|password|authorization|private[_-]?key|credential|path|file)/i;
+  }
+});
+
+// extensions/agent-experience/src/storage/locks.ts
+import { randomUUID } from "node:crypto";
+import { hostname as systemHostname } from "node:os";
+import { lstat as lstat3, mkdir as mkdir3, readFile as readFile2, rename, rm, stat as stat3 } from "node:fs/promises";
+function validateLockName(name) {
+  const value = String(name || "").trim();
+  if (!/^[A-Za-z0-9._-]+$/.test(value) || value.includes("..")) throw new Error("Invalid Agent Experience lock name");
+  return value;
+}
+function sleep(ms) {
+  return new Promise((resolve4) => setTimeout(resolve4, ms));
+}
+function isProcessAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === "EPERM";
+  }
+}
+async function readOwner(lockPath) {
+  try {
+    const info = await lstat3(lockPath);
+    if (info.isSymbolicLink()) throw new Error("Agent Experience lock path is symlinked");
+    if (!info.isDirectory()) return null;
+    const raw = JSON.parse(await readFile2(resolvePrivatePath(lockPath, "owner.json"), "utf8"));
+    if (!raw || typeof raw !== "object") return null;
+    if (typeof raw.token !== "string" || !/^[0-9a-f-]{36}$/i.test(raw.token)) return null;
+    if (!Number.isInteger(raw.pid) || raw.pid <= 0) return null;
+    if (typeof raw.hostname !== "string" || !raw.hostname || raw.hostname.length > 255) return null;
+    if (typeof raw.created_at !== "string" || !Number.isFinite(Date.parse(raw.created_at))) return null;
+    return { token: raw.token, pid: raw.pid, hostname: raw.hostname, created_at: raw.created_at };
+  } catch (error) {
+    if (error?.code === "ENOENT" || error instanceof SyntaxError) return null;
+    throw error;
+  }
+}
+async function reclaimDirectory(root, lockPath, token) {
+  const tombstone = resolvePrivatePath(root, `.lock-reclaim-${token}`);
+  try {
+    await rename(lockPath, tombstone);
+  } catch (error) {
+    if (error?.code === "ENOENT") return true;
+    if (error?.code === "EEXIST") return false;
+    throw error;
+  }
+  await rm(tombstone, { recursive: true, force: true });
+  return true;
+}
+async function maybeReclaim(root, lockPath, options) {
+  let info;
+  try {
+    info = await stat3(lockPath);
+  } catch (error) {
+    if (error?.code === "ENOENT") return true;
+    throw error;
+  }
+  const owner = await readOwner(lockPath);
+  if (!owner) {
+    if (options.now() - info.mtimeMs < options.malformedGraceMs) return false;
+    return reclaimDirectory(root, lockPath, randomUUID());
+  }
+  if (owner.hostname !== options.hostname) throw new Error("Agent Experience lock belongs to another host; manual recovery required");
+  const ageMs = options.now() - Date.parse(owner.created_at);
+  if (!Number.isFinite(ageMs) || ageMs < -6e4) throw new Error("Agent Experience lock has invalid time metadata; manual recovery required");
+  if (ageMs >= options.staleMs) return reclaimDirectory(root, lockPath, randomUUID());
+  if (isProcessAlive(owner.pid)) return false;
+  return reclaimDirectory(root, lockPath, randomUUID());
+}
+async function acquireOwnedLock(root, nameRaw, options = {}) {
+  const privateRoot = await ensurePrivateRoot(root);
+  const name = validateLockName(nameRaw);
+  const lockPath = resolvePrivatePath(privateRoot, `.${name}.lock`);
+  const waitMs = Math.max(0, Math.min(12e4, Math.trunc(options.waitMs ?? 2e3)));
+  const retryMs = Math.max(5, Math.min(1e3, Math.trunc(options.retryMs ?? 25)));
+  const malformedGraceMs = Math.max(0, Math.min(6e4, Math.trunc(options.malformedGraceMs ?? 2e3)));
+  const staleMs = Math.max(1e3, Math.min(24 * 60 * 6e4, Math.trunc(options.staleMs ?? 2 * 60 * 6e4)));
+  const now = options.now || Date.now;
+  const pid = options.pid ?? process.pid;
+  const hostname = options.hostname || systemHostname();
+  const token = randomUUID();
+  const started = now();
+  for (; ; ) {
+    try {
+      await mkdir3(lockPath, { mode: 448 });
+      const owner = { token, pid, hostname, created_at: new Date(now()).toISOString() };
+      try {
+        const handle = await openSensitiveFileForWrite(privateRoot, resolvePrivatePath(lockPath, "owner.json"));
+        try {
+          await handle.writeFile(canonicalJson(owner), "utf8");
+          await handle.sync();
+        } finally {
+          await handle.close();
+        }
+      } catch (error) {
+        await rm(lockPath, { recursive: true, force: true });
+        throw error;
+      }
+      let released = false;
+      return {
+        name,
+        path: lockPath,
+        token,
+        async release() {
+          if (released) return;
+          const current = await readOwner(lockPath);
+          if (!current || current.token !== token) throw new Error("Agent Experience lock ownership changed; refusing release");
+          const releasePath = resolvePrivatePath(privateRoot, `.lock-release-${token}`);
+          await rename(lockPath, releasePath);
+          const moved = await readOwner(releasePath);
+          if (!moved || moved.token !== token) {
+            await rename(releasePath, lockPath).catch(() => void 0);
+            throw new Error("Agent Experience lock ownership changed during release");
+          }
+          await rm(releasePath, { recursive: true, force: true });
+          released = true;
+        }
+      };
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+      if (await maybeReclaim(privateRoot, lockPath, { malformedGraceMs, staleMs, now, hostname })) continue;
+      if (now() - started >= waitMs) throw new Error(`Could not acquire Agent Experience ${name} lock`);
+      await sleep(retryMs);
+    }
+  }
+}
+async function withOwnedLock(root, name, fn, options = {}) {
+  const lock = await acquireOwnedLock(root, name, options);
+  try {
+    return await fn();
+  } finally {
+    await lock.release();
+  }
+}
+var init_locks = __esm({
+  "extensions/agent-experience/src/storage/locks.ts"() {
+    init_checksum();
+    init_private_root();
+  }
+});
+
+// extensions/agent-experience/src/storage/observations.ts
+import { constants as constants2 } from "node:fs";
+import { randomUUID as randomUUID2 } from "node:crypto";
+import { lstat as lstat6, mkdir as mkdir5, open as open3, readFile as readFile4, readdir as readdir2, rename as rename3, rm as rm3, stat as stat6, truncate } from "node:fs/promises";
+function checksumRecord(record) {
+  return checksumJson(record);
+}
+function pairRef(record) {
+  return `${record.seq}:${record.checksum}`;
+}
+function assertGeneration(value) {
+  const generation = String(value || "");
+  if (!/^[A-Za-z0-9._-]{1,80}$/.test(generation)) throw new Error("Invalid observation file_generation");
+  return generation;
+}
+function tailChecksum(base) {
+  return checksumJson({ kind: "agent_experience_observation_tail_v1", ...base });
+}
+function withTailChecksum(base) {
+  return { ...base, manifest_checksum: tailChecksum(base) };
+}
+function parseTailManifest(text) {
+  let manifest;
+  try {
+    manifest = JSON.parse(text);
+  } catch {
+    throw new Error("Invalid observation tail manifest JSON");
+  }
+  if (!manifest || manifest.schema_version !== 1) throw new Error("Unsupported observation tail manifest");
+  assertGeneration(manifest.file_generation);
+  if (!Number.isInteger(manifest.last_seq) || manifest.last_seq < 0) throw new Error("Invalid observation tail sequence");
+  if (!Number.isInteger(manifest.jsonl_bytes) || manifest.jsonl_bytes < 0 || !Number.isInteger(manifest.index_bytes) || manifest.index_bytes < 0) throw new Error("Invalid observation tail sizes");
+  if (manifest.index_bytes !== manifest.last_seq * INDEX_ENTRY_BYTES) throw new Error("Invalid observation index size in manifest");
+  if (manifest.last_seq === 0 && (manifest.last_checksum !== null || manifest.last_pair_ref !== null || manifest.jsonl_bytes !== 0)) throw new Error("Invalid empty observation tail manifest");
+  if (manifest.last_seq > 0 && (typeof manifest.last_checksum !== "string" || manifest.last_pair_ref !== `${manifest.last_seq}:${manifest.last_checksum}`)) throw new Error("Invalid observation tail pair reference");
+  const { manifest_checksum, ...base } = manifest;
+  if (manifest_checksum !== tailChecksum(base)) throw new Error("Observation tail manifest checksum mismatch");
+  return manifest;
+}
+async function pathType(path) {
+  try {
+    const info = await lstat6(path);
+    if (info.isSymbolicLink()) throw new Error(`Refusing symlinked Agent Experience path: ${path}`);
+    if (info.isFile()) return "file";
+    if (info.isDirectory()) return "directory";
+    throw new Error(`Unsupported Agent Experience path: ${path}`);
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
+}
+async function writeAtomicJson(root, path, value) {
+  const temp = `${path}.tmp-${randomUUID2()}`;
+  const handle = await openSensitiveFileForWrite(root, temp);
+  try {
+    await handle.writeFile(canonicalJson(value), "utf8");
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  await rename3(temp, path);
+  await chmodSensitiveFile(path);
+}
+async function writeTailManifest(root, manifest) {
+  await writeAtomicJson(root, resolvePrivatePath(root, OBSERVATIONS_TAIL), manifest);
+}
+function validateRecord(value, input) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid observation record");
+  const record = value;
+  if (!Number.isInteger(record.seq) || record.seq !== input.expectedSeq) throw new Error("Invalid observation seq chain");
+  if (input.userId !== void 0 && record.user_id !== input.userId) throw new Error("Observation user_id mismatch");
+  if (record.prev_pair_ref !== input.expectedPrev) throw new Error("Invalid observation prev_pair_ref chain");
+  const { checksum, ...withoutChecksum } = record;
+  if (typeof checksum !== "string" || checksum !== checksumRecord(withoutChecksum)) throw new Error("Invalid observation checksum");
+  return record;
+}
+async function quarantinePartialTail(root, tail) {
+  if (!tail.length) return;
+  const dir = resolvePrivatePath(root, "recovered-tails");
+  await mkdir5(dir, { recursive: true, mode: PRIVATE_DIR_MODE });
+  const path = resolvePrivatePath(root, "recovered-tails", `${Date.now()}-${randomUUID2()}.partial`);
+  const handle = await openSensitiveFileForWrite(root, path);
+  try {
+    await handle.writeFile(redactText(tail.toString("utf8")), "utf8");
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  await chmodSensitiveFile(path);
+}
+function parseWholeJsonl(bytes) {
+  const records = [];
+  const offsets = [];
+  let start = 0;
+  let expectedPrev = null;
+  for (let index = 0; index < bytes.length; index += 1) {
+    if (bytes[index] !== 10) continue;
+    const line = bytes.subarray(start, index);
+    if (!line.length) throw new Error("Observation JSONL contains empty line");
+    if (line.length > MAX_RECORD_BYTES) throw new Error("Observation record exceeds size limit");
+    let parsed;
+    try {
+      parsed = JSON.parse(line.toString("utf8"));
+    } catch {
+      throw new Error("Invalid observation JSONL line");
+    }
+    const record = validateRecord(parsed, { expectedSeq: records.length + 1, expectedPrev });
+    records.push(record);
+    expectedPrev = pairRef(record);
+    offsets.push(index + 1);
+    start = index + 1;
+  }
+  return { records, offsets, completeBytes: start, partial: bytes.subarray(start) };
+}
+async function writeIndex(root, offsets) {
+  const path = resolvePrivatePath(root, OBSERVATIONS_INDEX);
+  const buffer = Buffer.alloc(offsets.length * INDEX_ENTRY_BYTES);
+  offsets.forEach((offset, index) => buffer.writeBigUInt64BE(BigInt(offset), index * INDEX_ENTRY_BYTES));
+  const handle = await openSensitiveFileForWrite(root, path);
+  try {
+    await handle.writeFile(buffer);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+async function bootstrapLegacyState(root) {
+  ioDiagnostics.full_scans += 1;
+  const jsonPath = resolvePrivatePath(root, OBSERVATIONS_FILE);
+  let bytes = Buffer.alloc(0);
+  if (await pathType(jsonPath)) bytes = await readFile4(jsonPath);
+  const parsed = parseWholeJsonl(bytes);
+  if (parsed.partial.length) {
+    await quarantinePartialTail(root, parsed.partial);
+    if (!await pathType(jsonPath)) {
+      const handle = await openSensitiveFileForWrite(root, jsonPath);
+      await handle.close();
+    } else await truncate(jsonPath, parsed.completeBytes);
+  }
+  if (!await pathType(jsonPath)) {
+    const handle = await openSensitiveFileForWrite(root, jsonPath);
+    await handle.close();
+  }
+  await chmodSensitiveFile(jsonPath);
+  await writeIndex(root, parsed.offsets);
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const previous = parsed.records.at(-1);
+  const manifest = withTailChecksum({
+    schema_version: 1,
+    file_generation: "active",
+    last_seq: parsed.records.length,
+    last_checksum: previous?.checksum || null,
+    last_pair_ref: previous ? pairRef(previous) : null,
+    jsonl_bytes: parsed.completeBytes,
+    index_bytes: parsed.offsets.length * INDEX_ENTRY_BYTES,
+    created_at: now,
+    updated_at: now
+  });
+  await writeTailManifest(root, manifest);
+  return manifest;
+}
+async function readOffset(indexPath, seq) {
+  if (!Number.isInteger(seq) || seq < 1) throw new Error("Invalid observation index sequence");
+  const handle = await open3(indexPath, constants2.O_RDONLY);
+  try {
+    const buffer = Buffer.alloc(INDEX_ENTRY_BYTES);
+    const { bytesRead } = await handle.read(buffer, 0, INDEX_ENTRY_BYTES, (seq - 1) * INDEX_ENTRY_BYTES);
+    ioDiagnostics.bounded_bytes_read += bytesRead;
+    if (bytesRead !== INDEX_ENTRY_BYTES) throw new Error("Observation index is truncated");
+    const value = Number(buffer.readBigUInt64BE());
+    if (!Number.isSafeInteger(value) || value < 0) throw new Error("Invalid observation index offset");
+    return value;
+  } finally {
+    await handle.close();
+  }
+}
+async function readRecordAt(root, manifest, seq) {
+  const indexPath = resolvePrivatePath(root, OBSERVATIONS_INDEX);
+  const jsonPath = resolvePrivatePath(root, OBSERVATIONS_FILE);
+  const end = await readOffset(indexPath, seq);
+  const start = seq === 1 ? 0 : await readOffset(indexPath, seq - 1);
+  const length = end - start;
+  if (length < 2 || length > MAX_RECORD_BYTES + 1) throw new Error("Invalid observation indexed record size");
+  const handle = await open3(jsonPath, constants2.O_RDONLY);
+  try {
+    const buffer = Buffer.alloc(length);
+    const { bytesRead } = await handle.read(buffer, 0, length, start);
+    ioDiagnostics.bounded_bytes_read += bytesRead;
+    if (bytesRead !== length || buffer.at(-1) !== 10) throw new Error("Observation indexed record is incomplete");
+    let parsed;
+    try {
+      parsed = JSON.parse(buffer.subarray(0, -1).toString("utf8"));
+    } catch {
+      throw new Error("Invalid indexed observation JSON");
+    }
+    const expectedPrev = seq === 1 ? null : void 0;
+    const record = parsed;
+    return validateRecord(record, { expectedSeq: seq, expectedPrev: expectedPrev === null ? null : record.prev_pair_ref });
+  } finally {
+    await handle.close();
+  }
+}
+async function validateManifestTail(root, manifest) {
+  const jsonPath = resolvePrivatePath(root, OBSERVATIONS_FILE);
+  const indexPath = resolvePrivatePath(root, OBSERVATIONS_INDEX);
+  const jsonInfo = await stat6(jsonPath);
+  const indexInfo = await stat6(indexPath);
+  if (!jsonInfo.isFile() || !indexInfo.isFile()) throw new Error("Observation state files are not regular files");
+  if (jsonInfo.size !== manifest.jsonl_bytes || indexInfo.size !== manifest.index_bytes) throw new Error("Observation tail size mismatch");
+  if (manifest.last_seq === 0) return;
+  const record = await readRecordAt(root, manifest, manifest.last_seq);
+  if (record.checksum !== manifest.last_checksum || pairRef(record) !== manifest.last_pair_ref) throw new Error("Observation tail record mismatch");
+  if (manifest.last_seq > 1) {
+    const previous = await readRecordAt(root, manifest, manifest.last_seq - 1);
+    if (record.prev_pair_ref !== pairRef(previous)) throw new Error("Observation tail chain mismatch");
+  }
+}
+async function recoverAppendCrash(root, manifest) {
+  const jsonPath = resolvePrivatePath(root, OBSERVATIONS_FILE);
+  const indexPath = resolvePrivatePath(root, OBSERVATIONS_INDEX);
+  const jsonInfo = await stat6(jsonPath);
+  const indexInfo = await stat6(indexPath);
+  if (jsonInfo.size < manifest.jsonl_bytes || indexInfo.size < manifest.index_bytes) throw new Error("Observation state shrank below committed tail");
+  if (jsonInfo.size === manifest.jsonl_bytes && indexInfo.size === manifest.index_bytes) {
+    await validateManifestTail(root, manifest);
+    return manifest;
+  }
+  if (indexInfo.size > manifest.index_bytes && indexInfo.size < manifest.index_bytes + INDEX_ENTRY_BYTES) await truncate(indexPath, manifest.index_bytes);
+  if (jsonInfo.size === manifest.jsonl_bytes) {
+    await truncate(indexPath, manifest.index_bytes);
+    await validateManifestTail(root, manifest);
+    return manifest;
+  }
+  const extraLength = jsonInfo.size - manifest.jsonl_bytes;
+  if (extraLength > MAX_RECORD_BYTES + 1) throw new Error("Observation crash tail exceeds recovery bound");
+  const handle = await open3(jsonPath, constants2.O_RDONLY);
+  let extra;
+  try {
+    extra = Buffer.alloc(extraLength);
+    const { bytesRead } = await handle.read(extra, 0, extraLength, manifest.jsonl_bytes);
+    ioDiagnostics.bounded_bytes_read += bytesRead;
+    if (bytesRead !== extraLength) throw new Error("Could not read observation crash tail");
+  } finally {
+    await handle.close();
+  }
+  if (extra.at(-1) !== 10 || extra.subarray(0, -1).includes(10)) {
+    await quarantinePartialTail(root, extra);
+    await truncate(jsonPath, manifest.jsonl_bytes);
+    await truncate(indexPath, manifest.index_bytes);
+    return manifest;
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(extra.subarray(0, -1).toString("utf8"));
+  } catch {
+    await quarantinePartialTail(root, extra);
+    await truncate(jsonPath, manifest.jsonl_bytes);
+    await truncate(indexPath, manifest.index_bytes);
+    return manifest;
+  }
+  const record = validateRecord(parsed, { expectedSeq: manifest.last_seq + 1, expectedPrev: manifest.last_pair_ref });
+  const expectedIndexSize = manifest.index_bytes + INDEX_ENTRY_BYTES;
+  if ((await stat6(indexPath)).size === expectedIndexSize) {
+    const offset = await readOffset(indexPath, record.seq);
+    if (offset !== jsonInfo.size) throw new Error("Observation crash index offset mismatch");
+  } else {
+    await truncate(indexPath, manifest.index_bytes);
+    const indexHandle = await openSensitiveFileForWrite(root, indexPath, constants2.O_APPEND | constants2.O_WRONLY);
+    try {
+      const entry = Buffer.alloc(INDEX_ENTRY_BYTES);
+      entry.writeBigUInt64BE(BigInt(jsonInfo.size));
+      await indexHandle.writeFile(entry);
+      await indexHandle.sync();
+    } finally {
+      await indexHandle.close();
+    }
+  }
+  const { manifest_checksum: _manifestChecksum, ...manifestBase } = manifest;
+  const recovered = withTailChecksum({
+    ...manifestBase,
+    last_seq: record.seq,
+    last_checksum: record.checksum,
+    last_pair_ref: pairRef(record),
+    jsonl_bytes: jsonInfo.size,
+    index_bytes: expectedIndexSize,
+    updated_at: (/* @__PURE__ */ new Date()).toISOString()
+  });
+  await writeTailManifest(root, recovered);
+  await validateManifestTail(root, recovered);
+  return recovered;
+}
+async function loadStateLocked(root) {
+  await recoverInterruptedRotationLocked(root);
+  const tailPath = resolvePrivatePath(root, OBSERVATIONS_TAIL);
+  const jsonPath = resolvePrivatePath(root, OBSERVATIONS_FILE);
+  const indexPath = resolvePrivatePath(root, OBSERVATIONS_INDEX);
+  const tailType = await pathType(tailPath);
+  const jsonType = await pathType(jsonPath);
+  const indexType = await pathType(indexPath);
+  if (!tailType) return bootstrapLegacyState(root);
+  if (tailType !== "file" || jsonType !== "file" || indexType !== "file") throw new Error("Observation state is incomplete");
+  const manifest = parseTailManifest(await readFile4(tailPath, "utf8"));
+  return recoverAppendCrash(root, manifest);
+}
+async function readCurrentObservationManifest(root) {
+  const privateRoot = await ensurePrivateRoot(root);
+  return withOwnedLock(privateRoot, LOCK_NAME, () => loadStateLocked(privateRoot), { waitMs: 1e4 });
+}
+function rotationChecksum(base) {
+  return checksumJson({ kind: "agent_experience_observation_rotation_v1", ...base });
+}
+async function readRotationJournal(root) {
+  const path = resolvePrivatePath(root, ROTATION_JOURNAL);
+  if (!await pathType(path)) return null;
+  const journal = JSON.parse(await readFile4(path, "utf8"));
+  const { checksum, ...base } = journal;
+  if (checksum !== rotationChecksum(base) || journal.schema_version !== 1 || !["prepared", "moved", "committed"].includes(journal.phase)) throw new Error("Invalid observation rotation journal");
+  assertGeneration(journal.old_generation);
+  assertGeneration(journal.new_generation);
+  if (!ALLOWED_RETENTION_DAYS.has(journal.retention_days)) throw new Error("Invalid observation retention in rotation journal");
+  return journal;
+}
+function archiveMeta(journal) {
+  const base = { schema_version: 1, file_generation: journal.old_generation, rotated_at: journal.rotated_at, expires_at: new Date(Date.parse(journal.rotated_at) + journal.retention_days * 864e5).toISOString(), retention_days: journal.retention_days };
+  return { ...base, checksum: checksumJson({ kind: "agent_experience_observation_archive_v1", ...base }) };
+}
+async function createEmptyGeneration(root, generation, createdAt) {
+  for (const name of [OBSERVATIONS_FILE, OBSERVATIONS_INDEX]) {
+    const path = resolvePrivatePath(root, name);
+    await rm3(path, { force: true });
+    const handle = await openSensitiveFileForWrite(root, path);
+    await handle.close();
+  }
+  await writeTailManifest(root, withTailChecksum({ schema_version: 1, file_generation: generation, last_seq: 0, last_checksum: null, last_pair_ref: null, jsonl_bytes: 0, index_bytes: 0, created_at: createdAt, updated_at: createdAt }));
+}
+async function recoverInterruptedRotationLocked(root) {
+  const journal = await readRotationJournal(root);
+  if (!journal) return;
+  const archiveDir = resolvePrivatePath(root, ARCHIVE_ROOT, journal.old_generation);
+  if (journal.phase === "prepared") {
+    for (const name of [OBSERVATIONS_FILE, OBSERVATIONS_INDEX, OBSERVATIONS_TAIL]) {
+      const archived = resolvePrivatePath(root, ARCHIVE_ROOT, journal.old_generation, name);
+      if (await pathType(archived)) {
+        await rm3(resolvePrivatePath(root, name), { force: true });
+        await rename3(archived, resolvePrivatePath(root, name));
+      }
+    }
+    await rm3(archiveDir, { recursive: true, force: true });
+    await rm3(resolvePrivatePath(root, ROTATION_JOURNAL), { force: true });
+    return;
+  }
+  for (const name of [OBSERVATIONS_FILE, OBSERVATIONS_INDEX, OBSERVATIONS_TAIL]) if (!await pathType(resolvePrivatePath(root, ARCHIVE_ROOT, journal.old_generation, name))) throw new Error("Interrupted observation rotation is missing archived state");
+  await createEmptyGeneration(root, journal.new_generation, journal.rotated_at);
+  await writeAtomicJson(root, resolvePrivatePath(root, ARCHIVE_ROOT, journal.old_generation, "archive.json"), archiveMeta(journal));
+  await rm3(resolvePrivatePath(root, ROTATION_JOURNAL), { force: true });
+}
+var OBSERVATIONS_FILE, OBSERVATIONS_INDEX, OBSERVATIONS_TAIL, ROTATION_JOURNAL, ARCHIVE_ROOT, LOCK_NAME, MAX_RECORD_BYTES, INDEX_ENTRY_BYTES, ALLOWED_RETENTION_DAYS, ioDiagnostics;
+var init_observations = __esm({
+  "extensions/agent-experience/src/storage/observations.ts"() {
+    init_private_root();
+    init_redaction();
+    init_checksum();
+    init_locks();
+    OBSERVATIONS_FILE = "observations.jsonl";
+    OBSERVATIONS_INDEX = "observations.idx";
+    OBSERVATIONS_TAIL = "observations-tail.json";
+    ROTATION_JOURNAL = "observations-rotation.json";
+    ARCHIVE_ROOT = "observation-archive";
+    LOCK_NAME = "observations";
+    MAX_RECORD_BYTES = 64 * 1024;
+    INDEX_ENTRY_BYTES = 8;
+    ALLOWED_RETENTION_DAYS = /* @__PURE__ */ new Set([7, 14, 30]);
+    ioDiagnostics = { full_scans: 0, bounded_bytes_read: 0 };
+  }
+});
+
+// bin/experience-consolidate.mjs
+import { existsSync as existsSync2 } from "node:fs";
+import { readFile as readFile7 } from "node:fs/promises";
+import { dirname as dirname3, resolve as resolve3 } from "node:path";
+init_paths();
+
+// extensions/agent-experience/src/storage/sqlite.ts
+init_private_root();
+init_checksum();
+init_redaction();
+import { chmod as chmod3, lstat as lstat5 } from "node:fs/promises";
+
+// extensions/agent-experience/src/storage/migrations.ts
+init_checksum();
+init_redaction();
 
 // extensions/agent-experience/src/storage/schema.ts
 var STORAGE_SCHEMA_VERSION = 6;
+var STORAGE_REQUIRED_TABLES = [
+  "migrations",
+  "habits",
+  "evidence",
+  "contexts",
+  "consolidation_watermarks",
+  "proposal_read_watermarks",
+  "consolidation_audit",
+  "model_output_quarantine",
+  "pending_review",
+  "experience_review_audit",
+  "habit_embeddings",
+  "habit_duplicates",
+  "habit_duplicate_audit",
+  "selector_hit_log"
+];
+var STORAGE_REQUIRED_INDEXES = [
+  "idx_habits_user_status",
+  "idx_habits_user_kind_status",
+  "idx_evidence_user_habit",
+  "idx_evidence_user_kind_status",
+  "idx_contexts_user_kind_status",
+  "idx_consolidation_audit_user_generation",
+  "idx_proposal_read_watermarks_user_generation",
+  "idx_model_output_quarantine_user_generation",
+  "idx_pending_review_user_status",
+  "idx_experience_review_audit_user_target",
+  "idx_habit_embeddings_user_habit",
+  "idx_habit_embeddings_user_model",
+  "idx_habit_duplicates_user_decision",
+  "idx_habit_duplicates_user_a",
+  "idx_habit_duplicates_user_b",
+  "idx_habit_duplicate_audit_user_created",
+  "idx_habit_duplicate_audit_user_duplicate",
+  "idx_selector_hit_log_user_created",
+  "idx_selector_hit_log_user_habit"
+];
 var STORAGE_STATUS_VALUES = ["candidate", "active", "dormant", "archived", "suppressed_by_law", "disabled"];
 var STORAGE_TYPED_FIELDS = [
   "record_kind",
@@ -640,7 +1260,19 @@ function migrateUserTable(db, table, now) {
   db.exec(`DROP TABLE ${table}`);
   db.exec(`ALTER TABLE ${tmp} RENAME TO ${table}`);
 }
+function readStorageSchemaVersion(db) {
+  const version = Number(db.prepare("PRAGMA user_version").get()?.user_version ?? 0);
+  if (!Number.isInteger(version) || version < 0) throw new Error("Invalid Agent Experience storage schema version");
+  return version;
+}
+function assertSupportedStorageVersion(db) {
+  const version = readStorageSchemaVersion(db);
+  if (version > STORAGE_SCHEMA_VERSION) throw new Error(`Agent Experience storage schema is newer than this extension: expected <= ${STORAGE_SCHEMA_VERSION}, got ${version}`);
+  return version;
+}
 function applyStorageMigrations(db, now = (/* @__PURE__ */ new Date()).toISOString()) {
+  const beforeVersion = assertSupportedStorageVersion(db);
+  if (beforeVersion === STORAGE_SCHEMA_VERSION) return;
   db.exec("BEGIN IMMEDIATE");
   try {
     db.exec("CREATE TABLE IF NOT EXISTS migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)");
@@ -659,6 +1291,155 @@ function applyStorageMigrations(db, now = (/* @__PURE__ */ new Date()).toISOStri
   }
 }
 
+// extensions/agent-experience/src/storage/backup.ts
+import { copyFile as copyFile2, lstat as lstat4, mkdir as mkdir4, readFile as readFile3, readdir, rename as rename2, rm as rm2 } from "node:fs/promises";
+init_checksum();
+init_redaction();
+init_locks();
+init_private_root();
+var LIVE_RESET_ARTIFACTS = [
+  "ledger.sqlite",
+  "ledger.sqlite-wal",
+  "ledger.sqlite-shm",
+  "observations.jsonl",
+  "observations.idx",
+  "observations-tail.json",
+  "observations-rotation.json",
+  "observation-archive",
+  "recovered-tails"
+];
+var RESTORE_JOURNAL = ".restore-journal.json";
+var MAINTENANCE_LOCK = "maintenance";
+function validateBackupId(id) {
+  const value = String(id || "").trim();
+  if (!/^[A-Za-z0-9._-]+$/.test(value) || value.includes("..")) throw new Error("Invalid Agent Experience backup id");
+  return value;
+}
+function validateToken(value) {
+  const token = String(value || "");
+  if (!/^[0-9a-f-]{36}$/i.test(token)) throw new Error("Invalid Agent Experience restore token");
+  return token;
+}
+async function pathKind(path) {
+  try {
+    const info = await lstat4(path);
+    if (info.isSymbolicLink()) throw new Error(`Refusing symlinked Agent Experience path: ${path}`);
+    if (info.isFile()) return "file";
+    if (info.isDirectory()) return "directory";
+    throw new Error(`Unsupported Agent Experience filesystem object: ${path}`);
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
+}
+function journalChecksum(base) {
+  return checksumJson({ kind: "agent_experience_restore_journal_v1", ...base });
+}
+async function fileArtifact(path, name) {
+  const info = await lstat4(path);
+  if (info.isSymbolicLink()) throw new Error(`Refusing symlinked backup artifact: ${name}`);
+  if (!info.isFile()) throw new Error(`Backup artifact is not a regular file: ${name}`);
+  const bytes = await readFile3(path);
+  return { name, checksum: sha256Hex(bytes), bytes: bytes.length };
+}
+async function loadSqliteRuntime() {
+  const sqlite = await import("node:sqlite");
+  if (typeof sqlite.DatabaseSync !== "function" || typeof sqlite.backup !== "function") throw new Error("Agent Experience SQLite backup API unavailable");
+  return sqlite;
+}
+async function verifySqliteFile(path, options = {}) {
+  const { DatabaseSync } = await loadSqliteRuntime();
+  const db = new DatabaseSync(path, { open: true, readOnly: true, timeout: 5e3 });
+  try {
+    const version = Number(db.prepare("PRAGMA user_version").get()?.user_version ?? 0);
+    if (!Number.isInteger(version) || version < 0 || version > STORAGE_SCHEMA_VERSION) throw new Error(`Unsupported backup storage schema version: ${version}`);
+    if (options.requireCurrent && version !== STORAGE_SCHEMA_VERSION) throw new Error(`Backup storage schema mismatch: expected ${STORAGE_SCHEMA_VERSION}, got ${version}`);
+    const rows = db.prepare("PRAGMA integrity_check").all();
+    if (rows.length !== 1 || String(rows[0]?.integrity_check || "").toLowerCase() !== "ok") throw new Error("Backup SQLite integrity check failed");
+    return { userVersion: version };
+  } finally {
+    db.close();
+  }
+}
+async function readRestoreJournal(root) {
+  const path = resolvePrivatePath(root, RESTORE_JOURNAL);
+  if (!await pathKind(path)) return null;
+  if (await pathKind(path) !== "file") throw new Error("Restore journal is not a regular file");
+  let journal;
+  try {
+    journal = JSON.parse(await readFile3(path, "utf8"));
+  } catch {
+    throw new Error("Invalid Agent Experience restore journal JSON");
+  }
+  const { journal_checksum, ...base } = journal;
+  if (journal_checksum !== journalChecksum(base)) throw new Error("Restore journal checksum mismatch");
+  validateToken(journal.token);
+  validateBackupId(journal.backup_id);
+  if (journal.schema_version !== 1 || !["prepared", "live_moved", "installed", "committed"].includes(journal.phase)) throw new Error("Unsupported restore journal");
+  if (!Array.isArray(journal.originals) || !Array.isArray(journal.install_artifacts)) throw new Error("Invalid restore journal contents");
+  for (const original of journal.originals) if (!LIVE_RESET_ARTIFACTS.includes(original.name)) throw new Error(`Unknown restore target: ${original.name}`);
+  return journal;
+}
+async function removeLiveSqliteSidecars(root) {
+  await rm2(resolvePrivatePath(root, "ledger.sqlite-wal"), { force: true });
+  await rm2(resolvePrivatePath(root, "ledger.sqlite-shm"), { force: true });
+}
+async function cleanupRestorePaths(root, token) {
+  await rm2(resolvePrivatePath(root, `.restore-stage-${token}`), { recursive: true, force: true });
+  await rm2(resolvePrivatePath(root, `.restore-rollback-${token}`), { recursive: true, force: true });
+  await rm2(resolvePrivatePath(root, RESTORE_JOURNAL), { force: true });
+}
+async function rollbackInterruptedRestore(root, journal) {
+  const rollbackDir = resolvePrivatePath(root, `.restore-rollback-${journal.token}`);
+  for (const original of journal.originals) {
+    const live = resolvePrivatePath(root, original.name);
+    const rollback = resolvePrivatePath(root, `.restore-rollback-${journal.token}`, original.name);
+    if (await pathKind(rollback)) {
+      await rm2(live, { recursive: true, force: true });
+      await rename2(rollback, live);
+      if (await pathKind(live) === "file") await chmodSensitiveFile(live);
+      continue;
+    }
+    if (!original.present) {
+      await rm2(live, { recursive: true, force: true });
+      continue;
+    }
+    const liveKind = await pathKind(live);
+    if (original.kind === "directory") {
+      if (liveKind !== "directory") throw new Error(`Cannot recover missing original restore directory: ${original.name}`);
+      continue;
+    }
+    if (liveKind !== "file") throw new Error(`Cannot recover missing original restore target: ${original.name}`);
+    const actual = await fileArtifact(live, original.name);
+    if (actual.bytes !== original.bytes || actual.checksum !== original.checksum) throw new Error(`Cannot verify original restore target: ${original.name}`);
+  }
+  await rm2(rollbackDir, { recursive: true, force: true });
+  await rm2(resolvePrivatePath(root, `.restore-stage-${journal.token}`), { recursive: true, force: true });
+  await rm2(resolvePrivatePath(root, RESTORE_JOURNAL), { force: true });
+}
+async function recoverInterruptedRestoreLocked(root) {
+  const journal = await readRestoreJournal(root);
+  if (!journal) return { recovered: false };
+  if (journal.phase === "committed") {
+    try {
+      await verifySqliteFile(resolvePrivatePath(root, "ledger.sqlite"));
+      await removeLiveSqliteSidecars(root);
+    } catch {
+      await rollbackInterruptedRestore(root, journal);
+      return { recovered: true, outcome: "old" };
+    }
+    await cleanupRestorePaths(root, journal.token);
+    return { recovered: true, outcome: "new" };
+  }
+  await rollbackInterruptedRestore(root, journal);
+  return { recovered: true, outcome: "old" };
+}
+async function recoverInterruptedRestore(root) {
+  const privateRoot = await ensurePrivateRoot(root);
+  if (!await pathKind(resolvePrivatePath(privateRoot, RESTORE_JOURNAL))) return { recovered: false };
+  return withOwnedLock(privateRoot, MAINTENANCE_LOCK, () => recoverInterruptedRestoreLocked(privateRoot), { waitMs: 1e4 });
+}
+
 // extensions/agent-experience/src/storage/sqlite.ts
 var STATUS_SET2 = new Set(STORAGE_STATUS_VALUES);
 var TYPED_FIELD_SET2 = new Set(STORAGE_TYPED_FIELDS);
@@ -673,7 +1454,7 @@ async function loadSqlite() {
 }
 async function ledgerExists(dbPath) {
   try {
-    const info = await lstat3(dbPath);
+    const info = await lstat5(dbPath);
     if (!info.isFile() || info.isSymbolicLink()) throw new Error("Agent Experience ledger is not a regular private file");
     return true;
   } catch (error) {
@@ -681,17 +1462,34 @@ async function ledgerExists(dbPath) {
     throw error;
   }
 }
+function verifyCurrentStorageSchema(db) {
+  for (const table of STORAGE_REQUIRED_TABLES) {
+    if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)) throw new Error(`Agent Experience current schema is missing table: ${table}`);
+  }
+  for (const index of STORAGE_REQUIRED_INDEXES) {
+    if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?").get(index)) throw new Error(`Agent Experience current schema is missing index: ${index}`);
+  }
+}
+function ensureCurrentStorageSchema(db) {
+  const version = assertSupportedStorageVersion(db);
+  if (version < STORAGE_SCHEMA_VERSION) applyStorageMigrations(db);
+  const after = readStorageSchemaVersion(db);
+  if (after !== STORAGE_SCHEMA_VERSION) throw new Error(`Agent Experience storage schema mismatch: expected ${STORAGE_SCHEMA_VERSION}, got ${after}`);
+  verifyCurrentStorageSchema(db);
+}
 async function initExperienceStorage(root, options) {
   if (!options?.allowInit) throw new Error("Agent Experience storage init requires allowInit=true");
   const userId = normalizeUserId(options.userId);
   const privateRoot = await ensurePrivateRoot(root);
+  await recoverInterruptedRestore(privateRoot);
   const dbPath = resolvePrivatePath(privateRoot, "ledger.sqlite");
-  if (await ledgerExists(dbPath)) await ledgerExists(dbPath);
+  const existed = await ledgerExists(dbPath);
   const sqlite = await loadSqlite();
   const db = new sqlite.DatabaseSync(dbPath, { open: true });
   try {
+    if (existed) assertSupportedStorageVersion(db);
+    ensureCurrentStorageSchema(db);
     db.exec("PRAGMA journal_mode=WAL");
-    applyStorageMigrations(db);
   } catch (error) {
     db.close();
     throw error;
@@ -789,7 +1587,10 @@ function buildTypedStorageRow(table, input) {
 }
 
 // extensions/agent-experience/src/consolidate/observations.ts
-import { lstat as lstat4, readFile as readFile2 } from "node:fs/promises";
+init_private_root();
+init_checksum();
+init_observations();
+import { lstat as lstat7, readFile as readFile5 } from "node:fs/promises";
 var ALLOWED_ORIGINS = /* @__PURE__ */ new Set(["test", "manual", "local_interactive"]);
 var SUPPORTED_PAYLOAD_KINDS = /* @__PURE__ */ new Set(["conversation_pair_v1"]);
 var OBSERVATION_KEYS = /* @__PURE__ */ new Set(["id", "seq", "user_id", "origin", "prev_pair_ref", "payload_redacted", "created_at", "checksum"]);
@@ -799,10 +1600,10 @@ function assertSafeGeneration(generation) {
   }
   return generation;
 }
-function pairRef(record) {
+function pairRef2(record) {
   return `${record.seq}:${record.checksum}`;
 }
-function checksumRecord(record) {
+function checksumRecord2(record) {
   return checksumJson(record);
 }
 function assertExactObservationKeys(record) {
@@ -828,10 +1629,10 @@ function validateObservationRecords(input) {
     if (record.user_id !== userId) throw new Error("Observation user_id mismatch");
     if (!record.origin || !ALLOWED_ORIGINS.has(record.origin.source)) throw new Error("Unsupported observation origin");
     validatePayloadKind(record);
-    const expectedPrev = previous ? pairRef(previous) : null;
+    const expectedPrev = previous ? pairRef2(previous) : null;
     if (record.prev_pair_ref !== expectedPrev) throw new Error("Invalid observation prev_pair_ref chain");
     const { checksum, ...withoutChecksum } = record;
-    if (typeof checksum !== "string" || checksum !== checksumRecord(withoutChecksum)) throw new Error("Invalid observation checksum");
+    if (typeof checksum !== "string" || checksum !== checksumRecord2(withoutChecksum)) throw new Error("Invalid observation checksum");
     out.push({ ...record, file_generation: fileGeneration });
     previous = record;
     expectedSeq++;
@@ -840,12 +1641,13 @@ function validateObservationRecords(input) {
 }
 async function readValidatedObservationGeneration(root, manifest, userId) {
   const privateRoot = await ensurePrivateRoot(root);
-  const fileGeneration = assertSafeGeneration(manifest.file_generation);
   const fileName = manifest.path || "observations.jsonl";
+  const current = fileName === "observations.jsonl" && manifest.file_generation === "active" ? await readCurrentObservationManifest(privateRoot) : null;
+  const fileGeneration = assertSafeGeneration(current?.file_generation || manifest.file_generation);
   const path = resolvePrivatePath(privateRoot, fileName);
-  const info = await lstat4(path);
+  const info = await lstat7(path);
   if (!info.isFile() || info.isSymbolicLink()) throw new Error("Observation JSONL is not a regular private file");
-  const text = await readFile2(path, "utf8");
+  const text = await readFile5(path, "utf8");
   if (!text.endsWith("\n")) throw new Error("Observation JSONL has incomplete tail");
   const records = text.trim() ? text.trim().split("\n").map((line) => JSON.parse(line)) : [];
   return validateObservationRecords({ records, userId, fileGeneration });
@@ -855,61 +1657,240 @@ function observationKey(ref) {
 }
 
 // extensions/agent-experience/src/consolidate/runner.ts
-import { mkdir as mkdir3, rm, writeFile } from "node:fs/promises";
-import { join as join2 } from "node:path";
+init_checksum();
+init_locks();
+init_private_root();
 
-// extensions/agent-experience/src/semantic/openai-compatible.ts
-async function withTimeout(ms, fn, outerSignal) {
-  const controller = new AbortController();
-  let timer;
-  const onAbort = () => controller.abort(outerSignal?.reason || new Error("embedding_aborted"));
-  if (outerSignal) outerSignal.addEventListener("abort", onAbort, { once: true });
+// extensions/agent-experience/src/semantic/local-adapter.ts
+import { randomUUID as randomUUID4 } from "node:crypto";
+import { existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { Worker } from "node:worker_threads";
+
+// extensions/agent-experience/src/semantic/local-model.ts
+init_checksum();
+init_locks();
+init_private_root();
+import { createHash as createHash2, randomUUID as randomUUID3 } from "node:crypto";
+import { createReadStream } from "node:fs";
+import { lstat as lstat8, mkdir as mkdir6, readFile as readFile6, readdir as readdir3, rename as rename4, rm as rm4, stat as stat7 } from "node:fs/promises";
+
+// extensions/agent-experience/src/semantic/local-model-manifest.ts
+var LOCAL_EMBEDDING_PROVIDER = "local-experience-onnx";
+var LOCAL_EMBEDDING_MODEL = "Xenova/paraphrase-multilingual-MiniLM-L12-v2@2c4055b12046f11709e9df2c122e59ffbdc2f900";
+var LOCAL_EMBEDDING_REVISION = "2c4055b12046f11709e9df2c122e59ffbdc2f900";
+var LOCAL_EMBEDDING_ASSET_VERSION = "multilingual-minilm-l12-int8-v1";
+var LOCAL_EMBEDDING_DIMENSIONS = 384;
+var LOCAL_EMBEDDING_REVIEW_THRESHOLD_BP = 4e3;
+var LOCAL_EMBEDDING_STRONG_THRESHOLD_BP = 7e3;
+var LOCAL_EMBEDDING_TIMEOUT_MS = 12e4;
+var LOCAL_EMBEDDING_IDLE_MS = 3e4;
+var LOCAL_EMBEDDING_MAX_BATCH = 64;
+var MODEL_BASE = `https://huggingface.co/Xenova/paraphrase-multilingual-MiniLM-L12-v2/resolve/${LOCAL_EMBEDDING_REVISION}`;
+var LOCAL_EMBEDDING_ASSETS = Object.freeze([
+  { name: "model_int8.onnx", url: `${MODEL_BASE}/onnx/model_int8.onnx?download=true`, bytes: 118054609, sha256: "d6ea442ff6a891daefed7c83b2f596fc5dc66bf697e4d006236f64f34bbcf4c8" },
+  { name: "tokenizer.json", url: `${MODEL_BASE}/tokenizer.json?download=true`, bytes: 17082913, sha256: "b60b6b43406a48bf3638526314f3d232d97058bc93472ff2de930d43686fa441" },
+  { name: "tokenizer_config.json", url: `${MODEL_BASE}/tokenizer_config.json?download=true`, bytes: 496, sha256: "3f5961b9ac86288cccdb97f32fb848d6187c78e1603958c53f3ea1f296b7d8a2" },
+  { name: "config.json", url: `${MODEL_BASE}/config.json?download=true`, bytes: 673, sha256: "05b570bff786faa5c4604152aa16f19f77ed6dfc31e47dd0f3dd987078693ac7" },
+  { name: "ort-wasm-simd-threaded.wasm", url: "https://unpkg.com/onnxruntime-web@1.27.0/dist/ort-wasm-simd-threaded.wasm", bytes: 13479978, sha256: "d1ab1b94b16a65b29d710d0b587b29e7bed336827577623913479b8afe8113e6" }
+]);
+var LOCAL_EMBEDDING_DOWNLOAD_BYTES = LOCAL_EMBEDDING_ASSETS.reduce((sum, asset) => sum + asset.bytes, 0);
+var LOCAL_EMBEDDING_MAX_MANAGED_BYTES = 3e8;
+if (LOCAL_EMBEDDING_DOWNLOAD_BYTES > LOCAL_EMBEDDING_MAX_MANAGED_BYTES) throw new Error("Local embedding asset manifest exceeds managed footprint cap");
+
+// extensions/agent-experience/src/semantic/local-model.ts
+var MANIFEST_FILE = "manifest.json";
+function manifestChecksum(base) {
+  return checksumJson({ kind: "agent_experience_local_embedding_assets_v1", ...base });
+}
+function assetPaths(root) {
+  const models = resolvePrivatePath(root, "models");
+  const local = resolvePrivatePath(root, "models", "local-embedding");
+  const version = resolvePrivatePath(root, "models", "local-embedding", LOCAL_EMBEDDING_ASSET_VERSION);
+  return { models, local, version, manifest: resolvePrivatePath(root, "models", "local-embedding", LOCAL_EMBEDDING_ASSET_VERSION, MANIFEST_FILE) };
+}
+async function pathType2(path) {
   try {
-    return await Promise.race([
-      fn(controller.signal),
-      new Promise((_, reject) => {
-        timer = setTimeout(() => {
-          controller.abort(new Error("embedding_timeout"));
-          reject(new Error("embedding_timeout"));
-        }, Math.max(1, ms));
-      })
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-    if (outerSignal) outerSignal.removeEventListener("abort", onAbort);
+    const info = await lstat8(path);
+    if (info.isSymbolicLink()) throw new Error(`Refusing symlinked local embedding path: ${path}`);
+    if (info.isFile()) return "file";
+    if (info.isDirectory()) return "directory";
+    throw new Error(`Unsupported local embedding path: ${path}`);
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
   }
 }
-function createOpenAICompatibleEmbeddingAdapter(options) {
-  const apiKey = options.apiKey || process.env.OPENAI_API_KEY || process.env.AX_OPENAI_EMBEDDING_API_KEY;
-  if (!apiKey) throw new Error("OpenAI-compatible embedding API key unavailable");
-  const base = (options.baseUrl || process.env.AX_OPENAI_EMBEDDING_BASE_URL || process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
-  return {
-    id: `openai-compatible:${options.model}:${options.dimensions}`,
-    provider: "openai-compatible",
-    model: options.model,
-    dimensions: options.dimensions,
-    async embed(texts, input = {}) {
-      return withTimeout(options.timeoutMs || 1e4, async (signal) => {
-        const response = await fetch(`${base}/embeddings`, {
-          method: "POST",
-          headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
-          body: JSON.stringify({ model: options.model, input: texts, dimensions: options.dimensions }),
-          signal
-        });
-        if (!response.ok) throw new Error(`embedding_provider_http_${response.status}`);
-        const json = await response.json();
-        const data = Array.isArray(json?.data) ? json.data.slice().sort((a, b) => Number(a.index) - Number(b.index)) : [];
-        if (data.length !== texts.length) throw new Error("embedding_provider_bad_count");
-        return data.map((item) => {
-          if (!Array.isArray(item?.embedding) || item.embedding.length !== options.dimensions) throw new Error("embedding_provider_bad_dimensions");
-          return Float32Array.from(item.embedding.map((value) => Number(value)));
-        });
-      }, input.signal);
+async function hashFile(path) {
+  const hash = createHash2("sha256");
+  for await (const chunk of createReadStream(path)) hash.update(chunk);
+  return hash.digest("hex");
+}
+function parseManifest(text) {
+  let manifest;
+  try {
+    manifest = JSON.parse(text);
+  } catch {
+    throw new Error("Invalid local embedding asset manifest JSON");
+  }
+  if (!manifest || manifest.schema_version !== 1 || manifest.asset_version !== LOCAL_EMBEDDING_ASSET_VERSION || manifest.provider !== LOCAL_EMBEDDING_PROVIDER || manifest.model !== LOCAL_EMBEDDING_MODEL || manifest.revision !== LOCAL_EMBEDDING_REVISION) throw new Error("Local embedding asset manifest version mismatch");
+  const { manifest_checksum, ...base } = manifest;
+  if (manifest_checksum !== manifestChecksum(base)) throw new Error("Local embedding asset manifest checksum mismatch");
+  if (!Array.isArray(manifest.files) || manifest.total_bytes !== LOCAL_EMBEDDING_DOWNLOAD_BYTES) throw new Error("Local embedding asset manifest contents mismatch");
+  return manifest;
+}
+async function getLocalEmbeddingAssetStatus(root, options = {}) {
+  const privateRoot = await ensurePrivateRoot(root);
+  const paths = assetPaths(privateRoot);
+  try {
+    for (const parent of [paths.models, paths.local]) {
+      const kind = await pathType2(parent);
+      if (kind !== null && kind !== "directory") throw new Error("Local embedding cache parent is not a private directory");
     }
+    if (await pathType2(paths.version) !== "directory" || await pathType2(paths.manifest) !== "file") return { ready: false, reason: "missing", assetDir: paths.version, totalBytes: LOCAL_EMBEDDING_DOWNLOAD_BYTES };
+    const expectedNames = [...LOCAL_EMBEDDING_ASSETS.map((asset) => asset.name), MANIFEST_FILE].sort();
+    const actualNames = (await readdir3(paths.version)).sort();
+    if (canonicalJson(actualNames) !== canonicalJson(expectedNames)) throw new Error("Local embedding cache contains unexpected artifacts");
+    const manifest = parseManifest(await readFile6(paths.manifest, "utf8"));
+    const expected = new Map(LOCAL_EMBEDDING_ASSETS.map((asset) => [asset.name, asset]));
+    if (manifest.files.length !== expected.size) throw new Error("Local embedding asset file count mismatch");
+    for (const file of manifest.files) {
+      const definition = expected.get(file.name);
+      if (!definition || file.bytes !== definition.bytes || file.sha256 !== definition.sha256) throw new Error(`Local embedding asset metadata mismatch: ${file.name}`);
+      const path = resolvePrivatePath(privateRoot, "models", "local-embedding", LOCAL_EMBEDDING_ASSET_VERSION, file.name);
+      if (await pathType2(path) !== "file") throw new Error(`Local embedding asset missing: ${file.name}`);
+      if ((await stat7(path)).size !== file.bytes) throw new Error(`Local embedding asset size mismatch: ${file.name}`);
+      if (options.deep !== false && await hashFile(path) !== file.sha256) throw new Error(`Local embedding asset checksum mismatch: ${file.name}`);
+    }
+    return { ready: true, reason: "ready", assetDir: paths.version, totalBytes: manifest.total_bytes, manifest };
+  } catch (error) {
+    return { ready: false, reason: String(error?.message || error), assetDir: paths.version, totalBytes: LOCAL_EMBEDDING_DOWNLOAD_BYTES };
+  }
+}
+
+// extensions/agent-experience/src/semantic/local-adapter.ts
+function resolveLocalEmbeddingWorkerUrl(moduleUrl = import.meta.url) {
+  const candidates = [
+    new URL("../../../../runtime/agent-experience/local-embedding-worker.mjs", moduleUrl),
+    new URL("../runtime/agent-experience/local-embedding-worker.mjs", moduleUrl)
+  ];
+  const worker = candidates.find((candidate) => existsSync(fileURLToPath(candidate)));
+  if (!worker) throw new Error("Packaged local embedding worker is missing");
+  return worker;
+}
+function createLocalEmbeddingAdapter(root, options = {}) {
+  const idleMs = Math.max(100, Math.min(3e5, Math.trunc(options.idleMs ?? LOCAL_EMBEDDING_IDLE_MS)));
+  const timeoutMs = Math.max(1e3, Math.min(3e5, Math.trunc(options.timeoutMs ?? LOCAL_EMBEDDING_TIMEOUT_MS)));
+  const workerFactory = options.workerFactory || ((url, workerOptions) => new Worker(url, workerOptions));
+  let worker;
+  let assetDir;
+  let verified = false;
+  let idleTimer;
+  let terminating = false;
+  const pending = /* @__PURE__ */ new Map();
+  function clearIdle() {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = void 0;
+  }
+  function rejectAll(error) {
+    for (const request of pending.values()) {
+      clearTimeout(request.timer);
+      request.removeAbort?.();
+      request.reject(error);
+    }
+    pending.clear();
+  }
+  async function terminateWorker() {
+    clearIdle();
+    const current = worker;
+    worker = void 0;
+    if (!current) return;
+    terminating = true;
+    rejectAll(new Error("local_embedding_worker_terminated"));
+    try {
+      await current.terminate();
+    } finally {
+      terminating = false;
+    }
+  }
+  function armIdle() {
+    clearIdle();
+    if (pending.size || !worker) return;
+    idleTimer = setTimeout(() => {
+      void terminateWorker();
+    }, idleMs);
+    idleTimer.unref?.();
+  }
+  async function ensureWorker() {
+    clearIdle();
+    if (worker) return worker;
+    if (!verified) {
+      const status = await getLocalEmbeddingAssetStatus(root, { deep: true });
+      if (!status.ready) throw new Error(`local_embedding_assets_unavailable:${status.reason}`);
+      assetDir = status.assetDir;
+      verified = true;
+    }
+    const created = workerFactory(resolveLocalEmbeddingWorkerUrl(), { workerData: { assetDir } });
+    worker = created;
+    created.on("message", (message) => {
+      const request = pending.get(String(message?.id || ""));
+      if (!request) return;
+      pending.delete(String(message.id));
+      clearTimeout(request.timer);
+      request.removeAbort?.();
+      if (!message.ok) request.reject(new Error(String(message.error || "local_embedding_worker_failed")));
+      else {
+        const vectors = Array.isArray(message.vectors) ? message.vectors.map((value) => value instanceof Float32Array ? value : new Float32Array(value)) : [];
+        request.resolve(vectors);
+      }
+      armIdle();
+    });
+    created.on("error", (error) => {
+      if (worker === created) worker = void 0;
+      rejectAll(new Error(`local_embedding_worker_error:${String(error?.message || error)}`));
+    });
+    created.on("exit", (code) => {
+      if (worker === created) worker = void 0;
+      if (!terminating && code !== 0) rejectAll(new Error(`local_embedding_worker_exit:${code}`));
+    });
+    return created;
+  }
+  async function embed(texts, input = {}) {
+    if (!Array.isArray(texts) || texts.length < 1 || texts.length > LOCAL_EMBEDDING_MAX_BATCH) throw new Error("Invalid local embedding batch");
+    if (texts.some((text) => typeof text !== "string" || text.length < 1 || text.length > 5e3)) throw new Error("Invalid local embedding text");
+    if (input.signal?.aborted) throw input.signal.reason || new Error("local_embedding_aborted");
+    const current = await ensureWorker();
+    const id = randomUUID4();
+    return new Promise((resolve4, reject) => {
+      const timer = setTimeout(() => {
+        pending.delete(id);
+        void terminateWorker();
+        reject(new Error("local_embedding_timeout"));
+      }, timeoutMs);
+      const onAbort = () => {
+        pending.delete(id);
+        clearTimeout(timer);
+        void terminateWorker();
+        reject(input.signal?.reason instanceof Error ? input.signal.reason : new Error("local_embedding_aborted"));
+      };
+      if (input.signal) input.signal.addEventListener("abort", onAbort, { once: true });
+      pending.set(id, { resolve: resolve4, reject, timer, removeAbort: input.signal ? () => input.signal.removeEventListener("abort", onAbort) : void 0 });
+      current.postMessage({ id, type: "embed", texts });
+    });
+  }
+  return {
+    id: `${LOCAL_EMBEDDING_PROVIDER}:${LOCAL_EMBEDDING_MODEL}:${LOCAL_EMBEDDING_DIMENSIONS}`,
+    provider: LOCAL_EMBEDDING_PROVIDER,
+    model: LOCAL_EMBEDDING_MODEL,
+    dimensions: LOCAL_EMBEDDING_DIMENSIONS,
+    embed,
+    close: terminateWorker,
+    isWorkerActive: () => !!worker
   };
 }
 
 // extensions/agent-experience/src/semantic/core.ts
+init_checksum();
 var SEMANTIC_EMBEDDING_INPUT_VERSION = "habit_embedding_input_v1";
 function normalizeSemanticText(value) {
   return String(value ?? "").trim().replace(/\s+/g, " ").toLowerCase();
@@ -986,6 +1967,9 @@ function chooseCanonicalHabit(left, right) {
 }
 
 // extensions/agent-experience/src/semantic/storage.ts
+init_checksum();
+init_private_root();
+init_redaction();
 function boundedJson(value, max = 24e3) {
   const safe = redactJson(value ?? {});
   const text = canonicalJson(safe);
@@ -1062,8 +2046,17 @@ function upsertHabitDuplicate(db, input) {
   return db.prepare("SELECT * FROM habit_duplicates WHERE id = ?").get(id);
 }
 function getKeptSeparateDuplicate(db, input) {
+  const userId = normalizeUserId(input.userId);
   const pair = semanticPairKey(input.habitId, input.otherHabitId);
-  return db.prepare("SELECT * FROM habit_duplicates WHERE user_id = ? AND pair_key = ? AND method = ? AND decision = 'kept_separate'").get(normalizeUserId(input.userId), pair.pairKey, duplicateMethod(input));
+  const habits = db.prepare("SELECT id, condition, behavior FROM habits WHERE user_id = ? AND id IN (?, ?) ORDER BY id").all(userId, pair.habitA, pair.habitB);
+  if (habits.length !== 2) return void 0;
+  const inputChecksums = new Map(habits.map((habit) => [habit.id, embeddingInputChecksum(habitEmbeddingInputV1({ condition: habit.condition, behavior: habit.behavior }))]));
+  const prior = db.prepare("SELECT * FROM habit_duplicates WHERE user_id = ? AND pair_key = ? AND decision = 'kept_separate' ORDER BY updated_at DESC, id").all(userId, pair.pairKey);
+  for (const relation of prior) {
+    const cached = db.prepare("SELECT habit_id, embedding_input_checksum FROM habit_embeddings WHERE user_id = ? AND habit_id IN (?, ?) AND provider = ? AND model = ? AND dimensions = ? AND embedding_input_version = ?").all(userId, pair.habitA, pair.habitB, relation.provider, relation.model, Number(relation.dimensions), SEMANTIC_EMBEDDING_INPUT_VERSION);
+    if (cached.length === 2 && cached.every((row) => inputChecksums.get(row.habit_id) === row.embedding_input_checksum)) return relation;
+  }
+  return void 0;
 }
 function insertHabitDuplicateAudit(db, input) {
   const userId = normalizeUserId(input.userId);
@@ -1085,79 +2078,120 @@ function insertHabitDuplicateAudit(db, input) {
 // extensions/agent-experience/src/semantic/service.ts
 var SEMANTIC_COMPARISON_STATUSES = ["active", "disabled", "candidate"];
 function sanitizePolicy(policy) {
-  const rawReview = policy?.reviewThresholdBp === void 0 ? 7500 : Math.trunc(Number(policy.reviewThresholdBp));
-  const reviewThresholdBp = Number.isFinite(rawReview) ? Math.max(0, Math.min(1e4, rawReview)) : 7500;
-  const rawStrong = policy?.strongThresholdBp === void 0 ? 8500 : Math.trunc(Number(policy.strongThresholdBp));
-  const requestedStrongThresholdBp = Number.isFinite(rawStrong) ? Math.max(0, Math.min(1e4, rawStrong)) : 8500;
+  const rawReview = policy?.reviewThresholdBp === void 0 ? LOCAL_EMBEDDING_REVIEW_THRESHOLD_BP : Math.trunc(Number(policy.reviewThresholdBp));
+  const reviewThresholdBp = Number.isFinite(rawReview) ? Math.max(0, Math.min(1e4, rawReview)) : LOCAL_EMBEDDING_REVIEW_THRESHOLD_BP;
+  const rawStrong = policy?.strongThresholdBp === void 0 ? LOCAL_EMBEDDING_STRONG_THRESHOLD_BP : Math.trunc(Number(policy.strongThresholdBp));
+  const requestedStrongThresholdBp = Number.isFinite(rawStrong) ? Math.max(0, Math.min(1e4, rawStrong)) : LOCAL_EMBEDDING_STRONG_THRESHOLD_BP;
   return {
     enabled: policy?.enabled === true,
-    provider: String(policy?.provider || "openai-compatible"),
-    model: String(policy?.model || "text-embedding-3-small"),
-    dimensions: Math.max(1, Math.min(8192, Math.trunc(Number(policy?.dimensions ?? 1536)))) || 1536,
+    provider: String(policy?.provider || LOCAL_EMBEDDING_PROVIDER),
+    model: String(policy?.model || LOCAL_EMBEDDING_MODEL),
+    dimensions: Math.max(1, Math.min(8192, Math.trunc(Number(policy?.dimensions ?? LOCAL_EMBEDDING_DIMENSIONS)))) || LOCAL_EMBEDDING_DIMENSIONS,
     reviewThresholdBp,
     strongThresholdBp: Math.max(reviewThresholdBp, requestedStrongThresholdBp),
-    timeoutMs: Math.max(1, Math.min(12e4, Math.trunc(Number(policy?.timeoutMs ?? 1e4)))) || 1e4,
-    openAiCompatibleOptIn: policy?.openAiCompatibleOptIn === true
+    timeoutMs: Math.max(1, Math.min(3e5, Math.trunc(Number(policy?.timeoutMs ?? LOCAL_EMBEDDING_TIMEOUT_MS)))) || LOCAL_EMBEDDING_TIMEOUT_MS
   };
 }
 function assertProviderMatches(policy, provider) {
-  if (provider.provider !== policy.provider || provider.model !== policy.model || provider.dimensions !== policy.dimensions) throw new Error("Semantic embedding provider does not match configured policy");
+  if (provider.provider !== policy.provider || provider.model !== policy.model || provider.dimensions !== policy.dimensions) throw new Error("Semantic embedding runtime does not match the fixed local policy");
+}
+function throwIfAborted(signal) {
+  if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : new Error("semantic_operation_cancelled");
+}
+function comparisonRows(db, input) {
+  return selectSemanticHabitRows(db, { userId: input.userId, statuses: input.statuses || ["active", "disabled"] }).filter((row) => row.id !== input.target.id).filter((row) => row.status !== "archived" && row.status !== "suppressed_by_law").filter((row) => row.polarity === input.target.polarity).filter((row) => !getKeptSeparateDuplicate(db, { userId: input.userId, habitId: input.target.id, otherHabitId: row.id, provider: input.policy.provider, model: input.policy.model, dimensions: input.policy.dimensions }));
+}
+async function prepareHabitEmbeddings(db, input) {
+  const policy = sanitizePolicy(input.policy);
+  assertProviderMatches(policy, input.provider);
+  const prepared = /* @__PURE__ */ new Map();
+  const missing = [];
+  for (const habit of input.habits) {
+    const text = habitEmbeddingInputV1({ condition: habit.condition, behavior: habit.behavior });
+    const checksum = embeddingInputChecksum(text);
+    const cached = getCachedHabitEmbedding(db, { userId: input.userId, habitId: habit.id, embeddingInputChecksum: checksum, habitRowChecksum: habit.checksum, provider: policy.provider, model: policy.model, dimensions: policy.dimensions });
+    if (cached) prepared.set(habit.id, { habit, embeddingInputChecksum: checksum, vector: cached.vector, cached: true });
+    else missing.push({ habit, text, checksum });
+  }
+  const batchSize = Math.max(1, Math.min(LOCAL_EMBEDDING_MAX_BATCH, Math.trunc(input.batchSize || 32)));
+  let completed = input.habits.length - missing.length;
+  input.onProgress?.({ phase: "embedding", completed, total: input.habits.length });
+  for (let offset = 0; offset < missing.length; offset += batchSize) {
+    throwIfAborted(input.signal);
+    const batch = missing.slice(offset, offset + batchSize);
+    const vectors = await input.provider.embed(batch.map((item) => item.text), { signal: input.signal });
+    if (!Array.isArray(vectors) || vectors.length !== batch.length) throw new Error("Local embedding runtime returned wrong vector count");
+    for (let index = 0; index < batch.length; index += 1) {
+      const vector = vectors[index];
+      if (!vector || vector.length !== policy.dimensions) throw new Error("Local embedding runtime returned wrong dimensions");
+      prepared.set(batch[index].habit.id, { habit: batch[index].habit, embeddingInputChecksum: batch[index].checksum, vector: normalizedVector(vector), cached: false });
+    }
+    completed += batch.length;
+    input.onProgress?.({ phase: "embedding", completed, total: input.habits.length });
+  }
+  throwIfAborted(input.signal);
+  return prepared;
+}
+function persistPreparedEmbedding(db, input) {
+  return upsertCachedHabitEmbedding(db, { userId: input.userId, habitId: input.prepared.habit.id, embeddingInputChecksum: input.prepared.embeddingInputChecksum, habitRowChecksum: input.prepared.habit.checksum, provider: input.policy.provider, model: input.policy.model, dimensions: input.policy.dimensions, vector: input.prepared.vector, now: input.now });
+}
+function computeMatches(input) {
+  const target = input.prepared.get(input.target.id);
+  if (!target) throw new Error("Prepared target embedding missing");
+  const matches = [];
+  for (const row of input.comparators) {
+    const other = input.prepared.get(row.id);
+    if (!other) throw new Error("Prepared comparator embedding missing");
+    const similarityBp = cosineBp(target.vector, other.vector);
+    const strength = classifySimilarityBp(similarityBp, input.policy);
+    if (strength !== "none") matches.push({ habit: row, similarityBp, strength });
+  }
+  return matches.sort((left, right) => right.similarityBp - left.similarityBp || left.habit.id.localeCompare(right.habit.id));
 }
 async function ensureHabitEmbedding(db, input) {
   const policy = sanitizePolicy(input.policy);
-  assertProviderMatches(policy, input.provider);
-  const text = habitEmbeddingInputV1({ condition: input.habit.condition, behavior: input.habit.behavior });
-  const checksum = embeddingInputChecksum(text);
-  const cached = getCachedHabitEmbedding(db, { userId: input.userId, habitId: input.habit.id, embeddingInputChecksum: checksum, habitRowChecksum: input.habit.checksum, provider: policy.provider, model: policy.model, dimensions: policy.dimensions });
-  if (cached) return cached;
-  const vectors = await input.provider.embed([text], { signal: input.signal });
-  const vector = vectors[0];
-  if (!vector) throw new Error("Semantic embedding provider returned no vector");
-  if (vector.length !== policy.dimensions) throw new Error("Semantic embedding provider returned wrong dimensions");
-  const normalized = normalizedVector(vector);
-  return upsertCachedHabitEmbedding(db, { userId: input.userId, habitId: input.habit.id, embeddingInputChecksum: checksum, habitRowChecksum: input.habit.checksum, provider: policy.provider, model: policy.model, dimensions: policy.dimensions, vector: normalized, now: input.now });
+  const prepared = await prepareHabitEmbeddings(db, { userId: input.userId, habits: [input.habit], policy, provider: input.provider, signal: input.signal, batchSize: 1 });
+  return persistPreparedEmbedding(db, { userId: input.userId, prepared: prepared.get(input.habit.id), policy, now: input.now });
 }
 async function findSemanticDuplicateMatches(db, input) {
   const policy = sanitizePolicy(input.policy);
   if (!policy.enabled) return [];
-  const targetEmbedding = await ensureHabitEmbedding(db, { userId: input.userId, habit: input.target, policy, provider: input.provider, now: input.now, signal: input.signal });
-  const rows = selectSemanticHabitRows(db, { userId: input.userId, statuses: input.statuses || SEMANTIC_COMPARISON_STATUSES }).filter((row) => row.id !== input.target.id).filter((row) => row.status !== "archived" && row.status !== "suppressed_by_law");
-  const matches = [];
-  for (const row of rows) {
-    if (getKeptSeparateDuplicate(db, { userId: input.userId, habitId: input.target.id, otherHabitId: row.id, provider: policy.provider, model: policy.model, dimensions: policy.dimensions })) continue;
-    const embedding = await ensureHabitEmbedding(db, { userId: input.userId, habit: row, policy, provider: input.provider, now: input.now, signal: input.signal });
-    const similarityBp = cosineBp(targetEmbedding.vector, embedding.vector);
-    const strength = classifySimilarityBp(similarityBp, policy);
-    if (strength === "none") continue;
-    matches.push({ habit: row, similarityBp, strength });
-  }
-  return matches.sort((a, b) => b.similarityBp - a.similarityBp || a.habit.id.localeCompare(b.habit.id));
+  const comparators = comparisonRows(db, { userId: input.userId, target: input.target, policy, statuses: input.statuses || SEMANTIC_COMPARISON_STATUSES });
+  const prepared = await prepareHabitEmbeddings(db, { userId: input.userId, habits: [input.target, ...comparators], policy, provider: input.provider, signal: input.signal, batchSize: LOCAL_EMBEDDING_MAX_BATCH });
+  for (const item of prepared.values()) persistPreparedEmbedding(db, { userId: input.userId, prepared: item, policy, now: input.now });
+  return computeMatches({ target: input.target, comparators, prepared, policy });
 }
 
 // extensions/agent-experience/src/semantic/config.ts
 function semanticPolicyFromConfig(config, overrides = {}) {
   return sanitizePolicy({
     enabled: config.embedding_enabled,
-    provider: config.embedding_provider,
-    model: config.embedding_model,
-    dimensions: config.embedding_dimensions,
-    reviewThresholdBp: config.embedding_review_threshold_bp,
-    strongThresholdBp: config.embedding_strong_threshold_bp,
-    timeoutMs: config.embedding_timeout_ms,
-    openAiCompatibleOptIn: config.embedding_openai_compatible_opt_in,
+    provider: LOCAL_EMBEDDING_PROVIDER,
+    model: LOCAL_EMBEDDING_MODEL,
+    dimensions: LOCAL_EMBEDDING_DIMENSIONS,
+    reviewThresholdBp: LOCAL_EMBEDDING_REVIEW_THRESHOLD_BP,
+    strongThresholdBp: LOCAL_EMBEDDING_STRONG_THRESHOLD_BP,
+    timeoutMs: LOCAL_EMBEDDING_TIMEOUT_MS,
     ...overrides
   });
 }
-function createEmbeddingAdapterFromConfig(config) {
-  const policy = semanticPolicyFromConfig(config);
-  if (policy.provider === "openai-compatible") {
-    if (!policy.openAiCompatibleOptIn) return void 0;
-    return createOpenAICompatibleEmbeddingAdapter({ model: policy.model, dimensions: policy.dimensions, timeoutMs: policy.timeoutMs });
-  }
-  return void 0;
+function createEmbeddingAdapterFromConfig(config, root) {
+  if (!config.embedding_enabled) return void 0;
+  return createLocalEmbeddingAdapter(root);
 }
 
+// extensions/agent-experience/src/consolidate/model-output.ts
+init_private_root();
+init_checksum();
+init_redaction();
+
+// extensions/agent-experience/src/consolidate/commit.ts
+init_private_root();
+init_checksum();
+
 // extensions/agent-experience/src/consolidate/proposals.ts
+init_private_root();
+init_checksum();
 var TOP_LEVEL_KEYS = /* @__PURE__ */ new Set(["schema_version", "user_id", "batch_id", "created_at", "proposals"]);
 var PROPOSAL_KEYS = /* @__PURE__ */ new Set([
   "proposal_id",
@@ -1169,6 +2203,9 @@ var PROPOSAL_KEYS = /* @__PURE__ */ new Set([
   "confidence_bp",
   "source_refs",
   "evidence_summary",
+  "evidence_stage",
+  "correction_role",
+  "correction_group_id",
   "ambiguous"
 ]);
 var REF_KEYS = /* @__PURE__ */ new Set(["file_generation", "seq", "checksum"]);
@@ -1220,6 +2257,12 @@ function validateProposal(value, seenIds) {
   const generations = new Set(sourceRefs.map((ref) => ref.file_generation));
   if (generations.size !== 1) throw new Error("Ambiguous proposal generation");
   const evidenceSummary = proposal.evidence_summary === void 0 ? void 0 : assertSafeToken(proposal.evidence_summary, "evidence_summary", 1e3);
+  const evidenceStage = proposal.evidence_stage === void 0 ? void 0 : assertSafeToken(proposal.evidence_stage, "evidence_stage", 32);
+  if (evidenceStage !== void 0 && evidenceStage !== "collecting" && evidenceStage !== "reviewable") throw new Error("Invalid evidence_stage");
+  const correctionRole = proposal.correction_role === void 0 ? void 0 : assertSafeToken(proposal.correction_role, "correction_role", 32);
+  if (correctionRole !== void 0 && correctionRole !== "old_negative" && correctionRole !== "replacement") throw new Error("Invalid correction_role");
+  const correctionGroupId = proposal.correction_group_id === void 0 ? void 0 : assertSafeToken(proposal.correction_group_id, "correction_group_id", 160);
+  if (correctionRole === void 0 !== (correctionGroupId === void 0)) throw new Error("Incomplete correction metadata");
   return {
     proposal_id: proposalId,
     kind: "habit_candidate",
@@ -1230,6 +2273,8 @@ function validateProposal(value, seenIds) {
     confidence_bp: Number(confidenceBp),
     source_refs: sourceRefs,
     ...evidenceSummary === void 0 ? {} : { evidence_summary: evidenceSummary },
+    ...evidenceStage === void 0 ? {} : { evidence_stage: evidenceStage },
+    ...correctionRole === void 0 ? {} : { correction_role: correctionRole, correction_group_id: correctionGroupId },
     ...proposal.ambiguous === void 0 ? {} : { ambiguous: false }
   };
 }
@@ -1254,6 +2299,7 @@ function validateProposalBatch(value, expectedUserId) {
 function stableId2(prefix, value) {
   return `${prefix}-${sha256Hex(canonicalJson(value)).slice(0, 40)}`;
 }
+var CONTRADICTION_SUPPRESS_MIN_CONFIDENCE_BP = 8500;
 function normalizeIdentityText(value) {
   return value.trim().replace(/\s+/g, " ").toLowerCase();
 }
@@ -1294,6 +2340,7 @@ function mergeCandidateData(existingResidual, incoming) {
     "active",
     "injectable"
   ]) {
+    if (key === "review_status" && existingResidual?.review_status === "collecting_evidence" && incoming?.review_status === "awaiting_review") continue;
     if (existingResidual && Object.prototype.hasOwnProperty.call(existingResidual, key)) merged[key] = existingResidual[key];
   }
   merged.source_refs = uniqueArrayByCanonical([...Array.isArray(existingResidual?.source_refs) ? existingResidual.source_refs : [], ...Array.isArray(incoming?.source_refs) ? incoming.source_refs : []]);
@@ -1424,6 +2471,7 @@ function proposalCandidateData(batch, proposal, sourceDates) {
     schema_version: 2,
     record_kind: "candidate_habit_v1",
     status: "candidate",
+    review_status: proposal.evidence_stage === "collecting" ? "collecting_evidence" : "awaiting_review",
     active: false,
     injectable: false,
     source_kind: "phase4a_fixture",
@@ -1434,8 +2482,10 @@ function proposalCandidateData(batch, proposal, sourceDates) {
     behavior: proposal.behavior,
     polarity: proposal.polarity,
     confidence_bp: proposal.confidence_bp,
+    evidence_stage: proposal.evidence_stage || "reviewable",
     source_refs: proposal.source_refs,
-    source_dates: sourceDates
+    source_dates: sourceDates,
+    ...proposal.correction_role ? { correction_role: proposal.correction_role, correction_group_id: proposal.correction_group_id } : {}
   };
 }
 function proposalEvidenceData(_batch, proposal, sourceDates, habitId) {
@@ -1449,10 +2499,61 @@ function proposalEvidenceData(_batch, proposal, sourceDates, habitId) {
     source_kind: "phase4_model_or_fixture",
     polarity: proposal.polarity,
     confidence_bp: proposal.confidence_bp,
+    evidence_stage: proposal.evidence_stage || "reviewable",
     source_refs: proposal.source_refs,
     source_dates: sourceDates,
-    ...proposal.evidence_summary === void 0 ? {} : { evidence_summary: proposal.evidence_summary }
+    ...proposal.evidence_summary === void 0 ? {} : { evidence_summary: proposal.evidence_summary },
+    ...proposal.correction_role ? { correction_role: proposal.correction_role, correction_group_id: proposal.correction_group_id } : {}
   };
+}
+function exactActiveCorrectionMatches(db, userId, proposal) {
+  const condition = normalizeIdentityText(proposal.condition);
+  const behavior = normalizeIdentityText(proposal.behavior);
+  return db.prepare("SELECT * FROM habits WHERE user_id = ? AND status = 'active' ORDER BY id").all(userId).filter((row) => normalizeIdentityText(String(row.condition || "")) === condition && normalizeIdentityText(String(row.behavior || "")) === behavior);
+}
+function suppressContradictedHabit(db, input) {
+  let residual = {};
+  try {
+    residual = JSON.parse(input.before.data_json || "{}");
+  } catch {
+  }
+  const contradiction = {
+    correction_group_id: input.proposal.correction_group_id,
+    proposal_id: input.proposal.proposal_id,
+    source_refs: input.proposal.source_refs,
+    source_dates: input.sourceDates,
+    prior_checksum: input.before.checksum,
+    suppressed_at: input.now
+  };
+  const data = {
+    ...residual,
+    record_kind: input.before.record_kind,
+    schema_version: input.before.schema_version,
+    status: "dormant",
+    habit_id: input.before.habit_id,
+    condition: input.before.condition,
+    behavior: input.before.behavior,
+    polarity: input.before.polarity,
+    confidence_bp: input.before.confidence_bp,
+    activation: input.before.activation,
+    staleness: input.before.staleness,
+    active: false,
+    injectable: false,
+    review_status: "contradicted_pending_review",
+    contradiction
+  };
+  const updated = buildTypedStorageRow("habits", { id: input.before.id, userId: input.userId, data, createdAt: input.before.created_at, updatedAt: input.now });
+  const changes = db.prepare("UPDATE habits SET record_kind=?, schema_version=?, status=?, habit_id=?, condition=?, behavior=?, polarity=?, confidence_bp=?, activation=?, staleness=?, data_json=?, checksum=?, updated_at=? WHERE user_id=? AND id=? AND status='active' AND checksum=?").run(updated.record_kind, updated.schema_version, updated.status, updated.habit_id, updated.condition, updated.behavior, updated.polarity, updated.confidence_bp, updated.activation, updated.staleness, updated.data_json, updated.checksum, updated.updated_at, input.userId, input.before.id, input.before.checksum).changes;
+  if (changes !== 1) throw new Error("Contradicted habit suppression raced; retry Analyze");
+  const after = db.prepare("SELECT * FROM habits WHERE user_id = ? AND id = ?").get(input.userId, input.before.id);
+  const beforeJson = canonicalJson(input.before);
+  const afterJson = canonicalJson(after);
+  const dataJson = canonicalJson({ contradiction, replacement_requires_approval: true });
+  const auditBase = { user_id: input.userId, target_kind: "habit", target_id: input.before.id, action: "suppress_contradicted_habit", before_json: beforeJson, after_json: afterJson, data_json: dataJson, created_at: input.now };
+  const checksum = checksumJson({ table: "experience_review_audit", row: auditBase });
+  const id = stableId2("review-audit", { ...auditBase, checksum });
+  db.prepare("INSERT OR IGNORE INTO experience_review_audit (id, user_id, target_kind, target_id, action, before_json, after_json, data_json, checksum, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(id, input.userId, "habit", input.before.id, "suppress_contradicted_habit", beforeJson, afterJson, dataJson, checksum, input.now);
+  return { after, audit_id: id };
 }
 async function consolidateProposalBatch(input) {
   const userId = normalizeUserId(input.userId);
@@ -1475,11 +2576,12 @@ async function consolidateProposalBatch(input) {
     let evidenceHabitId = candidateId;
     let duplicateMatch;
     let stagedRow;
-    if (policy.enabled && input.semantic?.provider) {
+    if (policy.enabled && input.semantic?.provider && proposal.correction_role !== "old_negative") {
       stagedRow = buildTypedStorageRow("habits", { id: candidateId, userId, data: candidateData, now: batch.created_at });
       const targetRow = { id: stagedRow.id, user_id: stagedRow.user_id, status: stagedRow.status, condition: stagedRow.condition, behavior: stagedRow.behavior, polarity: stagedRow.polarity, checksum: stagedRow.checksum, created_at: stagedRow.created_at, updated_at: stagedRow.updated_at, data_json: stagedRow.data_json };
       const matches = await findSemanticDuplicateMatches(input.db, { userId, target: targetRow, policy, provider: input.semantic.provider, now: batch.created_at, signal: input.semantic.signal });
       for (const previous of stagedSemanticRows) {
+        if (previous.polarity !== targetRow.polarity) continue;
         const left = await ensureHabitEmbedding(input.db, { userId, habit: targetRow, policy, provider: input.semantic.provider, now: batch.created_at, signal: input.semantic.signal });
         const right = await ensureHabitEmbedding(input.db, { userId, habit: previous, policy, provider: input.semantic.provider, now: batch.created_at, signal: input.semantic.signal });
         const similarityBp = cosineBp(left.vector, right.vector);
@@ -1509,6 +2611,20 @@ async function consolidateProposalBatch(input) {
     let insertedCandidates = 0;
     let insertedEvidence = 0;
     for (const item of staged) {
+      if (item.proposal.correction_role === "old_negative" && item.proposal.confidence_bp >= CONTRADICTION_SUPPRESS_MIN_CONFIDENCE_BP) {
+        const matches = exactActiveCorrectionMatches(input.db, userId, item.proposal);
+        if (matches.length === 1) {
+          const target = matches[0];
+          suppressContradictedHabit(input.db, { userId, before: target, proposal: item.proposal, sourceDates: item.sourceDates, now: batch.created_at });
+          const evidenceData = proposalEvidenceData(batch, item.proposal, item.sourceDates, target.id);
+          const evidenceId = stableId2("evidence", { schema_version: 2, user_id: userId, payload: evidenceData });
+          const evidence2 = insertIdempotentStorageRecord(input.db, "evidence", { id: evidenceId, userId, data: evidenceData, now: batch.created_at });
+          candidateIds.push(target.id);
+          evidenceIds.push(evidence2.id);
+          if (evidence2.inserted) insertedEvidence++;
+          continue;
+        }
+      }
       const candidate = insertIdempotentStorageRecord(input.db, "habits", { id: item.candidateId, userId, data: item.candidateData, now: batch.created_at });
       const evidence = insertIdempotentStorageRecord(input.db, "evidence", { id: item.evidenceId, userId, data: item.evidenceData, now: batch.created_at });
       if (item.duplicateMatch && policy.enabled) {
@@ -1571,8 +2687,8 @@ function recordZeroProposalReadCoverage(input) {
 // extensions/agent-experience/src/consolidate/model-output.ts
 var MODEL_OUTPUT_KEYS = /* @__PURE__ */ new Set(["schema_version", "user_id", "file_generation", "batch_id", "model", "created_at", "observations_read", "proposals"]);
 var OBSERVATIONS_READ_KEYS = /* @__PURE__ */ new Set(["seq_start", "seq_end", "checksum"]);
-var HABIT_KEYS = /* @__PURE__ */ new Set(["proposal_id", "kind", "candidate_key", "condition", "behavior", "polarity", "confidence_bp", "source_refs", "evidence_summary", "ambiguous"]);
-var CORRECTION_KEYS = /* @__PURE__ */ new Set(["proposal_id", "kind", "candidate_key", "old_condition", "old_behavior", "new_condition", "new_behavior", "confidence_bp", "source_refs", "evidence_summary", "ambiguous"]);
+var HABIT_KEYS = /* @__PURE__ */ new Set(["proposal_id", "kind", "candidate_key", "condition", "behavior", "polarity", "confidence_bp", "source_refs", "evidence_summary", "evidence_stage", "ambiguous"]);
+var CORRECTION_KEYS = /* @__PURE__ */ new Set(["proposal_id", "kind", "candidate_key", "old_condition", "old_behavior", "new_condition", "new_behavior", "confidence_bp", "source_refs", "evidence_summary", "evidence_stage", "ambiguous"]);
 var REF_KEYS2 = /* @__PURE__ */ new Set(["file_generation", "seq", "checksum"]);
 function assertExactKeys2(value, allowed, label) {
   for (const key of Object.keys(value)) {
@@ -1594,7 +2710,7 @@ function assertGeneralizedHabitText(text, label) {
   if (/(^|[\s("'`])(?:~\/|\.\.?\/|\/[A-Za-z0-9._-])/.test(text)) throw new Error(`${label} appears overfit to one file path`);
   if (/\b[a-f0-9]{12,}\b/i.test(text)) throw new Error(`${label} appears overfit to one hash or screenshot`);
 }
-function assertGeneration(value) {
+function assertGeneration2(value) {
   const generation = assertSafeToken2(value, "file_generation", 80);
   if (!/^[A-Za-z0-9._-]+$/.test(generation)) throw new Error("Invalid file_generation");
   return generation;
@@ -1616,7 +2732,7 @@ function validateSourceRef2(value, expectedGeneration, seqStart, seqEnd) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid model source ref");
   const ref = value;
   assertExactKeys2(ref, REF_KEYS2, "model source ref");
-  const fileGeneration = assertGeneration(ref.file_generation);
+  const fileGeneration = assertGeneration2(ref.file_generation);
   if (fileGeneration !== expectedGeneration) throw new Error("Model source ref generation mismatch");
   const seq = assertSeq(ref.seq, "model source seq");
   if (seq < seqStart || seq > seqEnd) throw new Error("Model source ref outside read coverage");
@@ -1653,6 +2769,9 @@ function validateProposal2(value, seenIds, generation, seqStart, seqEnd) {
     confidence_bp: assertConfidence(proposal.confidence_bp),
     source_refs: validateRefs(proposal.source_refs, generation, seqStart, seqEnd),
     ...proposal.evidence_summary === void 0 ? {} : { evidence_summary: assertSafeText(proposal.evidence_summary, "evidence_summary") },
+    ...proposal.evidence_stage === void 0 ? {} : { evidence_stage: proposal.evidence_stage === "collecting" || proposal.evidence_stage === "reviewable" ? proposal.evidence_stage : (() => {
+      throw new Error("Invalid evidence_stage");
+    })() },
     ...proposal.ambiguous === void 0 ? {} : { ambiguous: false }
   };
   if (kind === "habit_candidate") {
@@ -1681,7 +2800,7 @@ function validateModelOutputBatch(value, expectedUserId) {
   if (batch.schema_version !== 1) throw new Error("Unsupported model output schema_version");
   const userId = normalizeUserId(assertSafeToken2(batch.user_id, "user_id", 120));
   if (expectedUserId !== void 0 && userId !== normalizeUserId(expectedUserId)) throw new Error("Model output user_id mismatch");
-  const generation = assertGeneration(batch.file_generation);
+  const generation = assertGeneration2(batch.file_generation);
   const createdAt = assertSafeToken2(batch.created_at, "created_at", 80);
   if (Number.isNaN(Date.parse(createdAt))) throw new Error("Invalid model output created_at");
   if (!batch.observations_read || typeof batch.observations_read !== "object" || Array.isArray(batch.observations_read)) throw new Error("Invalid observations_read");
@@ -1720,7 +2839,8 @@ function modelOutputToProposalBatch(batch) {
         polarity: proposal.polarity,
         confidence_bp: proposal.confidence_bp,
         source_refs: proposal.source_refs,
-        ...proposal.evidence_summary === void 0 ? {} : { evidence_summary: proposal.evidence_summary }
+        ...proposal.evidence_summary === void 0 ? {} : { evidence_summary: proposal.evidence_summary },
+        ...proposal.evidence_stage === void 0 ? {} : { evidence_stage: proposal.evidence_stage }
       }];
     }
     return [
@@ -1733,7 +2853,10 @@ function modelOutputToProposalBatch(batch) {
         polarity: -1,
         confidence_bp: proposal.confidence_bp,
         source_refs: proposal.source_refs,
-        ...proposal.evidence_summary === void 0 ? {} : { evidence_summary: proposal.evidence_summary }
+        ...proposal.evidence_summary === void 0 ? {} : { evidence_summary: proposal.evidence_summary },
+        correction_role: "old_negative",
+        correction_group_id: proposal.proposal_id,
+        ...proposal.evidence_stage === void 0 ? {} : { evidence_stage: proposal.evidence_stage }
       },
       {
         proposal_id: `${proposal.proposal_id}-new-positive`,
@@ -1744,7 +2867,10 @@ function modelOutputToProposalBatch(batch) {
         polarity: 1,
         confidence_bp: proposal.confidence_bp,
         source_refs: proposal.source_refs,
-        ...proposal.evidence_summary === void 0 ? {} : { evidence_summary: proposal.evidence_summary }
+        ...proposal.evidence_summary === void 0 ? {} : { evidence_summary: proposal.evidence_summary },
+        correction_role: "replacement",
+        correction_group_id: proposal.proposal_id,
+        ...proposal.evidence_stage === void 0 ? {} : { evidence_stage: proposal.evidence_stage }
       }
     ];
   });
@@ -1843,25 +2969,13 @@ async function processValidatedModelOutput(input) {
 }
 
 // extensions/agent-experience/src/consolidate/runner.ts
-async function acquireConsolidationLock(root, input = {}) {
-  const privateRoot = await ensurePrivateRoot(root);
-  const lockPath = resolvePrivatePath(privateRoot, ".consolidate.lock");
+async function acquireConsolidationLock(root, _input = {}) {
   try {
-    await mkdir3(lockPath, { mode: 448 });
+    return await acquireOwnedLock(root, "consolidate", { waitMs: 0, staleMs: 2 * 60 * 6e4 });
   } catch (error) {
-    if (error?.code === "EEXIST") throw new Error("consolidation_lock_active");
+    if (/Could not acquire/.test(String(error?.message || error))) throw new Error("consolidation_lock_active");
     throw error;
   }
-  await writeFile(join2(lockPath, "owner.json"), canonicalJson({ owner: input.owner || "agent-experience", created_at: input.createdAt || (/* @__PURE__ */ new Date()).toISOString() }), { mode: 384 });
-  let released = false;
-  return {
-    path: lockPath,
-    async release() {
-      if (released) return;
-      released = true;
-      await rm(lockPath, { recursive: true, force: true });
-    }
-  };
 }
 function expectedRangeFromObservations(observations, userId) {
   const normalizedUserId = normalizeUserId(userId);
@@ -1903,6 +3017,7 @@ async function runConsolidationOnce(input) {
   const userId = normalizeUserId(input.userId);
   const createdAt = input.now || (/* @__PURE__ */ new Date()).toISOString();
   const lock = await acquireConsolidationLock(input.root, { owner: "experience-consolidate", createdAt });
+  let ownedEmbeddingProvider;
   try {
     const expected = expectedRangeFromObservations(input.observations, userId);
     const before = tableCounts(input.db);
@@ -1929,7 +3044,7 @@ async function runConsolidationOnce(input) {
     if (semanticPolicy?.enabled) {
       let provider = input.semantic?.provider;
       try {
-        provider = provider || createEmbeddingAdapterFromConfig(input.config);
+        if (!provider) ownedEmbeddingProvider = provider = createEmbeddingAdapterFromConfig(input.config, input.root);
       } catch (error) {
         return { ok: false, dry_run: false, reason: "semantic_embedding_provider_unavailable", detail: String(error?.message || error).slice(0, 300), expected, diff, before, after: tableCounts(input.db) };
       }
@@ -1939,6 +3054,7 @@ async function runConsolidationOnce(input) {
     const result = await processValidatedModelOutput({ db: input.db, userId, output, observations: input.observations, expectedRange: expected, semantic });
     return { ok: true, dry_run: false, expected, diff, result, before, after: tableCounts(input.db) };
   } finally {
+    await ownedEmbeddingProvider?.close?.().catch(() => void 0);
     await lock.release();
   }
 }
@@ -1981,11 +3097,11 @@ async function main() {
   const generation = argValue(args, "--generation") || "active";
   const dryRun = args.includes("--dry-run");
   const ledgerPath = resolve3(paths.root, "ledger.sqlite");
-  if (dryRun && !existsSync(ledgerPath)) throw new Error("dry_run_requires_existing_ledger");
+  if (dryRun && !existsSync2(ledgerPath)) throw new Error("dry_run_requires_existing_ledger");
   const storage = await initExperienceStorage(paths.root, { allowInit: true, userId });
   try {
     const observations = await readValidatedObservationGeneration(paths.root, { file_generation: generation, path: "observations.jsonl" }, userId);
-    const output = JSON.parse(await readFile3(resolve3(fixturePath), "utf8"));
+    const output = JSON.parse(await readFile7(resolve3(fixturePath), "utf8"));
     const result = await runConsolidationOnce({ root: paths.root, db: storage.db, userId: storage.userId, observations, modelOutput: output, model: config.consolidation_model, config, dryRun, breakIn: config.break_in_enabled, now: (/* @__PURE__ */ new Date()).toISOString() });
     console.log(JSON.stringify(result, null, 2));
     if (!result.ok) process.exitCode = 2;

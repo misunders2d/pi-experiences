@@ -6,7 +6,6 @@ export interface SemanticDedupePolicy {
 	reviewThresholdBp: number;
 	strongThresholdBp: number;
 	timeoutMs: number;
-	openAiCompatibleOptIn?: boolean;
 }
 
 export interface EmbeddingAdapter {

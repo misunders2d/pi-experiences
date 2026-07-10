@@ -218,6 +218,13 @@ try {
   const restored = await initExperienceStorage(root, { allowInit: true, userId: 'owner' });
   assert.equal(selectStorageRecordsByUser(restored.db, 'habits', 'owner').some((row) => row.id === 'rollback-extra'), false, 'rollback restore removes post-backup selector-visible state');
   restored.db.close();
+  assert.equal(await readFile(join(root, 'observations.jsonl'), 'utf8'), '', 'privacy-first rollback starts a fresh generation without retained source text');
+  await rm(join(root, 'observations-tail.json'), { force: true });
+  await rm(join(root, 'observations.idx'), { force: true });
+  await writeFile(join(root, 'observations.jsonl'), observations.map((record) => {
+    const { file_generation, ...rest } = record;
+    return JSON.stringify(rest);
+  }).join('\n') + '\n', 'utf8');
 
   await assert.rejects(() => execFileAsync(process.execPath, ['--experimental-strip-types', './bin/experience-consolidate.mjs', 'now', '--dry-run', '--fixture-output', fixture, '--root', root], { cwd: process.cwd() }), /learning_disabled/);
   await writeFile(join(root, 'agent-experience.toml'), formatAgentExperienceConfig({ ...DEFAULT_AGENT_EXPERIENCE_CONFIG, enabled: true, consolidation_enabled: true }), 'utf8');

@@ -1,5 +1,44 @@
 export const STORAGE_SCHEMA_VERSION = 6;
 
+export const STORAGE_REQUIRED_TABLES = [
+	"migrations",
+	"habits",
+	"evidence",
+	"contexts",
+	"consolidation_watermarks",
+	"proposal_read_watermarks",
+	"consolidation_audit",
+	"model_output_quarantine",
+	"pending_review",
+	"experience_review_audit",
+	"habit_embeddings",
+	"habit_duplicates",
+	"habit_duplicate_audit",
+	"selector_hit_log",
+] as const;
+
+export const STORAGE_REQUIRED_INDEXES = [
+	"idx_habits_user_status",
+	"idx_habits_user_kind_status",
+	"idx_evidence_user_habit",
+	"idx_evidence_user_kind_status",
+	"idx_contexts_user_kind_status",
+	"idx_consolidation_audit_user_generation",
+	"idx_proposal_read_watermarks_user_generation",
+	"idx_model_output_quarantine_user_generation",
+	"idx_pending_review_user_status",
+	"idx_experience_review_audit_user_target",
+	"idx_habit_embeddings_user_habit",
+	"idx_habit_embeddings_user_model",
+	"idx_habit_duplicates_user_decision",
+	"idx_habit_duplicates_user_a",
+	"idx_habit_duplicates_user_b",
+	"idx_habit_duplicate_audit_user_created",
+	"idx_habit_duplicate_audit_user_duplicate",
+	"idx_selector_hit_log_user_created",
+	"idx_selector_hit_log_user_habit",
+] as const;
+
 export const STORAGE_STATUS_VALUES = ["candidate", "active", "dormant", "archived", "suppressed_by_law", "disabled"] as const;
 export type StorageStatus = typeof STORAGE_STATUS_VALUES[number];
 

@@ -35,6 +35,8 @@ function makeObservation({ seq, previous = null, createdAt, user, assistant }) {
 
 async function writeObservationFile(root, records) {
   await ensurePrivateRoot(root);
+  await rm(resolvePrivatePath(root, 'observations-tail.json'), { force: true });
+  await rm(resolvePrivatePath(root, 'observations.idx'), { force: true });
   await writeFile(resolvePrivatePath(root, 'observations.jsonl'), records.map((record) => canonicalJson(record)).join('\n') + '\n', { mode: 0o600 });
 }
 
@@ -154,6 +156,7 @@ ctx.ui.custom = async (factory) => {
     assert.match(initial, /\[x\] ON|\[ \] OFF/, 'setup panel must show checkbox-style ON/OFF rows');
     assert.match(initial, /Choose model for habit learning\s+openai-codex\/gpt-5\.5/, 'setup panel must show current habit-learning model instead of generic open');
     assert.match(initial, /Space\/Enter toggles/, 'setup panel must advertise Space toggles');
+    assert.match(initial, /Keep analyzed source examples\s+7 days/, 'setup panel must expose privacy retention without an advanced command');
     const next = setupChoices.shift();
     value = next === 'Choose model for habit learning' ? 'model' : next === 'Done' ? 'done' : undefined;
     resolved = true;
@@ -234,7 +237,8 @@ assert.match(__formatAgentExperienceAnalyzeFailureForTest(new Error('Watermark w
 assert.equal(__getAgentExperienceDetailPanelOptionsForTest().overlay, false, 'review/status detail panels should replace the editor instead of overlaying image preview lines');
 assert.equal(__normalizeAgentExperienceConsolidationModelOutputForTest(strictRawOutput, strictNormalizeInput).proposals.length, 1);
 const weakOneOff = __normalizeAgentExperienceConsolidationModelOutputForTest({ ...strictRawOutput, proposals: [{ ...strictRawOutput.proposals[0], source_refs: [{ file_generation: 'active', seq: 1, checksum: r1.checksum }] }] }, strictNormalizeInput);
-assert.equal(weakOneOff.proposals.length, 0, 'one-off model suggestions must not become review candidates');
+assert.equal(weakOneOff.proposals.length, 1, 'one-off model output may be retained only as hidden cross-batch evidence');
+assert.equal(weakOneOff.proposals[0].evidence_stage, 'collecting', 'one-off model output must not enter the human review queue');
 const canonicalizedRefs = __normalizeAgentExperienceConsolidationModelOutputForTest({ ...strictRawOutput, proposals: [{ ...strictRawOutput.proposals[0], source_refs: [{ seq: 1 }, { seq: 2, checksum: 'bad-copy' }, { file_generation: 'active', seq: 3, checksum: 'also-bad-copy' }] }] }, strictNormalizeInput);
 assert.deepEqual(canonicalizedRefs.proposals[0].source_refs, [
   { file_generation: 'active', seq: 1, checksum: r1.checksum },
@@ -488,25 +492,25 @@ try {
 }
 
 notes.length = 0;
-const oldOpenAiKey = process.env.OPENAI_API_KEY;
-const oldAxOpenAiKey = process.env.AX_OPENAI_EMBEDDING_API_KEY;
-delete process.env.OPENAI_API_KEY;
-delete process.env.AX_OPENAI_EMBEDDING_API_KEY;
-setupChoices = ['[ ] Prevent duplicate habits', 'Enable and scan for duplicate habits', 'I understand: send only normalized When/Do habit text for embeddings', 'Done'];
+setupChoices = ['[ ] Prevent duplicate habits', 'Explain duplicate prevention (no changes)', 'Done'];
 await commands.get('experience').handler('setup', ctx);
-if (oldOpenAiKey === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = oldOpenAiKey;
-if (oldAxOpenAiKey === undefined) delete process.env.AX_OPENAI_EMBEDDING_API_KEY; else process.env.AX_OPENAI_EMBEDDING_API_KEY = oldAxOpenAiKey;
 configResult = await readAgentExperienceConfig(paths);
-assert.equal(configResult.config.embedding_enabled, false, 'setup semantic enable must leave gate off when provider is unavailable');
-assert.ok(notes.some((note) => /Semantic duplicate prevention was not enabled/.test(note.message || '')), 'setup semantic enable must show clear provider blocker');
-assert.ok(!notes.some((note) => /OPENAI_API_KEY|AX_OPENAI_EMBEDDING_API_KEY/.test(note.message || '')), 'setup semantic blocker must not expose credential names as secrets to normal UI');
+assert.equal(configResult.config.embedding_enabled, false, 'explanation must not enable duplicate prevention or download assets');
+assert.equal(existsSync(join(paths.root, 'models')), false, 'package/setup explanation must not download a model');
+assert.ok(notes.some((note) => /about 150 MB|on this computer|never sends/i.test(note.message || '')), 'setup must explain local privacy and one-time size in normal language');
+assert.ok(!notes.some((note) => /provider|endpoint|api key|model id|dimensions|server/i.test(note.message || '')), 'normal setup must not expose backend jargon');
+
+setupChoices = ['Keep analyzed source examples (7 days)', '14 days', 'Done'];
+await commands.get('experience').handler('setup', ctx);
+configResult = await readAgentExperienceConfig(paths);
+assert.equal(configResult.config.observation_retention_days, 14, 'normal setup must configure bounded source retention');
+assert.ok(notes.some((note) => /deleted after 14 days/.test(note.message || '')), 'retention change must explain deletion and preserved minimized evidence');
 
 notes.length = 0;
 setupChoices = ['Analyze saved examples now', 'Done'];
 await commands.get('experience').handler('setup', ctx);
-await waitForNote(/Analyze saved examples finished/, 'second analyze must finish');
-assert.ok(notes.some((note) => /No new suggestions were created/.test(note.message || '')), 'duplicate analyze must say no new suggestions, not created');
-assert.ok(!notes.some((note) => /New suggested habits created/.test(note.message || '')), 'duplicate analyze must not claim new suggestions were created');
+assert.ok(notes.some((note) => /No saved examples yet|already analyzed/.test(note.message || '')), 'second analyze must not resend the committed and rotated generation');
+assert.ok(!notes.some((note) => /Analyze saved examples started|New suggested habits created/.test(note.message || '')), 'caught-up analyze must not start a model job or claim new suggestions');
 storage = await initExperienceStorage(paths.root, { allowInit: true, userId: 'owner' });
 try {
   const rows = storage.db.prepare("SELECT id, status, condition, behavior FROM habits WHERE user_id = 'owner'").all();

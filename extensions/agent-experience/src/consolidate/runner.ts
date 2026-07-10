@@ -1,7 +1,6 @@
-import { mkdir, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
 import { canonicalJson, sha256Hex } from "../storage/checksum.ts";
-import { ensurePrivateRoot, normalizeUserId, resolvePrivatePath } from "../storage/private-root.ts";
+import { acquireOwnedLock } from "../storage/locks.ts";
+import { normalizeUserId } from "../storage/private-root.ts";
 import type { AgentExperienceConfig } from "../config.ts";
 import { createEmbeddingAdapterFromConfig, semanticPolicyFromConfig } from "../semantic/config.ts";
 import { sanitizePolicy } from "../semantic/service.ts";
@@ -22,25 +21,13 @@ export interface ConsolidationLock {
 	release(): Promise<void>;
 }
 
-export async function acquireConsolidationLock(root: string, input: { owner?: string; createdAt?: string } = {}): Promise<ConsolidationLock> {
-	const privateRoot = await ensurePrivateRoot(root);
-	const lockPath = resolvePrivatePath(privateRoot, ".consolidate.lock");
+export async function acquireConsolidationLock(root: string, _input: { owner?: string; createdAt?: string } = {}): Promise<ConsolidationLock> {
 	try {
-		await mkdir(lockPath, { mode: 0o700 });
+		return await acquireOwnedLock(root, "consolidate", { waitMs: 0, staleMs: 2 * 60 * 60_000 });
 	} catch (error: any) {
-		if (error?.code === "EEXIST") throw new Error("consolidation_lock_active");
+		if (/Could not acquire/.test(String(error?.message || error))) throw new Error("consolidation_lock_active");
 		throw error;
 	}
-	await writeFile(join(lockPath, "owner.json"), canonicalJson({ owner: input.owner || "agent-experience", created_at: input.createdAt || new Date().toISOString() }), { mode: 0o600 });
-	let released = false;
-	return {
-		path: lockPath,
-		async release() {
-			if (released) return;
-			released = true;
-			await rm(lockPath, { recursive: true, force: true });
-		},
-	};
 }
 
 export function expectedRangeFromObservations(observations: ValidatedObservationRecord[], userId: string): ConsolidationExpectedRange {
@@ -87,6 +74,7 @@ export async function runConsolidationOnce(input: { root: string; db: any; userI
 	const userId = normalizeUserId(input.userId);
 	const createdAt = input.now || new Date().toISOString();
 	const lock = await acquireConsolidationLock(input.root, { owner: "experience-consolidate", createdAt });
+	let ownedEmbeddingProvider: any;
 	try {
 		const expected = expectedRangeFromObservations(input.observations, userId);
 		const before = tableCounts(input.db);
@@ -113,7 +101,7 @@ export async function runConsolidationOnce(input: { root: string; db: any; userI
 		if (semanticPolicy?.enabled) {
 			let provider = input.semantic?.provider;
 			try {
-				provider = provider || createEmbeddingAdapterFromConfig(input.config!);
+				if (!provider) ownedEmbeddingProvider = provider = createEmbeddingAdapterFromConfig(input.config!, input.root);
 			} catch (error: any) {
 				return { ok: false, dry_run: false, reason: "semantic_embedding_provider_unavailable", detail: String(error?.message || error).slice(0, 300), expected, diff, before, after: tableCounts(input.db) };
 			}
@@ -123,6 +111,7 @@ export async function runConsolidationOnce(input: { root: string; db: any; userI
 		const result = await processValidatedModelOutput({ db: input.db, userId, output, observations: input.observations, expectedRange: expected, semantic });
 		return { ok: true, dry_run: false, expected, diff, result, before, after: tableCounts(input.db) };
 	} finally {
+		await ownedEmbeddingProvider?.close?.().catch(() => undefined);
 		await lock.release();
 	}
 }

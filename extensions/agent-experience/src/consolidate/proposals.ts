@@ -17,6 +17,9 @@ export interface HabitCandidateProposal {
 	confidence_bp: number;
 	source_refs: ProposalSourceRef[];
 	evidence_summary?: string;
+	evidence_stage?: "collecting" | "reviewable";
+	correction_role?: "old_negative" | "replacement";
+	correction_group_id?: string;
 	ambiguous?: false;
 }
 
@@ -44,6 +47,9 @@ const PROPOSAL_KEYS = new Set([
 	"confidence_bp",
 	"source_refs",
 	"evidence_summary",
+	"evidence_stage",
+	"correction_role",
+	"correction_group_id",
 	"ambiguous",
 ]);
 const REF_KEYS = new Set(["file_generation", "seq", "checksum"]);
@@ -100,6 +106,12 @@ function validateProposal(value: unknown, seenIds: Set<string>): HabitCandidateP
 	const generations = new Set(sourceRefs.map((ref) => ref.file_generation));
 	if (generations.size !== 1) throw new Error("Ambiguous proposal generation");
 	const evidenceSummary = proposal.evidence_summary === undefined ? undefined : assertSafeToken(proposal.evidence_summary, "evidence_summary", 1000);
+	const evidenceStage = proposal.evidence_stage === undefined ? undefined : assertSafeToken(proposal.evidence_stage, "evidence_stage", 32);
+	if (evidenceStage !== undefined && evidenceStage !== "collecting" && evidenceStage !== "reviewable") throw new Error("Invalid evidence_stage");
+	const correctionRole = proposal.correction_role === undefined ? undefined : assertSafeToken(proposal.correction_role, "correction_role", 32);
+	if (correctionRole !== undefined && correctionRole !== "old_negative" && correctionRole !== "replacement") throw new Error("Invalid correction_role");
+	const correctionGroupId = proposal.correction_group_id === undefined ? undefined : assertSafeToken(proposal.correction_group_id, "correction_group_id", 160);
+	if ((correctionRole === undefined) !== (correctionGroupId === undefined)) throw new Error("Incomplete correction metadata");
 	return {
 		proposal_id: proposalId,
 		kind: "habit_candidate",
@@ -110,6 +122,8 @@ function validateProposal(value: unknown, seenIds: Set<string>): HabitCandidateP
 		confidence_bp: Number(confidenceBp),
 		source_refs: sourceRefs,
 		...(evidenceSummary === undefined ? {} : { evidence_summary: evidenceSummary }),
+		...(evidenceStage === undefined ? {} : { evidence_stage: evidenceStage as "collecting" | "reviewable" }),
+		...(correctionRole === undefined ? {} : { correction_role: correctionRole as "old_negative" | "replacement", correction_group_id: correctionGroupId! }),
 		...(proposal.ambiguous === undefined ? {} : { ambiguous: false }),
 	};
 }

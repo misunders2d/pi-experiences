@@ -2,161 +2,180 @@
 name: agent-experience
 description: >-
   Use when explaining, configuring, troubleshooting, or safely operating the Pi
-  Experiences / Agent Experience extension: /experience setup control panel,
-  capture, review suggestions, advanced consolidation, approved-habit reminder modes, law_path, privacy
-  boundaries, and the distinction between skills, memory, and experience. Do not
-  use for unrelated Pi extension development.
+  Experiences / Agent Experience extension: /experience setup, local capture,
+  bounded Analyze, suggestion review, approved-habit controls, local duplicate
+  prevention, short source retention, approved-habit reminders, privacy, law,
+  and the distinction between skills, memory, and experience. Do not use for
+  unrelated Pi extension development.
 ---
 
 # Agent Experience
 
-Use this skill for the public `pi-experiences` package.
+## What it is
 
-## Mental model
+- **Skill:** deliberate procedure.
+- **Memory:** durable fact or knowledge.
+- **Experience:** reviewed behavioral/working habit inferred from repetition.
 
-```text
-skills = instructions the agent loads before work
-memory = durable facts/knowledge the agent may retrieve
-experience = reviewed behavioral habits inferred from repeated interaction
-```
+Experience may learn durable work preferences and recurring task/tool categories. It must not convert project facts, one-off labels, credentials, or narrow task knowledge into habits.
 
-## Plain-language pieces
+## Normal-user rule
 
-- **Experience** is the whole behavior-learning layer.
-- **Setup** is the main control panel. It opens a Space/Enter settings menu for saving chat examples locally, choosing the habit-learning model, analyzing saved examples now, reviewing suggested habits, resolving semantic duplicates, reviewing/disable/re-enable/archive-hiding approved habits, preventing duplicate habits after scan/backfill, using approved habits before replies, showing the schedule as Phase 2/off, showing current settings, and explaining every setting. It must not change config until you choose an item. After each action it returns to the panel until Done. The safe save-examples toggle turns on local redacted capture and leaves timers, embeddings, and approved-habit reminders off unless explicitly toggled.
-- **Capture** saves redacted text fields and metadata from completed turns to `observations.jsonl`. It creates raw material only, not habits.
-- **Choose model for habit learning** opens a live typeahead model picker inside `/experience setup`; typing text such as `5.5`, `codex`, or `glm` immediately filters authenticated model suggestions, and the current model is shown/marked. Users do not type a model command.
-- **Analyze saved examples now** reads already saved redacted examples, calls the configured model once, validates/sanitizes model output, and writes suggested habits into review. It never approves habits.
-- **Pending review** means proposed habits await approval/rejection and are not injectable yet.
-- **Active habits** are reviewed habits. The setup menu does not use them before replies unless you explicitly enable approved-habit reminders.
-- **Schedule** is Phase 2/off. The package does not install, start, or pretend-enable a timer.
-
-## Normal command
-
-Canonical UX is one control panel:
+Always start with:
 
 ```text
 /experience setup
 ```
 
-The interactive setup menu uses arrow keys plus Space/Enter. Checkbox rows show `[x]` for ON and `[ ]` for OFF; Space or Enter toggles checkbox rows and opens model/analyze/review/duplicate/status/help action rows; Done exits. From this one menu a normal user can save examples, choose a model, analyze saved examples, review suggestions, resolve duplicates, archive/hide approved habits, enable duplicate prevention after scan/backfill, and enable approved-habit reminders.
+This is the complete normal-user surface. Do not require typed setup/review subcommands, IDs, checksums, thresholds, endpoints, provider settings, model-server details, or filesystem commands.
 
-Human setup procedure:
+If the panel does not render, tell the user to restart Pi so the latest extension loads, then run `/experience setup` again.
 
-1. Run `/experience setup`.
-2. Toggle **Save chat examples locally** to `[x] ON` with Space/Enter.
-3. Use Pi normally until repeated examples exist.
-4. Choose **Choose model for habit learning**. Type to filter live; the current model is visible and marked `(current)` when present. Ctrl+E allows exact `provider/model` entry.
-5. Choose **Analyze saved examples now**. It starts one nonblocking model job and returns control to Pi.
-6. Choose **Review suggested habits**. Inspect the boxed focused panel and choose Approve / Reject / Back with ↑/↓ + Space/Enter or `1`/`2`/`3`.
-7. Choose **Review approved habits** to browse actual active/disabled approved habits, inspect details, and disable, re-enable, or archive/hide one without typing IDs/checksums.
-8. Optionally choose **Prevent duplicate habits**. It must scan/backfill before arming the semantic gate. OpenAI-compatible embeddings require explicit opt-in and send only normalized condition plus behavior; local providers remain possible through the adapter interface.
-9. If duplicates appear, choose **Resolve duplicate habits** to merge evidence, supersede old wording, keep separate with a reason, or archive/hide a duplicate.
-10. Optionally toggle **Use approved habits before replies** to `[x] ON`.
+## Normal workflow
 
-Agent/operator procedure:
+1. Open `/experience setup`.
+2. Turn on **Save chat examples locally**.
+3. Use Pi normally until behavior repeats.
+4. Choose **Choose model for habit learning**.
+5. Choose **Analyze saved examples now**.
+6. Open **Review suggested habits** and explicitly Approve or Reject.
+7. Open **Review approved habits** to inspect, disable, re-enable, archive, or recheck a waiting approval.
+8. Optionally prepare **Prevent duplicate habits**.
+9. Optionally enable **Use approved habits before replies**.
+10. Choose 7/14/30-day source-example retention as needed.
 
-- Preserve `/experience setup` as the one normal-user command.
-- Do not instruct normal users to type setup subcommands or backcompat review commands.
-- Keep all normal actions in the setup menu: capture, model, analyze, review, duplicate prevention, duplicate resolution, approved-habit review/archive, approved-habit use, schedule/status/help, and all-off.
-- Keep checkbox UI `[x]`/`[ ]`; Space/Enter toggles checkbox rows.
-- Keep model selection live-searchable, with current model visible/marked and exact entry fallback.
-- Keep review in a readable boxed panel with selectable Approve/Reject/Back; do not dump JSON or full habit details into chat history.
-- Keep Analyze nonblocking and never auto-approve suggestions.
-- Keep timer/schedule Phase 2/off.
+The panel also exposes duplicate resolution, current settings, help, schedule Phase 2/off, all-off, and Done.
 
-Do not instruct normal users to type setup subcommands. If Pi does not render the interactive menu, tell the user to restart Pi so the latest extension UI loads, then run `/experience setup` again.
+## Hard product invariants
 
-If observations grow but there are no suggestions, choose **Analyze saved examples now** inside `/experience setup`. Candidate generation is manual, not scheduled.
+- Every new or materially reworded habit needs explicit human approval.
+- Exact normalized evidence may update support for an unchanged approved identity without rewriting it.
+- Exact strong contradictory evidence may make one uniquely matched old active habit dormant; replacement remains a proposal.
+- Direct user instructions and configured law override habits.
+- Never auto-approve, auto-merge, auto-activate replacement wording, or modify law.
+- Never install or enable timers in this release.
+- One private state root represents one human.
+- Semantic similarity supports review quality; it is not the product center.
+- Missing/corrupt/stale state fails closed.
 
-## Safety defaults
+## Capture and Analyze
 
-- Package install alone enables nothing.
-- `/experience setup` opens a menu and changes nothing until you choose. The Save chat examples locally row enables local redacted capture only.
-- Semantic duplicate prevention is off until explicitly enabled from setup after a successful scan/backfill.
-- OpenAI-compatible embeddings are explicit opt-in. The embedding payload is only normalized `condition + "\\n" + behavior`; never raw examples, source refs, evidence summaries, residual JSON, file paths, checksums, or audit text.
-- Embedding cache rows are private SQLite rows scoped by user/provider/model/dimensions/input-version/input checksum/habit checksum. Duplicate relation/audit rows store bp scores/decisions, not raw vectors.
-- Use approved habits before replies starts off.
-- Default selector mode is `instant`, local lexical/no-network, but still advanced opt-in.
-- Smart mode is advanced opt-in and may call the configured model/provider.
-- Selector candidates are active same-user habits only.
-- Reports, pending review, quarantine, evidence, disabled, dormant, candidate, suppressed, and archived rows are not selector input.
-- Selector logs do not store raw prompts; `prompt_hash` remains `omitted`.
-- No law-file writes happen automatically.
-- No timers, recurring jobs, or auto-approval run in normal UX. The Analyze saved examples now row calls the explicitly configured model once.
+Capture stores bounded, heuristically redacted completed user/assistant pairs. Capture alone creates no habits.
 
-## Review
+Analyze:
 
-Normal users review from the setup menu:
+- is manually started from setup;
+- runs nonblocking;
+- reads only the next bounded contiguous same-user unread range;
+- defaults to at most 200 records / 80,000 bytes;
+- uses compact structured prior-habit context for cross-batch repetition;
+- validates model output and cited ranges;
+- advances its watermark only in a successful commit;
+- creates proposals, never approvals.
 
-```text
-/experience setup
-```
+If saved examples exist but no suggestions appear, choose **Analyze saved examples now** again. More unread bounded batches may remain.
 
-Then choose **Review suggested habits**, inspect a suggestion in a focused review panel, and choose Approve or Reject. Review details are not dumped into chat history. Checksums protect stale review actions internally. No review path auto-approves habits.
+## Review and approved waiting habits
 
-Use **Review approved habits** for actual approved habits only: it lists `active` and `disabled` habits, excludes candidates/pending suggestions/archived habits, shows When/Do/status/confidence/evidence count/created/updated, and offers Disable, Re-enable, or Archive/hide. Archive/hide preserves audit/history, hides from normal browse/search, and prevents selector use. The normal UI must not expose habit IDs or checksums.
+Review suggestion details in the focused panel. Do not dump internal JSON into chat.
 
-Use **Prevent duplicate habits** to opt in to semantic duplicate prevention. Defaults are 7500bp review and 8500bp strong; a semantic match routes to duplicate resolution, not automatic merge. Provider/cache unavailable while enabled fails closed before activation.
+A suggestion currently needs at least three cited observations across two distinct days. Approval may remain visibly waiting for more evidence, current law, conflict resolution, or local duplicate checking.
 
-Use **Resolve duplicate habits** for pending semantic pairs. Normal users choose merge evidence, supersede old wording, keep separate with a reason, or archive/hide duplicate inside setup; they do not type IDs/checksums. Hidden compare-and-swap remains enforced internally and stale rows must refresh/fail safely.
+- Analyze automatically rechecks approved waiting habits after a validated commit.
+- **Review approved habits** offers a plain recheck action.
+- Prior approval remains valid only while normalized condition, behavior, and polarity are unchanged.
+- Material wording changes require approval again.
 
-Candidate habits must generalize reusable behavior, not copy a project-specific label. Durable tool/task categories are allowed when they define the repeated situation, but one-off project/package names, versions, file paths, hashes, and screenshots are not. Prefer `When preparing an npm package release, verify the real end-to-end install/update path before calling it done` over `When working on Agent Experience, do the setup flow`.
+Reject archives that exact candidate identity. It does not semantically ban every related future proposal.
 
-Rejecting a candidate archives that exact normalized condition/behavior/polarity. Later merges preserve that exact identity as rejected/archived. Rejection is not a semantic ban on all related ideas; a materially different or more generalized candidate may appear later if it again passes the repeated-evidence gate.
+Archive/hide preserves audit/history while removing a habit from normal browsing and reminder use.
 
-## Advanced/backcompat commands
+## Local duplicate prevention
 
-Use only for maintainer/testing or explicit advanced operation:
+Duplicate prevention is off until explicitly prepared from setup.
 
-```text
-/experience capture on|off
-/experience consolidation on|off
-/experience selector on|off|calibrate
-/experience pending list|show|diff|accept|reject
-/experience habit explain|accept|reject|disable|enable <id> --checksum <checksum>
-/experience habits report
-```
+Tell users only the plain contract:
 
-Advanced consolidation CLI:
+- it compares habit wording on this computer;
+- preparation downloads about 149 MB once (under the 300 MB cap);
+- no external app, account, key, service, or setup is required;
+- it works offline after preparation;
+- setup can remove the local files;
+- cancellation/corruption fails closed;
+- possible duplicates always require human resolution.
 
-```bash
-experience-consolidate status
-experience-consolidate now --dry-run --fixture-output /path/to/model-output.json
-```
+Do not ask users to configure a provider, model, dimensions, API key, endpoint, Python, Ollama, LM Studio, port, or server. There is no hosted fallback.
 
-The CLI fixture path is maintainer/test plumbing, not normal user UX.
+Only normalized `condition + "\n" + behavior` enters local inference. Raw examples, source refs, evidence summaries, residual JSON, paths, checksums, audit text, credentials, and tokens do not.
 
-## Law file
+The setup progress view shows plain preparation/comparison/save phases and supports Escape cancellation. Scans are bounded and atomic; a failed/cancelled scan must not claim partial durable results.
 
-Default law path:
+Use **Resolve duplicate habits** for explicit merge evidence, supersede, keep separate, or archive/hide decisions. Never expose internal scores or thresholds in normal UI.
 
-```toml
-law_path = "law.md"
-```
+## Source retention
 
-Relative paths resolve under the private state root, normally:
+After a source generation is fully analyzed, redacted source text rotates and is deleted after:
+
+- 7 days by default/recommended;
+- optionally 14 or 30 days.
+
+Minimized evidence, provenance, integrity checks, and review audit remain. Redaction is heuristic, not a formal guarantee.
+
+## Approved-habit reminders
+
+Reminders are off by default. Default instant mode uses local lexical/no-network matching. Only active same-user approved habits can be selected.
+
+Never inject from suggestions, disabled/dormant/suppressed/archived habits, evidence, quarantine, reports, or raw observations. Selector logs do not persist raw prompt/session/injected text; `prompt_hash` remains `omitted`.
+
+Optional advanced matching is separately controlled and must fail closed.
+
+## Law
+
+Default private law path:
 
 ```text
 ~/.agents/experience/law.md
 ```
 
-If the law file is missing, activation and selector injection fail closed. Current law checking is deterministic v1: law freshness plus a small dangerous-pattern denylist. It is not semantic contradiction detection.
+Setup may create the default law file only after explicit user choice and must never overwrite an unreadable existing file. Activation synchronously revalidates law freshness/integrity before state change.
+
+Current law checking uses deterministic freshness plus a dangerous-pattern denylist. It is not full semantic interpretation of law text.
+
+## All-off and scheduling
+
+**Turn all experience features off** stops capture and runtime gates while preserving private records for audit/re-enable.
+
+Automatic schedule remains Phase 2/off. Unit files are disabled maintainer templates; do not install or enable them as normal UX.
+
+## Maintainer-only controls
+
+Typed capture/consolidation/review/selector commands and `experience-consolidate` are compatibility/testing controls. Do not present them as the normal path.
+
+Maintainer invariants:
+
+- schema v6 future-version guard runs before any writeful open action;
+- v5 migration remains transactional/idempotent;
+- online backups contain standalone SQLite only;
+- restore prevalidates and journals old-or-new recovery;
+- observations use tail manifest + fixed-width index;
+- locks use token/PID/hostname/time and ownership-checked release;
+- semantic activation revalidates in one SQLite writer transaction;
+- scan cap is 100 habits / 4,950 pairs;
+- package Node floor is `>=22.19.0`;
+- Pi peers remain wildcard;
+- package install has no model-download lifecycle hook;
+- packed installed artifact and real isolated Pi TUI must be validated before release.
 
 ## Troubleshooting
 
-```text
-/experience setup
-ls -la ~/.agents/experience
-wc -l ~/.agents/experience/observations.jsonl
-```
+From `/experience setup`:
 
-If capture is enabled but no observation appears after a completed turn, reload/restart Pi and check the status row inside `/experience setup`.
+- **Show current settings**: confirm capture, Analyze, duplicate prevention, retention, reminders, and waiting approvals.
+- **Analyze saved examples now**: process the next unread batch.
+- **Review suggested habits**: inspect unapproved proposals.
+- **Resolve duplicate habits**: handle potential duplicate wording.
+- **Review approved habits**: browse active/disabled habits or recheck waiting approvals.
+- **Prevent duplicate habits**: retry preparation, turn off while keeping files, or remove files.
+- **Automatic schedule**: verify Phase 2/off.
 
-If there are no suggestions while observations grow, the system is only capturing. Open `/experience setup` and choose **Analyze saved examples now**; candidate generation is manual, not scheduled.
-
-If approved-habit reminders seem inactive:
-- open `/experience setup` and check Use approved habits before replies;
-- confirm active reviewed habits exist;
-- confirm `~/.agents/experience/law.md` exists or configure `law_path`;
-- remember reports/pending/suggestions are never reminder input.
+If corruption or a future schema is reported, do not bypass it. Preserve state and use a compatible/newer package or validated restore path.

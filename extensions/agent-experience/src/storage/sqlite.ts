@@ -2,8 +2,9 @@ import { chmod, lstat, stat } from "node:fs/promises";
 import { resolvePrivatePath, ensurePrivateRoot, normalizeUserId, SENSITIVE_FILE_MODE } from "./private-root.ts";
 import { checksumJson, canonicalJson } from "./checksum.ts";
 import { redactJson } from "./redaction.ts";
-import { applyStorageMigrations } from "./migrations.ts";
-import { STORAGE_SCHEMA_VERSION, STORAGE_STATUS_VALUES, STORAGE_TYPED_FIELDS, USER_SCOPED_TABLES, type StorageStatus } from "./schema.ts";
+import { applyStorageMigrations, assertSupportedStorageVersion, readStorageSchemaVersion } from "./migrations.ts";
+import { recoverInterruptedRestore } from "./backup.ts";
+import { STORAGE_REQUIRED_INDEXES, STORAGE_REQUIRED_TABLES, STORAGE_SCHEMA_VERSION, STORAGE_STATUS_VALUES, STORAGE_TYPED_FIELDS, USER_SCOPED_TABLES, type StorageStatus } from "./schema.ts";
 
 export interface InitExperienceStorageOptions {
 	allowInit: boolean;
@@ -53,24 +54,35 @@ async function ledgerExists(dbPath: string): Promise<boolean> {
 	}
 }
 
+function verifyCurrentStorageSchema(db: any): void {
+	for (const table of STORAGE_REQUIRED_TABLES) {
+		if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)) throw new Error(`Agent Experience current schema is missing table: ${table}`);
+	}
+	for (const index of STORAGE_REQUIRED_INDEXES) {
+		if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?").get(index)) throw new Error(`Agent Experience current schema is missing index: ${index}`);
+	}
+}
+
 function ensureCurrentStorageSchema(db: any): void {
-	const version = Number(db.prepare("PRAGMA user_version").get()?.user_version ?? 0);
-	if (version > STORAGE_SCHEMA_VERSION) throw new Error(`Agent Experience storage schema is newer than this extension: expected <= ${STORAGE_SCHEMA_VERSION}, got ${version}`);
+	const version = assertSupportedStorageVersion(db);
 	if (version < STORAGE_SCHEMA_VERSION) applyStorageMigrations(db);
-	const after = Number(db.prepare("PRAGMA user_version").get()?.user_version ?? 0);
+	const after = readStorageSchemaVersion(db);
 	if (after !== STORAGE_SCHEMA_VERSION) throw new Error(`Agent Experience storage schema mismatch: expected ${STORAGE_SCHEMA_VERSION}, got ${after}`);
+	verifyCurrentStorageSchema(db);
 }
 
 export async function openExistingExperienceStorage(root: string, options: { userId?: string } = {}) {
 	const userId = normalizeUserId(options.userId);
 	const privateRoot = await ensurePrivateRoot(root);
+	await recoverInterruptedRestore(privateRoot);
 	const dbPath = resolvePrivatePath(privateRoot, "ledger.sqlite");
 	if (!(await ledgerExists(dbPath))) throw new Error(`Agent Experience ledger missing: ${dbPath}`);
 	const sqlite = await loadSqlite();
 	const db = new sqlite.DatabaseSync(dbPath, { open: true });
 	try {
-		db.exec("PRAGMA journal_mode=WAL");
+		assertSupportedStorageVersion(db);
 		ensureCurrentStorageSchema(db);
+		db.exec("PRAGMA journal_mode=WAL");
 	} catch (error) {
 		db.close();
 		throw error;
@@ -82,13 +94,15 @@ export async function initExperienceStorage(root: string, options: InitExperienc
 	if (!options?.allowInit) throw new Error("Agent Experience storage init requires allowInit=true");
 	const userId = normalizeUserId(options.userId);
 	const privateRoot = await ensurePrivateRoot(root);
+	await recoverInterruptedRestore(privateRoot);
 	const dbPath = resolvePrivatePath(privateRoot, "ledger.sqlite");
-	if (await ledgerExists(dbPath)) await ledgerExists(dbPath);
+	const existed = await ledgerExists(dbPath);
 	const sqlite = await loadSqlite();
 	const db = new sqlite.DatabaseSync(dbPath, { open: true });
 	try {
+		if (existed) assertSupportedStorageVersion(db);
+		ensureCurrentStorageSchema(db);
 		db.exec("PRAGMA journal_mode=WAL");
-		applyStorageMigrations(db);
 	} catch (error) {
 		db.close();
 		throw error;

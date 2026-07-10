@@ -1,7 +1,7 @@
 import { lstat, readFile } from "node:fs/promises";
 import { resolvePrivatePath, ensurePrivateRoot, normalizeUserId } from "../storage/private-root.ts";
 import { checksumJson } from "../storage/checksum.ts";
-import type { ObservationRecord } from "../storage/observations.ts";
+import { readCurrentObservationManifest, type ObservationRecord } from "../storage/observations.ts";
 
 export interface ObservationGenerationManifest {
 	file_generation: string;
@@ -77,8 +77,9 @@ export function validateObservationRecords(input: {
 
 export async function readValidatedObservationGeneration(root: string, manifest: ObservationGenerationManifest, userId: string): Promise<ValidatedObservationRecord[]> {
 	const privateRoot = await ensurePrivateRoot(root);
-	const fileGeneration = assertSafeGeneration(manifest.file_generation);
 	const fileName = manifest.path || "observations.jsonl";
+	const current = fileName === "observations.jsonl" && manifest.file_generation === "active" ? await readCurrentObservationManifest(privateRoot) : null;
+	const fileGeneration = assertSafeGeneration(current?.file_generation || manifest.file_generation);
 	const path = resolvePrivatePath(privateRoot, fileName);
 	const info = await lstat(path);
 	if (!info.isFile() || info.isSymbolicLink()) throw new Error("Observation JSONL is not a regular private file");

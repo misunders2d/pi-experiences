@@ -165,6 +165,7 @@ try {
   backup = await createBackup(root, { backupId: 'phase2-backup', createdAt: '2026-07-07T00:00:01.000Z' });
   assert.equal(await privateStatMode(backup.manifestPath), 0o600, 'backup manifest must be 0600');
   assert.equal(containsUnredactedSensitiveText(backup.manifest), false, 'backup manifest must not contain sensitive fixture text');
+  assert.deepEqual(backup.manifest.artifacts.map((artifact) => artifact.name), ['ledger.sqlite'], 'privacy-first backups exclude retained observation text and SQLite sidecars');
   assert.deepEqual((await listBackups(root)).map((item) => item.backup_id), ['phase2-backup']);
   await assert.rejects(() => restoreBackup(root, 'phase2-backup'), /allowOverwrite=true/);
   await assert.rejects(() => restoreBackup(root, 'phase2-backup', { allowOverwrite: true }), /confirmDatabaseClosed=true/);
@@ -173,7 +174,7 @@ try {
 }
 
 await writeFile(resolvePrivatePath(root, 'backups', 'phase2-backup', 'manifest.json'), JSON.stringify({ ...backup.manifest, artifacts: [{ name: '../evil', checksum: 'x', bytes: 1 }] }));
-await assert.rejects(() => restoreBackup(root, 'phase2-backup', { allowOverwrite: true, confirmDatabaseClosed: true }), /Unknown backup artifact|Unsafe/);
+await assert.rejects(() => restoreBackup(root, 'phase2-backup', { allowOverwrite: true, confirmDatabaseClosed: true }), /manifest checksum|Unknown backup artifact|Unsafe/i);
 await writeFile(resolvePrivatePath(root, 'backups', 'phase2-backup', 'manifest.json'), canonicalJson(backup.manifest));
 await rm(resolvePrivatePath(root, 'ledger.sqlite'), { force: true });
 await rm(resolvePrivatePath(root, 'ledger.sqlite-wal'), { force: true });
@@ -181,7 +182,7 @@ await rm(resolvePrivatePath(root, 'ledger.sqlite-shm'), { force: true });
 await rm(resolvePrivatePath(root, 'observations.jsonl'), { force: true });
 const restored = await restoreBackup(root, 'phase2-backup', { allowOverwrite: true, confirmDatabaseClosed: true });
 assert.ok(restored.restored.includes('ledger.sqlite'), 'restore should include sqlite artifact');
-assert.ok(restored.restored.includes('observations.jsonl'), 'restore should include observation artifact');
+assert.equal(restored.restored.includes('observations.jsonl'), false, 'storage-v2 restore intentionally excludes short-retention observation text');
 
 const restoredStorage = await initExperienceStorage(root, { allowInit: true, userId: 'user-a' });
 try {
@@ -191,13 +192,12 @@ try {
 } finally {
   restoredStorage.db.close();
 }
-const restoredObservationText = await readFile(resolvePrivatePath(root, 'observations.jsonl'), 'utf8');
-assert.match(restoredObservationText, /obs-1/);
-assert.equal(containsUnredactedSensitiveText(restoredObservationText), false, 'restored JSONL must not contain sensitive fixture text');
+assert.equal(existsSync(resolvePrivatePath(root, 'observations.jsonl')), true, 'storage-v2 restore starts a fresh empty observation generation');
+assert.equal(await readFile(resolvePrivatePath(root, 'observations.jsonl'), 'utf8'), '', 'restored generation contains no retained source observations');
 
 const rootEntries = await readdir(root);
 assert.ok(rootEntries.includes('ledger.sqlite'));
-assert.ok(rootEntries.includes('observations.jsonl'));
+assert.equal(rootEntries.includes('observations.jsonl'), true);
 assert.ok(rootEntries.includes('backups'));
 for (const entry of rootEntries.filter((name) => name.startsWith('ledger.sqlite-'))) {
   const mode = (await stat(join(root, entry))).mode & 0o777;

@@ -1,11 +1,11 @@
 {
   "name": "pi-experiences",
-  "version": "0.1.25",
+  "version": "0.1.26",
   "description": "A Pi extension package for capturing and reviewing behavioral experience patterns separately from skills and memory.",
   "license": "MIT",
   "type": "module",
   "engines": {
-    "node": ">=22.18.0"
+    "node": ">=22.19.0"
   },
   "keywords": [
     "pi-package",
@@ -27,12 +27,14 @@
     "experience-consolidate": "dist/experience-consolidate.mjs"
   },
   "scripts": {
-    "check": "npm run check:agent-experience && npm run check:cli",
-    "check:agent-experience": "node --experimental-strip-types ./scripts/test-agent-experience-phase1.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase2-storage.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase3-capture.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase4a-consolidation.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase4b-model-output.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase5-review.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase6-selector.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase7a-selector-adapter.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase7b8.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase9-setup-analyze.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase10-semantic-dedupe.mjs",
+    "check": "npm run check:agent-experience && npm run check:source && npm run check:cli && npm run check:generated",
+    "check:agent-experience": "node --experimental-strip-types ./scripts/test-agent-experience-phase1.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase2-storage.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase3-capture.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase4a-consolidation.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase4b-model-output.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase5-review.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase6-selector.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase7a-selector-adapter.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase7b8.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase9-setup-analyze.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase10-semantic-dedupe.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase11-storage-hardening.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase12-observations.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase13-local-embedding.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase14-semantic-atomicity.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase15-lock-recovery.mjs",
+    "check:source": "node --experimental-strip-types ./scripts/check-agent-experience-source.mjs",
     "build": "node ./scripts/build-cli.mjs",
     "prepack": "npm run build",
     "prepublishOnly": "npm run check && npm run build",
-    "check:cli": "npm run build && node ./dist/experience-consolidate.mjs --help >/dev/null && node ./dist/experience-consolidate.mjs status >/dev/null"
+    "check:cli": "npm run build && node ./dist/experience-consolidate.mjs --help >/dev/null && node ./dist/experience-consolidate.mjs status >/dev/null",
+    "check:generated": "node ./scripts/check-generated-cli.mjs"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
@@ -43,7 +45,8 @@
     "@earendil-works/pi-ai": "latest",
     "@earendil-works/pi-coding-agent": "latest",
     "@earendil-works/pi-tui": "^0.80.3",
-    "esbuild": "^0.28.1"
+    "esbuild": "^0.28.1",
+    "onnxruntime-web": "1.27.0"
   },
   "pi": {
     "extensions": [
@@ -57,9 +60,15 @@
     "bin/",
     "dist/",
     "extensions/",
+    "runtime/",
     "skills/",
     "scripts/",
     "README.md",
-    "LICENSE"
-  ]
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "dependencies": {
+    "@huggingface/tokenizers": "0.1.3",
+    "onnxruntime-common": "1.27.0"
+  }
 }

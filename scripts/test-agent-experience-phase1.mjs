@@ -134,6 +134,7 @@ assert.deepEqual(notes.find((note) => note.level === 'select').options, [
   'Resolve duplicate habits',
   'Review approved habits',
   '[ ] Prevent duplicate habits',
+  'Keep analyzed source examples (7 days)',
   '[ ] Use approved habits before replies',
   'Automatic schedule: Phase 2 / off (explain)',
   'Show current settings',
@@ -183,7 +184,9 @@ assert.equal(readResult.config.selector_daily_budget, 20, 'package selector dail
 assert.equal(readResult.config.law_path, 'law.md', 'law path must default to state-root law.md, not cwd docs');
 assert.equal(readResult.config.selector_min_confidence_bp, 7500, 'selector min confidence must default to 7500bp');
 assert.equal(readResult.config.selector_max_habits, 3, 'selector max injected habits must default to 3');
-assert.equal(readResult.config.embedding_dimensions, 1536, 'embedding dimension contract must be 1536');
+assert.equal('embedding_provider' in readResult.config, false, 'normal config must not expose an embedding provider');
+assert.equal('embedding_model' in readResult.config, false, 'normal config must not expose a model identifier');
+assert.equal('embedding_dimensions' in readResult.config, false, 'normal config must not expose embedding dimensions');
 
 const afterEnableEntries = await readdir(paths.root);
 assert.deepEqual(afterEnableEntries.sort(), ['agent-experience.toml'], 'setup should create only intended config file');

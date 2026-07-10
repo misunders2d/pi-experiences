@@ -1,411 +1,277 @@
-# Pi Experiences
+# pi-experiences
 
-Pi Experiences is an experimental Pi package for giving coding agents a third kind of long-term learning: **experience**.
+A Pi extension package for **reviewed behavioral experience**: repeated working habits learned from interaction, kept separate from skills and memory.
 
-## For humans: what is this for?
+- **Skills** are deliberate procedures.
+- **Memory** is durable facts and knowledge.
+- **Experience** is reviewed behavioral and working habits inferred from repetition.
 
-Most agent personalization gets mixed into two buckets:
+Experience may learn durable work preferences or recurring task/tool categories. It must not learn project facts, one-off labels, credentials, or task knowledge as habits.
 
-- **Skills** — explicit procedures: "when doing X, follow these steps."
-- **Memory** — remembered facts: "this project uses Y," "the user prefers Z," "this decision happened."
+## Safety model
 
-But humans also learn a third way: through repeated interaction. We develop habits, tone, caution, timing, and judgment patterns. We learn things like:
+Everything starts off.
 
-- when to be brief vs. careful;
-- when to ask before acting;
-- when a user wants a rollback path before a risky change;
-- when a repeated correction means "change your behavior next time." 
+- Package installation does not capture conversations, download a local model, run learning, activate habits, install timers, or inject reminders.
+- Every new or materially reworded habit requires explicit human approval before activation.
+- Exact normalized evidence may update counts for an already approved identity without changing its meaning.
+- Strong exact contradictory evidence may make one uniquely matched old habit dormant, but the replacement remains a proposal requiring approval.
+- Direct user instructions and configured law always override habits.
+- No automatic approval, semantic merge, replacement activation, law-file modification, or scheduling occurs.
+- Missing, corrupt, stale, or incompatible state fails closed.
 
-Pi Experiences tries to model that third bucket separately.
-
-```text
-skills     = procedures you intentionally wrote down
-memory     = facts you want the agent to remember
-experience = behavioral patterns inferred from repeated interaction, then reviewed
-```
-
-The goal is **not** to let an agent silently rewrite itself. The goal is to capture behavioral patterns, make them reviewable, and only inject small, relevant guidance after they are accepted.
-
-Think of it as a local, review-first habit layer:
+The complete normal-user surface is:
 
 ```text
-normal work
-  -> redacted local observations
-  -> candidate habits
-  -> human review
-  -> active habits
-  -> optional just-in-time guidance
+/experience setup
 ```
 
-Examples of experience-style habits:
-
-- "When discussing risky runtime changes, summarize rollback path first."
-- "When tests pass but live runtime may be stale, ask for reload before claiming smoke success."
-- "When packaging public code, explain install/update semantics in human terms."
-
-Those are not skills. They are not facts. They are behavioral tendencies that may help the agent feel less reset between sessions.
-
-## What gets installed?
-
-The package installs:
-
-- the `agent-experience` Pi extension;
-- a small public `agent-experience` skill explaining how to operate it.
-
-The extension can:
-
-- opt in to local capture of redacted conversation pairs;
-- store captures under a private state root, default `~/.agents/experience/`;
-- choose a Pi model for habit learning inside `/experience setup`;
-- manually analyze saved examples from `/experience setup` and create candidate habits today;
-- require human review before habits become active;
-- optionally prevent semantic duplicate habits with an explicit opt-in embedding adapter and local SQLite cache;
-- route likely duplicates to a setup resolution workflow instead of surfacing them as normal suggestions;
-- archive/hide approved habits without hard-deleting audit/history;
-- keep pre-injection / selector injection disabled by default;
-- when enabled, select only active same-user habits;
-- inject only bounded guidance, never raw conversation history;
-- keep skills, memory, reports, pending review rows, and quarantine rows out of selector input.
+Normal users do not need IDs, checksums, thresholds, endpoints, model servers, or advanced subcommands.
 
 ## Install
 
-Recommended stable install from npm:
+Stable npm installation:
 
 ```bash
 pi install npm:pi-experiences
 ```
 
-Update npm-installed Pi packages to the latest published stable version:
+Update npm-installed Pi packages:
 
 ```bash
 pi update --extensions
 ```
 
-Pinned GitHub tag install is also available when you want an exact source ref:
+Pinned GitHub installation:
 
 ```bash
-pi install git:github.com/misunders2d/pi-experiences@v0.1.25
+pi install git:github.com/misunders2d/pi-experiences@v0.1.26
 ```
 
-For local development:
+Git refs remain pinned; they do not float to newer tags.
 
-```bash
-pi install /absolute/path/to/pi-experiences
-```
+Requirements:
 
-Or try it for one run without installing:
+- Node.js `>=22.19.0`
+- a compatible Pi installation
 
-```bash
-pi -e /absolute/path/to/pi-experiences
-```
+Pi core packages remain wildcard peer dependencies so the extension uses the host Pi runtime rather than bundling another copy.
 
-> Security note: Pi extensions run with your user permissions. Review extension code before installing any third-party package.
-
-## Important: avoid duplicate extension loads
-
-If you previously copied `agent-experience` directly into Pi's live extensions directory, remove or disable that copy before installing this package:
-
-```bash
-rm -rf ~/.pi/agent/extensions/agent-experience
-```
-
-Then restart or reload Pi.
-
-Duplicate copies can register the same hooks twice and cause duplicate capture or command conflicts.
-
-## First run
-
-### Plain-language pieces
-
-- **Experience** is the whole behavior-learning layer.
-- **Setup** is the main control panel. It opens a Space/Enter settings menu for saving chat examples locally, choosing the habit-learning model, analyzing saved examples now, reviewing suggested habits, resolving duplicate habits, reviewing/archive-hiding approved habits, preventing duplicate habits, using approved habits before replies, showing the schedule as Phase 2/off, showing current settings, and explaining every setting. It must not change config until you choose an item. The safe save-examples choice turns on local redacted capture and leaves timers, embeddings, and approved-habit reminders off unless you explicitly toggle them.
-- **Capture** means saving redacted text fields and metadata from completed user/assistant turns to `observations.jsonl`. It is the raw material. Capture does **not** create habits by itself.
-- **Choose model for habit learning** opens a live typeahead model picker inside `/experience setup`; typing text such as `5.5`, `codex`, or `glm` immediately filters authenticated model suggestions, and the current model is shown/marked. Users do not type a model command.
-- **Analyze saved examples now** reads already saved redacted examples, calls the configured model once, validates/sanitizes the model output, and writes suggested habits into review. It never approves habits.
-- **Pending review** means proposed habits are waiting for you to approve or reject them. Pending items are not used for injection.
-- **Active habits** are reviewed habits. The setup menu does not use them before replies unless you explicitly enable approved-habit reminders.
-- **Schedule** is Phase 2/off. The package does not install, start, or pretend-enable a timer.
-
-Inside Pi, start with exactly one normal-user command:
-
-```text
-/experience setup
-```
-
-Then use Pi normally for a few turns. Captures are written locally to:
-
-```text
-~/.agents/experience/observations.jsonl
-```
-
-The file stores redacted conversation-pair records with bounded text fields and metadata, not raw full session logs.
-
-### Normal command
-
-The normal UX is one control panel:
-
-```text
-/experience setup
-```
-
-The interactive `/experience setup` menu uses arrow keys plus Space/Enter. Checkbox rows show `[x]` for ON and `[ ]` for OFF; Space or Enter toggles checkbox rows and opens action rows. From that one menu a normal user can save examples, choose a model from live typeahead search or exact model entry with the current model visible, analyze saved examples now, review suggestions, resolve duplicates, browse/disable/re-enable/archive approved habits, enable duplicate prevention after scan/backfill, use approved habits before replies, see status, and read explanations.
-
-No typed setup subcommands are required for normal use. If the panel does not render, restart Pi so the latest extension UI loads and run `/experience setup` again.
-
-### Human setup procedure
+## Normal workflow
 
 1. Run `/experience setup`.
-2. Toggle **Save chat examples locally** to `[x] ON` with Space or Enter.
-3. Use Pi normally for enough repeated examples to exist.
-4. Open `/experience setup` again and choose **Choose model for habit learning**.
-   - Type to filter live, for example `5.5`, `codex`, or `glm`.
-   - The currently configured model is shown at the top and marked `(current)` in the list when present.
-   - Use Ctrl+E only when you need to enter an exact `provider/model` id.
-5. Choose **Analyze saved examples now**. This starts one nonblocking model job and returns control to Pi.
-6. After analysis finishes, choose **Review suggested habits**.
-7. Choose **Review approved habits** to browse actual active/disabled approved habits and disable, re-enable, or archive/hide one without typing IDs/checksums.
-   - Full details appear in a focused review panel, not in chat history.
-   - Archive/hide is audit-preserving and removes the habit from normal browse/search and selector use.
-8. Optionally choose **Prevent duplicate habits**. Enabling runs a scan/backfill first. OpenAI-compatible embeddings require explicit opt-in and send only normalized When/Do text (`condition + "\\n" + behavior`), never raw examples, source refs, residual JSON, checksums, or audit text.
-9. If setup reports possible duplicates, choose **Resolve duplicate habits** to merge evidence, supersede old wording, keep separate with a reason, or archive/hide a duplicate.
-10. Optionally toggle **Use approved habits before replies** to `[x] ON`. This uses only approved active habits and remains off by default.
+2. Turn on **Save chat examples locally**.
+3. Use Pi normally until repeated examples exist.
+4. Choose **Choose model for habit learning**.
+5. Choose **Analyze saved examples now**.
+6. Open **Review suggested habits** and explicitly approve or reject each proposal.
+7. Use **Review approved habits** to inspect, disable, re-enable, archive, or recheck an approved habit that is waiting.
+8. Optionally enable **Prevent duplicate habits**.
+9. Optionally enable **Use approved habits before replies**.
 
-### Agent/operator procedure
+The setup panel also contains:
 
-When maintaining or troubleshooting this package:
+- duplicate resolution;
+- 7/14/30-day source-example retention;
+- current settings;
+- schedule explanation (Phase 2/off);
+- all-off;
+- plain-language help.
 
-- Preserve the one normal-user command: `/experience setup`.
-- Do not instruct normal users to type advanced setup/review subcommands.
-- Keep setup controls in the menu: capture, model, analyze, review, duplicate resolution, duplicate prevention, approved-habit review/archive, approved-habit use, schedule explanation, status, help, and all-off.
-- Keep checkbox semantics: `[x]` is ON, `[ ]` is OFF, Space/Enter toggles checkbox rows.
-- Keep model selection live-searchable; typing text such as `5.5` must immediately filter suggestions and the current model must be visible.
-- Keep review details inside the focused panel; do not dump suggested-habit details into chat history for the normal setup flow.
-- Do not auto-approve suggestions. Approval/rejection must remain explicit and checksum-protected.
-- Keep Analyze nonblocking. It may post completion status, but it must not freeze the foreground setup flow.
-- Keep schedule/timer Phase 2/off in normal UX.
+Analyze runs as a bounded nonblocking job. Suggestions remain inert until approval.
 
-If observations are growing but there are no suggestions, choose **Analyze saved examples now** inside `/experience setup`. Candidate generation is manual, not scheduled.
+## Review and activation
 
-Advanced/backcompat commands such as `/experience capture`, `/experience consolidation`, `/experience selector`, `/experience pending`, and `experience-consolidate --fixture-output` are maintainer/testing controls, not the normal first-run path.
+A suggestion needs repeated evidence: currently at least three cited observations across at least two days.
 
-## State and privacy
+Approval and activation are separate when a requirement is temporarily unmet. An approved candidate can remain visibly waiting for:
 
-Default state root:
+- enough evidence;
+- current safety-law approval;
+- conflict resolution;
+- local duplicate checking.
+
+Analyze automatically rechecks approved waiting candidates after a validated commit. The same recheck is available under **Review approved habits**. Prior approval applies only while normalized condition, behavior, and polarity remain unchanged; material wording changes require approval again.
+
+Potential duplicates are never silently merged. **Resolve duplicate habits** offers explicit choices to merge evidence, supersede wording, keep both separate, or archive/hide one.
+
+Candidate habits should generalize reusable behavior:
+
+- good: `When preparing a package release, verify the real installed artifact before calling it complete.`
+- bad: `When working on project X version Y, run this one-off file.`
+
+## Fully managed local duplicate prevention
+
+Duplicate prevention uses one extension-managed multilingual local component. It has no hosted provider or fallback.
+
+- It is off by default.
+- Package installation downloads nothing.
+- Explicit preparation from `/experience setup` downloads approximately 149 MB, within the 300 MB managed-footprint cap.
+- No API key, account, Python, Ollama, LM Studio, port, service, provider, endpoint, dimension, or model identifier is configured by the user.
+- Assets stay under the private Agent Experience state root with 0700 directories and 0600 files.
+- Every asset is version, size, and SHA-256 checked before use.
+- A valid cache works offline.
+- Corruption, missing assets, failed download, cancellation, or incompatible runtime fails closed with no external fallback.
+- Setup can remove all managed local model files.
+- Upgrades stage and verify the new version before replacing/cleaning superseded managed versions.
+- Inference runs in a bounded worker and unloads after 30 seconds idle or explicit scan completion.
+
+The only embedding input is exactly normalized:
+
+```text
+condition\nbehavior
+```
+
+Raw examples, source references, evidence summaries, residual JSON, file paths, checksums, audit text, credentials, and tokens are excluded. Raw vectors exist only in the private SQLite cache, not duplicate relation/audit JSON.
+
+Explicit scans are capped at 100 current habits (4,950 pairs), batch local work, show progress, support cancellation, revalidate their snapshot, and commit atomically. Failure or cancellation leaves pre-scan semantic state unchanged.
+
+## Bounded observations and privacy retention
+
+Captured conversation pairs are heuristically redacted and bounded. Redaction reduces exposure; it is not a formal guarantee that every sensitive value can be recognized.
+
+Observation storage uses:
+
+- an append-only JSONL generation;
+- a checksummed tail manifest;
+- a fixed-width offset index;
+- token-owned single-writer locking.
+
+Append validates only bounded tail state rather than parsing all history. Analyze seeks directly to the next same-user contiguous unread range, with defaults of at most 200 records and 80,000 bytes. A watermark advances only in the successful reducer transaction. Compact structured habit/candidate context preserves cross-batch learning without resending committed raw observations.
+
+After a generation is fully analyzed, source text rotates through a recovery journal. Rotated redacted source text expires after:
+
+- 7 days by default (recommended/privacy-first);
+- optionally 14 or 30 days from `/experience setup`.
+
+Deletion preserves minimized evidence, provenance, checksums, and review audit. Raw source text is never retained merely to compensate for missing incremental state.
+
+## Private state
+
+Default root:
 
 ```text
 ~/.agents/experience/
 ```
 
-Important files:
+Representative contents:
 
 ```text
-agent-experience.toml     # local config
-observations.jsonl        # redacted capture stream
-ledger.sqlite             # reviewed/consolidated records, embeddings, duplicate relations, audits, and hit logs
-law.md                    # optional configured law file for habit activation/selector freshness
-habits-report.md          # report-only output, never selector input
+agent-experience.toml       # private user controls
+ledger.sqlite               # habits, evidence, review/audit, vectors, watermarks
+observations.jsonl          # current bounded redacted source generation
+observations.idx            # fixed-width end-offset index
+observations-tail.json      # checksummed current-generation authority
+archive/observations/       # journaled short-retention rotated generations
+models/local-embedding/     # optional managed local duplicate-check assets
+law.md                      # explicitly created/configured private safety law
+habits-report.md            # report-only output; never selector input
 ```
 
-Privacy and safety invariants:
+One state root represents one human across local agents/harnesses. Shared multi-human roots are outside v1 scope.
 
-- capture is off until explicitly enabled;
-- selector is off until explicitly enabled;
-- selector defaults to `instant` mode, a local lexical/no-network selector;
-- smart selector mode is opt-in and may call a configured model/provider;
-- no raw prompt/session/injected text is persisted by selector logs;
-- selector `prompt_hash` is deliberately `omitted`;
-- only active same-user habits are selector candidates;
-- disabled, dormant, candidate, pending-review, quarantine, evidence, and report rows are not selector input;
-- no automatic law-file writes are performed by the extension; the Use approved habits row in `/experience setup` may create the default private `law.md` only after an explicit user choice;
-- no automatic habit activation happens from selector use;
-- semantic duplicate prevention is off until explicitly enabled after a scan/backfill;
-- embedding cache rows are user-scoped and separated by provider, model, dimension, input-version, input checksum, and habit-row checksum; stale cache rows are ignored/replaced;
-- raw vectors are stored only in the private SQLite embedding cache, not in duplicate audit/relation JSON;
-- backup/restore is the same as the private state root/`ledger.sqlite`; opening older ledgers migrates schema forward, while future/newer ledgers fail closed for repair by a newer package.
+## SQLite safety, backup, and restore
 
-## Review flow
+Storage schema remains v6 for rollback compatibility with the corrective release.
 
-The extension is designed around human review.
+- Existing databases read `PRAGMA user_version` before WAL or any writeful operation.
+- A future schema fails closed and is not downgraded or modified.
+- Supported v5→v6 migration is transactional and idempotent.
+- Current-schema opens verify required tables/indexes rather than silently reconstructing malformed state.
 
-```text
-capture redacted pairs -> analyze saved examples now -> proposed suggestions -> human review -> active habits -> optional approved-habit reminders
-```
+Backups use Node's SQLite online backup API to create a standalone consistent `ledger.sqlite`. New backups intentionally exclude WAL/SHM, raw observation text, archives, model assets, config, and law so backup cannot bypass source-retention policy.
 
-The **Analyze saved examples now** row inside `/experience setup` can create suggestions from already saved examples using the configured Pi model. Then use **Review suggested habits** inside the same setup menu to inspect them in a focused review panel, then approve or reject them. Use **Review approved habits** to browse only actual active/disabled approved habits, inspect details, and disable or re-enable one. Normal users do not need typed review commands, IDs, or checksums.
+Restore prevalidates allowlisted artifacts, paths, symlinks, sizes, hashes, schema, and `PRAGMA integrity_check`. A checksummed restore journal provides recoverable old-or-new transitions, removes stale sidecars, and starts a fresh observation generation after a storage-v2 restore.
 
-Checksums are still used internally so stale review actions fail closed. Advanced/backcompat review commands exist for maintainers, but they are not the normal path.
+## Locks and concurrency
 
-### Candidate quality and rejection semantics
+Maintenance, observation, model-installation, Analyze, and consolidation operations use token-owned locks with PID, hostname, and creation time.
 
-Candidate habits should be generalized behavioral guidance, not narrow project labels. Durable tool/task categories are allowed when they define the repeated situation, but one-off project/package names, versions, file paths, hashes, and screenshots are not. The analyzer prompt asks the model to extract the reusable essence across repeated examples:
+- acquisition is atomic;
+- live owners block concurrent writers;
+- expired, dead-owner, and aged malformed locks can be reclaimed safely;
+- foreign-host ownership fails closed;
+- release removes only the caller's token;
+- ownership mismatch preserves the replacement lock.
 
-- good: `When preparing an npm package release, verify the real end-to-end install/update path before calling it done.`
-- bad: `When working on Agent Experience, do the 0.1.19 setup flow.`
-- good: `When the user reports UI confusion, inspect the real visible UI state before declaring the fix complete.`
-- bad: `When using the pi-experiences extension, remember screenshot b0ec...`
+Habit approval, re-enable, and promotion prepare local vectors outside the SQLite writer transaction, then use one `BEGIN IMMEDIATE` transaction to revalidate target/comparator/law state and either block or activate. Concurrent duplicate activations therefore cannot both succeed.
 
-Rejecting a candidate archives that exact candidate identity. The exact same normalized condition/behavior/polarity is preserved as rejected/archived on later merges. Rejection is not a permanent semantic ban on every related idea: a materially different or more generalized candidate can appear later if repeated evidence again passes the threshold. Repeated evidence currently means at least 3 cited examples across at least 2 different days.
+## Approved-habit reminders
+
+Reminder injection is off by default.
+
+Default `instant` mode is local lexical/no-network matching. Only active, same-user, fresh approved habits are candidates. Pending, disabled, dormant, suppressed, archived, evidence, quarantine, report, and raw observation rows are excluded.
+
+Optional advanced smart matching is separately configured and fails closed on unavailable authentication, timeout, or malformed output. Selector logs never persist raw prompts, sessions, or injected guidance; `prompt_hash` is deliberately `omitted`.
+
+Timers remain Phase 2/off. The package does not install or enable bundled timer templates.
 
 ## Configuration
 
-Example config:
+Normal configuration belongs in `/experience setup`. A minimal technical example:
 
 ```toml
 enabled = true
 capture_enabled = true
+consolidation_enabled = true
+embedding_enabled = false
 selector_enabled = false
 selector_mode = "instant"
-selector_daily_budget = 20
-selector_timeout_ms = 5000
+observation_retention_days = 7
+analyze_batch_max_records = 200
+analyze_batch_max_bytes = 80000
 law_path = "law.md"
+timer_enabled = false
+break_in_enabled = false
 ```
 
-Environment override for state root:
+Legacy hosted-embedding fields are ignored and removed on the next config write. No hosted embedding environment variables are supported.
+
+Override the private root when isolating a test:
 
 ```bash
 AX_STATE_ROOT=/path/to/private/state pi
 ```
 
-## Law file
+## Development and validation
 
-Agent Experience uses a configured law snapshot for habit activation and selector freshness. Default:
-
-```toml
-law_path = "law.md"
-```
-
-`law_path` is a private-state relative path under the state root (`~/.agents/experience/law.md` by default). Absolute paths, parent traversal, and path separators outside the private state are rejected.
-
-If the law file is missing:
-
-- habit activation commands fail closed;
-- selector injection fails closed;
-- the selector emits a bounded warning instead of silently doing nothing.
-
-The current law check is deterministic v1: it requires a configured law file for freshness hashing and blocks a small denylist of dangerous habit text patterns. It does **not** semantically compare every habit against the full law text. Future semantic contradiction checks should route to pending review, not direct injection.
-
-## Selector modes
-
-### Instant mode
-
-Default when selector is enabled.
-
-- local only;
-- no model/network call;
-- active same-user habits only;
-- confidence, freshness, staleness, overlap, and daily-budget gates;
-- bounded guidance injection.
-
-### Smart mode
-
-Opt-in.
-
-- calls the configured model/provider through Pi;
-- uses the same active/freshness/staleness/confidence/budget gates;
-- no hidden fallback;
-- model/auth/timeout/malformed output fails closed to no injection.
-
-<details>
-<summary>For agents and maintainers: technical contract, caveats, and release discipline</summary>
-
-### Package contract
-
-- `package.json` includes the `pi-package` keyword.
-- `pi.extensions` points at `./extensions`.
-- `pi.skills` points at `./skills`.
-- Pi core packages are peer dependencies, not bundled runtime code.
-- The package is TypeScript-source-first for Pi's extension loader.
-- Node engine: `>=22.18.0`.
-
-### Hard invariants
-
-- Do not persist raw prompts, raw session logs, or raw injected guidance in selector logs.
-- Keep `prompt_hash = "omitted"` unless a future design explicitly proves non-linkability.
-- Selector candidates must be active same-user habits only.
-- No injection from reports, pending review, quarantine, evidence, disabled, dormant, candidate, suppressed, or archived rows.
-- Selector remains disabled by default.
-- Default selector mode remains `instant`.
-- Smart mode must fail closed on auth/model/timeout/malformed output.
-- Missing ledger/law must fail closed.
-- Hot selector path must not initialize storage or run migrations.
-- No automatic law-file writes from the extension; setup may create default private `law.md` only after explicit user choice and must not overwrite an existing unreadable file.
-- No automatic activation from selector use.
-
-### Capture contract
-
-- Capture writes redacted conversation-pair records to `observations.jsonl`.
-- Completed pairs flush at `agent_end`, not at next input, so the last turn survives normal process exit.
-- `close_reason = "agent_end"` is expected for normal capture records.
-- `prev_pair_ref` links records so later consolidation can reason over sequence without storing reaction inside the previous pair.
-
-### Law-check caveat
-
-The current law checker is deterministic v1. It checks law freshness and a small denylist of dangerous habit text patterns. It is not full semantic contradiction detection. Future semantic checks should create pending-review items, not direct activations.
-
-### Selector caveats
-
-- Instant mode is lexical and deterministic; it is intentionally simple.
-- Smart mode may add latency and requires measured p95 before recommending always-on use.
-- No-injection paths intentionally do not write skip rows unless an injection transaction is already happening; this preserves the no durable trace invariant for failed selection paths.
-
-### Release discipline
-
-GitHub is the source of truth. npm is the stable distribution channel.
-
-For a bug fix:
-
-1. patch source in GitHub repo;
-2. add a regression test;
-3. run reviewer/debate for non-trivial safety or runtime changes;
-4. run `npm run check`;
-5. bump `package.json` version;
-6. commit and tag, for example `v0.1.25`;
-7. publish the same commit to npm;
-8. tell npm users to run `pi update --extensions`.
-
-Git installs are pinned. They do not float to newer tags.
-
-</details>
-
-## Development
-
-Run checks:
+From the package root:
 
 ```bash
 npm run check
+npm audit --omit=dev
+npm pack --dry-run
 ```
 
-This package keeps TypeScript extension source for Pi's extension loader and builds the public consolidation CLI to `dist/experience-consolidate.mjs` for npm/Git installs.
+`npm run check` covers prior behavior plus:
 
-## Release and update model
+- future-schema and v5 migration regressions;
+- online backup/journaled restore adversarial tests;
+- bounded observation append/Analyze/rotation/retention;
+- real optional local-model integration when fixture paths are supplied;
+- semantic two-connection barriers and atomic scan failure/cancellation;
+- stale lock recovery;
+- source/import bundling;
+- CLI generation drift.
 
-GitHub is the source of truth. npm is the stable distribution channel.
+The real local-model integration command used by maintainers is documented in `extensions/agent-experience/VALIDATION.md` and requires already downloaded pinned fixtures; it makes inference offline.
 
-For users who want latest stable updates:
+Before release, validate the exact `npm pack` tarball in a fresh `--ignore-scripts` installation and run an isolated real Pi TUI with a temporary `AX_STATE_ROOT`. Source-path smoke alone is insufficient.
 
-```bash
-pi install npm:pi-experiences
-pi update --extensions
-```
+## Release discipline
 
-For users who want a pinned exact source ref:
+For a release:
 
-```bash
-pi install git:github.com/misunders2d/pi-experiences@v0.1.25
-```
+1. update source, tests, docs, and generated CLI together;
+2. run complete automated and packed-installed validation;
+3. obtain independent code/privacy/constitution review for significant changes;
+4. bump version;
+5. commit and push `main`;
+6. create and push the matching immutable tag;
+7. publish npm only as a separate explicit manual action.
 
-Git package refs are pinned. `pi update --extensions` reconciles the pinned ref but does not float Git installs to a new tag.
+GitHub is the source of truth. npm publication is not performed automatically by this repository.
 
-For a bug fix:
+## Status
 
-1. update this repo;
-2. add or update regression tests;
-3. run review and `npm run check`;
-4. bump `package.json` version;
-5. commit and tag, for example `v0.1.25`;
-6. publish the same commit to npm;
-7. npm users update with `pi update --extensions`; Git-pinned users install the new tag explicitly.
-
-## Show current settings
-
-Experimental. This is a research package for separating behavioral experience from skills and memory. Treat active habit injection as something to test carefully, not as a fully solved alignment layer.
+Agent Experience is a research package. Treat approved-habit injection as a carefully reviewed personalization layer, not a solved alignment system.

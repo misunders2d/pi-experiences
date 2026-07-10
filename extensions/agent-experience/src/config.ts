@@ -4,6 +4,9 @@ export interface AgentExperienceConfig {
 	selector_enabled: boolean;
 	embedding_enabled: boolean;
 	consolidation_enabled: boolean;
+	observation_retention_days: number;
+	analyze_batch_max_records: number;
+	analyze_batch_max_bytes: number;
 	timer_enabled: boolean;
 	break_in_enabled: boolean;
 	break_in_auto_apply_min_confidence_bp: number;
@@ -15,13 +18,6 @@ export interface AgentExperienceConfig {
 	selector_min_overlap_score: number;
 	selector_max_habits: number;
 	selector_staleness_max: number;
-	embedding_provider: string;
-	embedding_model: string;
-	embedding_dimensions: number;
-	embedding_review_threshold_bp: number;
-	embedding_strong_threshold_bp: number;
-	embedding_timeout_ms: number;
-	embedding_openai_compatible_opt_in: boolean;
 	consolidation_model: string;
 	law_path: string;
 }
@@ -32,6 +28,9 @@ export const DEFAULT_AGENT_EXPERIENCE_CONFIG: AgentExperienceConfig = Object.fre
 	selector_enabled: false,
 	embedding_enabled: false,
 	consolidation_enabled: false,
+	observation_retention_days: 7,
+	analyze_batch_max_records: 200,
+	analyze_batch_max_bytes: 80000,
 	timer_enabled: false,
 	break_in_enabled: false,
 	break_in_auto_apply_min_confidence_bp: 10001,
@@ -43,13 +42,6 @@ export const DEFAULT_AGENT_EXPERIENCE_CONFIG: AgentExperienceConfig = Object.fre
 	selector_min_overlap_score: 1,
 	selector_max_habits: 3,
 	selector_staleness_max: 0.8,
-	embedding_provider: "openai-compatible",
-	embedding_model: "text-embedding-3-small",
-	embedding_dimensions: 1536,
-	embedding_review_threshold_bp: 7500,
-	embedding_strong_threshold_bp: 8500,
-	embedding_timeout_ms: 10000,
-	embedding_openai_compatible_opt_in: false,
 	consolidation_model: "openai-codex/gpt-5.5",
 	law_path: "law.md",
 });
@@ -62,7 +54,6 @@ const BOOLEAN_KEYS = new Set<keyof AgentExperienceConfig>([
 	"consolidation_enabled",
 	"timer_enabled",
 	"break_in_enabled",
-	"embedding_openai_compatible_opt_in",
 ]);
 
 const NUMBER_KEYS = new Set<keyof AgentExperienceConfig>([
@@ -73,10 +64,9 @@ const NUMBER_KEYS = new Set<keyof AgentExperienceConfig>([
 	"selector_min_overlap_score",
 	"selector_max_habits",
 	"selector_staleness_max",
-	"embedding_dimensions",
-	"embedding_review_threshold_bp",
-	"embedding_strong_threshold_bp",
-	"embedding_timeout_ms",
+	"observation_retention_days",
+	"analyze_batch_max_records",
+	"analyze_batch_max_bytes",
 ]);
 
 function parseTomlScalar(raw: string): string | number | boolean | undefined {
@@ -115,7 +105,10 @@ function normalizeConfigKey(raw: string, section: string | undefined): keyof Age
 }
 
 function applyConfigValue(config: AgentExperienceConfig, key: keyof AgentExperienceConfig, parsed: string | number | boolean | undefined): void {
-	if (BOOLEAN_KEYS.has(key) && typeof parsed === "boolean") (config as any)[key] = parsed;
+	if (key === "observation_retention_days" && typeof parsed === "number" && [7, 14, 30].includes(Math.trunc(parsed))) config.observation_retention_days = Math.trunc(parsed);
+	else if (key === "analyze_batch_max_records" && typeof parsed === "number" && Number.isFinite(parsed)) config.analyze_batch_max_records = Math.max(1, Math.min(500, Math.trunc(parsed)));
+	else if (key === "analyze_batch_max_bytes" && typeof parsed === "number" && Number.isFinite(parsed)) config.analyze_batch_max_bytes = Math.max(65537, Math.min(2000000, Math.trunc(parsed)));
+	else if (BOOLEAN_KEYS.has(key) && typeof parsed === "boolean") (config as any)[key] = parsed;
 	else if (NUMBER_KEYS.has(key) && typeof parsed === "number" && Number.isFinite(parsed)) (config as any)[key] = parsed;
 	else if (key === "selector_mode" && (parsed === "instant" || parsed === "smart")) (config as any)[key] = parsed;
 	else if (!BOOLEAN_KEYS.has(key) && !NUMBER_KEYS.has(key) && key !== "selector_mode" && typeof parsed === "string") (config as any)[key] = parsed;
@@ -172,14 +165,10 @@ export function formatAgentExperienceConfig(config: AgentExperienceConfig): stri
 		`selector_min_overlap_score = ${Math.trunc(merged.selector_min_overlap_score)}`,
 		`selector_max_habits = ${Math.trunc(merged.selector_max_habits)}`,
 		`selector_staleness_max = ${merged.selector_staleness_max}`,
-		`embedding_provider = ${quote(merged.embedding_provider)}`,
-		`embedding_model = ${quote(merged.embedding_model)}`,
-		`embedding_dimensions = ${merged.embedding_dimensions}`,
-		`embedding_review_threshold_bp = ${Math.trunc(merged.embedding_review_threshold_bp)}`,
-		`embedding_strong_threshold_bp = ${Math.trunc(merged.embedding_strong_threshold_bp)}`,
-		`embedding_timeout_ms = ${Math.trunc(merged.embedding_timeout_ms)}`,
-		`embedding_openai_compatible_opt_in = ${merged.embedding_openai_compatible_opt_in}`,
 		`consolidation_model = ${quote(merged.consolidation_model)}`,
+		`observation_retention_days = ${[7, 14, 30].includes(Math.trunc(merged.observation_retention_days)) ? Math.trunc(merged.observation_retention_days) : 7}`,
+		`analyze_batch_max_records = ${Math.max(1, Math.min(500, Math.trunc(merged.analyze_batch_max_records)))}`,
+		`analyze_batch_max_bytes = ${Math.max(65537, Math.min(2000000, Math.trunc(merged.analyze_batch_max_bytes)))}`,
 		`law_path = ${quote(merged.law_path)}`,
 		"",
 	].join("\n");
@@ -192,8 +181,9 @@ export function summarizeAgentExperienceConfig(config: AgentExperienceConfig, co
 		`capture=${config.capture_enabled}`,
 		`selector=${config.selector_enabled} mode=${config.selector_mode} timeout_ms=${config.selector_timeout_ms} daily_budget=${config.selector_daily_budget} min_confidence_bp=${config.selector_min_confidence_bp} min_overlap_score=${config.selector_min_overlap_score} max_habits=${config.selector_max_habits}`,
 		config.selector_mode === "instant" ? "selector mode instant: local lexical/no-network selection" : `selector mode smart: may call configured model/provider ${config.selector_model}`,
-		`embedding=${config.embedding_enabled} provider=${config.embedding_provider} model=${config.embedding_model} dimensions=${config.embedding_dimensions} review_threshold_bp=${config.embedding_review_threshold_bp} strong_threshold_bp=${config.embedding_strong_threshold_bp} opt_in=${config.embedding_openai_compatible_opt_in}`,
-		`consolidation=${config.consolidation_enabled}`,
+		`duplicate_prevention=${config.embedding_enabled ? "enabled_local" : "disabled"}`,
+		`consolidation=${config.consolidation_enabled} analyze_batch_max_records=${config.analyze_batch_max_records} analyze_batch_max_bytes=${config.analyze_batch_max_bytes}`,
+		`observation_retention_days=${config.observation_retention_days}`,
 		`law_path=${config.law_path} (relative paths resolve under state root)`,
 		`timer=${config.timer_enabled}`,
 		`break_in=${config.break_in_enabled} auto_apply_min_confidence_bp=${config.break_in_auto_apply_min_confidence_bp}`,

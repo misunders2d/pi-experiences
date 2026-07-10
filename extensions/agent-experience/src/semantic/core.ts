@@ -1,4 +1,5 @@
 import { sha256Hex } from "../storage/checksum.ts";
+import { LOCAL_EMBEDDING_DIMENSIONS, LOCAL_EMBEDDING_MODEL, LOCAL_EMBEDDING_PROVIDER, LOCAL_EMBEDDING_REVIEW_THRESHOLD_BP, LOCAL_EMBEDDING_STRONG_THRESHOLD_BP, LOCAL_EMBEDDING_TIMEOUT_MS } from "./local-model-manifest.ts";
 import type { SemanticDedupePolicy } from "./types.ts";
 
 export const SEMANTIC_EMBEDDING_INPUT_VERSION = "habit_embedding_input_v1";
@@ -89,13 +90,12 @@ export function chooseCanonicalHabit<T extends { id: string; created_at?: string
 export function defaultSemanticPolicy(overrides: Partial<SemanticDedupePolicy> = {}): SemanticDedupePolicy {
 	return {
 		enabled: false,
-		provider: "openai-compatible",
-		model: "text-embedding-3-small",
-		dimensions: 1536,
-		reviewThresholdBp: 7500,
-		strongThresholdBp: 8500,
-		timeoutMs: 10000,
-		openAiCompatibleOptIn: false,
+		provider: LOCAL_EMBEDDING_PROVIDER,
+		model: LOCAL_EMBEDDING_MODEL,
+		dimensions: LOCAL_EMBEDDING_DIMENSIONS,
+		reviewThresholdBp: LOCAL_EMBEDDING_REVIEW_THRESHOLD_BP,
+		strongThresholdBp: LOCAL_EMBEDDING_STRONG_THRESHOLD_BP,
+		timeoutMs: LOCAL_EMBEDDING_TIMEOUT_MS,
 		...overrides,
 	};
 }

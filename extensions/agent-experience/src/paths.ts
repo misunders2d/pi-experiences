@@ -172,6 +172,15 @@ export async function setAgentExperienceConsolidationModel(model: string, paths 
 	return { config, path: paths.configPath };
 }
 
+export async function setAgentExperienceObservationRetentionDays(days: number, paths = getAgentExperiencePaths()): Promise<{ config: AgentExperienceConfig; path: string }> {
+	const normalized = Math.trunc(days);
+	if (![7, 14, 30].includes(normalized)) throw new Error("Saved-example retention must be 7, 14, or 30 days");
+	const current = await readAgentExperienceConfig(paths);
+	const config = { ...DEFAULT_AGENT_EXPERIENCE_CONFIG, ...current.config, observation_retention_days: normalized };
+	await writeAgentExperienceConfig(config, paths);
+	return { config, path: paths.configPath };
+}
+
 export async function setAgentExperienceTimerEnabled(timerEnabled: boolean, paths = getAgentExperiencePaths()): Promise<{ config: AgentExperienceConfig; path: string }> {
 	const current = await readAgentExperienceConfig(paths);
 	const config = {
@@ -196,38 +205,12 @@ export async function setAgentExperienceSelectorEnabled(selectorEnabled: boolean
 	return { config, path: paths.configPath };
 }
 
-export async function setAgentExperienceEmbeddingOptIn(optIn: boolean, paths = getAgentExperiencePaths()): Promise<{ config: AgentExperienceConfig; path: string }> {
-	const current = await readAgentExperienceConfig(paths);
-	const config = {
-		...DEFAULT_AGENT_EXPERIENCE_CONFIG,
-		...current.config,
-		embedding_openai_compatible_opt_in: optIn,
-		...(optIn ? {} : { embedding_enabled: false }),
-	};
-	await writeAgentExperienceConfig(config, paths);
-	return { config, path: paths.configPath };
-}
-
 export async function setAgentExperienceEmbeddingEnabledAfterScan(enabled: boolean, paths = getAgentExperiencePaths()): Promise<{ config: AgentExperienceConfig; path: string }> {
 	const current = await readAgentExperienceConfig(paths);
 	const config = {
 		...DEFAULT_AGENT_EXPERIENCE_CONFIG,
 		...current.config,
 		embedding_enabled: enabled,
-	};
-	await writeAgentExperienceConfig(config, paths);
-	return { config, path: paths.configPath };
-}
-
-export async function setAgentExperienceEmbeddingThresholdsAfterScan(input: { reviewThresholdBp: number; strongThresholdBp: number }, paths = getAgentExperiencePaths()): Promise<{ config: AgentExperienceConfig; path: string }> {
-	const current = await readAgentExperienceConfig(paths);
-	const review = Math.max(0, Math.min(10000, Math.trunc(input.reviewThresholdBp)));
-	const strong = Math.max(review, Math.min(10000, Math.trunc(input.strongThresholdBp)));
-	const config = {
-		...DEFAULT_AGENT_EXPERIENCE_CONFIG,
-		...current.config,
-		embedding_review_threshold_bp: review,
-		embedding_strong_threshold_bp: strong,
 	};
 	await writeAgentExperienceConfig(config, paths);
 	return { config, path: paths.configPath };

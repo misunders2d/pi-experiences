@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
-import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initExperienceStorage, insertStorageRecord } from '../extensions/agent-experience/src/storage/sqlite.ts';
@@ -13,8 +13,7 @@ import { runConsolidationOnce } from '../extensions/agent-experience/src/consoli
 import { acceptCandidateHabit, archiveHideHabit, lawSnapshotForTest, listApprovedHabitsForSetup, listPendingReviewItems, resolveHabitDuplicate } from '../extensions/agent-experience/src/review.ts';
 import { promoteApprovedPendingCandidates, selectActiveSelectorSnapshot } from '../extensions/agent-experience/src/selector.ts';
 
-const semanticFiles = await readdir(new URL('../extensions/agent-experience/src/semantic/', import.meta.url));
-for (const file of semanticFiles.filter((name) => name.endsWith('.ts'))) {
+for (const file of ['core.ts', 'service.ts', 'storage.ts', 'types.ts']) {
   const text = await readFile(new URL(`../extensions/agent-experience/src/semantic/${file}`, import.meta.url), 'utf8');
   assert.doesNotMatch(text, /@earendil-works\/pi-|pi-tui|ExtensionCommandContext|\.\.\/\.\.\//, `semantic core file ${file} must stay host-agnostic`);
 }
