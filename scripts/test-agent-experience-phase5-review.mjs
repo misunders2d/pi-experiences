@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import agentExperienceExtension from '../extensions/agent-experience/index.ts';
+import agentExperienceExtension, { __formatApprovedHabitListLabelForTest } from '../extensions/agent-experience/index.ts';
 import { ensurePrivateRoot } from '../extensions/agent-experience/src/storage/private-root.ts';
 import { initExperienceStorage, insertStorageRecord, selectStorageRecordsByUser } from '../extensions/agent-experience/src/storage/sqlite.ts';
 import { insertPendingReview } from '../extensions/agent-experience/src/consolidate/model-output.ts';
@@ -74,6 +74,11 @@ try {
 
   const { commands } = makePi();
   assert.deepEqual([...commands.keys()], ['experience']);
+  assert.equal(__formatApprovedHabitListLabelForTest({ status: 'active', condition: 'When giving status', behavior: 'Do use concise summaries' }), 'Habit #1 [active] When giving status → Do use concise summaries');
+  assert.equal(__formatApprovedHabitListLabelForTest({ status: 'active', condition: 'When: debugging', behavior: 'Ask before destructive changes' }, 1), 'Habit #2 [active] When: debugging → Do Ask before destructive changes');
+  assert.equal(__formatApprovedHabitListLabelForTest({ status: 'active', condition: 'Whenever reviewing a release', behavior: 'Do: verify immutable artifacts' }, 2), 'Habit #3 [active] Whenever reviewing a release → Do: verify immutable artifacts');
+  assert.equal(__formatApprovedHabitListLabelForTest({ status: 'disabled', condition: 'answering status questions', behavior: 'use concise summaries' }, 3), 'Habit #4 [disabled] When answering status questions → Do use concise summaries');
+  assert.equal(__formatApprovedHabitListLabelForTest({ status: 'active', condition: 'Whenish text', behavior: 'Doing work' }, 4), 'Habit #5 [active] When Whenish text → Do Doing work');
   const notes = [];
   await commands.get('experience').handler('help', { cwd: process.cwd(), ui: { notify(message, level) { notes.push({ message, level }); } } });
   assert.match(notes.at(-1).message, /experience setup/);

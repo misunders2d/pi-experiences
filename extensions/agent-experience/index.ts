@@ -1453,11 +1453,21 @@ function approvedHabitSearchMatches(habits: any[], query: string): any[] {
 	return [...direct, ...fuzzy].slice(0, 50);
 }
 
+function withHabitLead(text: string, lead: "When" | "Do"): string {
+	const clean = text.trimStart();
+	const alreadyPrefixed = lead === "When" ? /^when(?:ever)?(?=\s|:|$)/i : /^do(?=\s|:|$)/i;
+	return alreadyPrefixed.test(clean) ? clean : `${lead} ${clean}`;
+}
+
 function approvedHabitListLabel(habit: any, index: number): string {
 	const status = habit?.status === "disabled" ? "disabled" : "active";
 	const condition = redactText(String(habit?.condition || "Whenever this habit applies")).slice(0, 80);
 	const behavior = redactText(String(habit?.behavior || "Apply the approved behavior")).slice(0, 90);
-	return `Habit #${index + 1} [${status}] When ${condition} → Do ${behavior}`;
+	return `Habit #${index + 1} [${status}] ${withHabitLead(condition, "When")} → ${withHabitLead(behavior, "Do")}`;
+}
+
+export function __formatApprovedHabitListLabelForTest(habit: any, index = 0): string {
+	return approvedHabitListLabel(habit, index);
 }
 
 function approvedHabitTitle(habit: any, index: number): string {

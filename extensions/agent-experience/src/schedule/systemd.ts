@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { constants } from "node:fs";
 import { chmod, lstat, mkdir, open, readFile, realpath, rename, rm } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import type { AgentExperiencePaths } from "../paths.ts";
@@ -49,6 +49,17 @@ function unitQuote(value: string): string {
 	return `"${escaped}"`;
 }
 
+function systemdConditionPath(value: string): string {
+	if (!isAbsolute(value) || /[\u0000-\u001f\u007f"\\]/.test(value) || value.trimEnd() !== value) {
+		throw new Error("scheduled_unit_invalid_path");
+	}
+	return value.replace(/%/g, "%%");
+}
+
+export function __encodeSystemdConditionPathForTest(value: string): string {
+	return systemdConditionPath(value);
+}
+
 function defaultCliPath(): string {
 	return fileURLToPath(new URL("../../../../dist/experience-consolidate.mjs", import.meta.url));
 }
@@ -62,7 +73,7 @@ export function renderScheduledAnalyzeUnits(context: ScheduledAnalyzeUnitContext
 		"[Unit]",
 		"Description=Pi Experiences Agent Experience daily scheduled Analyze",
 		"Documentation=https://github.com/misunders2d/pi-experiences#readme",
-		`ConditionPathExists=${unitQuote(context.paths.configPath)}`,
+		`ConditionPathExists=${systemdConditionPath(context.paths.configPath)}`,
 		"",
 		"[Service]",
 		"Type=oneshot",

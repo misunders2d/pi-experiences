@@ -147,7 +147,14 @@ try {
 
   const { commands } = makePi();
   const notes = [];
-  await commands.get('experience').handler('status', { cwd: process.cwd(), ui: { notify(message) { notes.push(message); } } });
+  const previousHome = process.env.HOME;
+  process.env.HOME = join(temp, 'isolated-home');
+  try {
+    await commands.get('experience').handler('status', { cwd: process.cwd(), ui: { notify(message) { notes.push(message); } } });
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+  }
   assert.match(notes.at(-1), /Experience: OFF/);
   assert.match(notes.at(-1), /Analyze saved examples now: available when you choose it in setup/);
   assert.match(notes.at(-1), /Automatic schedule: OFF/);

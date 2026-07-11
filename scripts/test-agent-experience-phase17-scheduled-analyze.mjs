@@ -1,18 +1,21 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { delimiter, join, resolve } from 'node:path';
+import { promisify } from 'node:util';
 import agentExperienceExtension from '../extensions/agent-experience/index.ts';
 import { DEFAULT_AGENT_EXPERIENCE_CONFIG } from '../extensions/agent-experience/src/config.ts';
 import { setAgentExperienceConsolidationModel, setAgentExperienceTimerEnabled } from '../extensions/agent-experience/src/paths.ts';
 import { consumeScheduledAnalyzeReceipts, readScheduledAnalyzeReceipts, SCHEDULED_ANALYZE_RECEIPT_LIMIT, writeScheduledAnalyzeReceipt } from '../extensions/agent-experience/src/schedule/receipts.ts';
 import { runScheduledAnalyzeCore } from '../extensions/agent-experience/src/schedule/runner.ts';
-import { installScheduledAnalyzeSystemd, renderScheduledAnalyzeUnits, SCHEDULED_ANALYZE_ON_CALENDAR, SCHEDULED_ANALYZE_SERVICE, SCHEDULED_ANALYZE_TIMER } from '../extensions/agent-experience/src/schedule/systemd.ts';
+import { __encodeSystemdConditionPathForTest, installScheduledAnalyzeSystemd, renderScheduledAnalyzeUnits, SCHEDULED_ANALYZE_ON_CALENDAR, SCHEDULED_ANALYZE_SERVICE, SCHEDULED_ANALYZE_TIMER } from '../extensions/agent-experience/src/schedule/systemd.ts';
 import { acquireOwnedLock } from '../extensions/agent-experience/src/storage/locks.ts';
 import { appendObservation } from '../extensions/agent-experience/src/storage/observations.ts';
 
+const execFileAsync = promisify(execFile);
 const temp = await mkdtemp(join(tmpdir(), 'pi-experiences-phase17-'));
 try {
   const stateRoot = join(temp, 'state');
@@ -24,10 +27,34 @@ try {
   assert.match(rendered.timer, /Persistent=true/);
   assert.doesNotMatch(rendered.timer, /RandomizedDelaySec/);
   assert.match(rendered.timer, new RegExp(`Unit=${SCHEDULED_ANALYZE_SERVICE}`));
-  assert.match(rendered.service, new RegExp(`ConditionPathExists="${paths.configPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`));
+  assert.equal(__encodeSystemdConditionPathForTest('/tmp/a b%$c'), '/tmp/a b%%$c');
+  for (const invalid of ['relative/path', '/tmp/trailing ', '/tmp/new\nline', '/tmp/carriage\rreturn', '/tmp/nul\0byte', '/tmp/back\\slash', '/tmp/double"quote']) {
+    assert.throws(() => __encodeSystemdConditionPathForTest(invalid), /scheduled_unit_invalid_path/);
+  }
+  assert.match(rendered.service, new RegExp(`ConditionPathExists=${paths.configPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+  assert.doesNotMatch(rendered.service, /ConditionPathExists=["']/);
   assert.match(rendered.service, / scheduled --root /);
   assert.match(rendered.service, /SyslogIdentifier=pi-experiences-analyze/);
   assert.doesNotMatch(rendered.service, /\/usr\/bin\/env|exit 1/);
+
+  if (process.platform === 'linux') {
+    const verifyDir = join(temp, 'verify-units');
+    await mkdir(verifyDir, { recursive: true });
+    const servicePath = join(verifyDir, SCHEDULED_ANALYZE_SERVICE);
+    const timerPath = join(verifyDir, SCHEDULED_ANALYZE_TIMER);
+    await writeFile(servicePath, rendered.service);
+    await writeFile(timerPath, rendered.timer);
+    try {
+      const verified = await execFileAsync('systemd-analyze', ['--user', 'verify', servicePath, timerPath], {
+        env: { ...process.env, SYSTEMD_UNIT_PATH: [verifyDir, '/usr/local/lib/systemd/user', '/usr/lib/systemd/user'].join(delimiter) },
+        timeout: 10_000,
+        maxBuffer: 64 * 1024,
+      });
+      assert.doesNotMatch(`${verified.stdout || ''}\n${verified.stderr || ''}`, /path is not absolute|ignoring:/i);
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
+  }
 
   const unitDir = join(temp, 'units');
   await mkdir(join(temp, 'pi-agent'), { recursive: true });
