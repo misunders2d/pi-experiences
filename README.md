@@ -115,6 +115,21 @@ You can work naturally in chat—“Do you see this pattern?”, “Draft it as 
 
 The panel remains sufficient for every setting and review action. Conversational review uses numbered plain-language items. Normal users never need IDs, checksums, thresholds, endpoints, model servers, or advanced subcommands.
 
+## Natural-language setup and habit management
+
+You can set up and manage Pi Experiences by talking to Pi in ordinary language. Ask Pi to explain the setup choices, draft a habit, show habits that need review, approve or reject a numbered suggestion, resolve a possible duplicate, or disable, re-enable, or remove an approved habit. Pi keeps internal identifiers hidden, asks for clarification or confirmation when the intended action matters, and preserves the same safety, stale-state, and audit checks used by the control panel.
+
+Examples:
+
+- “Help me set up Experience.”
+- “Turn this pattern into a habit.”
+- “Show me the habits waiting for review.”
+- “Disable the habit about release status.”
+- “Remove the cobalt habit.”
+- “Turn approved-habit reminders off.”
+
+If a conversational action is unavailable or ambiguous, Pi should open or direct you to `/experience setup` instead of guessing. The setup panel remains the complete fallback for every setting and management action.
+
 ## Install
 
 Stable npm installation:
