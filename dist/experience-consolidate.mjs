@@ -78,7 +78,6 @@ var init_config = __esm({
       selector_mode: "instant",
       selector_model: "openai-codex/gpt-5.4-mini",
       selector_timeout_ms: 5e3,
-      selector_daily_budget: 20,
       selector_min_confidence_bp: 7500,
       selector_min_overlap_score: 1,
       selector_max_habits: 3,
@@ -98,7 +97,6 @@ var init_config = __esm({
     NUMBER_KEYS = /* @__PURE__ */ new Set([
       "break_in_auto_apply_min_confidence_bp",
       "selector_timeout_ms",
-      "selector_daily_budget",
       "selector_min_confidence_bp",
       "selector_min_overlap_score",
       "selector_max_habits",
@@ -111,7 +109,6 @@ var init_config = __esm({
       "selector.mode": "selector_mode",
       "selector.model": "selector_model",
       "selector.timeout_ms": "selector_timeout_ms",
-      "selector.daily_budget": "selector_daily_budget",
       "selector.min_confidence_bp": "selector_min_confidence_bp",
       "selector.min_overlap_score": "selector_min_overlap_score",
       "selector.max_habits": "selector_max_habits",

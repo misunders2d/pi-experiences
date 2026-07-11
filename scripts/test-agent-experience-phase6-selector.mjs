@@ -11,7 +11,6 @@ import { generateHabitsReport, lawSnapshotForTest, readConfiguredLawSnapshot } f
 import {
   buildInjectionMessage,
   buildSelectorPrompt,
-  countDailySelectorInjections,
   insertSelectorHitLog,
   isValidSelectorHitLog,
   lexicalOverlapScore,
@@ -166,7 +165,7 @@ try {
   assert.doesNotMatch(injectedText, /confidence_bp/);
   assert.doesNotMatch(injectedText, /pending row|quarantine|habits-report|other user/);
 
-  const config = { ...DEFAULT_AGENT_EXPERIENCE_CONFIG, enabled: true, selector_enabled: true, selector_daily_budget: 1, selector_min_confidence_bp: 7500, selector_max_habits: 3, selector_staleness_max: 0.8 };
+  const config = { ...DEFAULT_AGENT_EXPERIENCE_CONFIG, enabled: true, selector_enabled: true, selector_min_confidence_bp: 7500, selector_max_habits: 3, selector_staleness_max: 0.8 };
   let adapterCalls = 0;
   const adapter = { async select() { adapterCalls += 1; return { schema_version: 1, selected: [{ id: 'active-1', confidence_bp: 9000 }] }; } };
   const selected = await runSelectorRuntime(storage.db, { userId: 'owner', prompt: 'status summary please', config, law, now: '2026-07-08T01:00:00.000Z', adapter });
@@ -174,18 +173,22 @@ try {
   assert.equal(selected.mode, 'instant');
   assert.equal(selected.model, 'lexical');
   assert.equal(adapterCalls, 0, 'instant mode must make zero model/network calls');
-  assert.equal(countDailySelectorInjections(storage.db, { userId: 'owner', now: '2026-07-08T01:00:01.000Z' }), 1);
+  assert.equal(storage.db.prepare("SELECT COUNT(*) AS count FROM selector_hit_log WHERE user_id = ? AND action = 'inject' AND selected = 1").get('owner').count, 1);
   assert.ok(storage.db.prepare("SELECT COUNT(*) AS count FROM selector_hit_log WHERE user_id = ? AND action = 'skip' AND reason = 'not_selected'").get('owner').count >= 1, 'successful injection transaction should log bounded not-selected habit provenance');
   const second = await runSelectorRuntime(storage.db, { userId: 'owner', prompt: 'status again', config, law, now: '2026-07-08T01:01:00.000Z', adapter });
-  assert.equal(second.injected, false);
-  assert.equal(second.reason, 'daily_budget_exceeded');
-  assert.equal(adapterCalls, 0, 'budget must be checked before selection/model call');
+  assert.equal(second.injected, true, 'every genuinely matching message may receive guidance without a daily quota');
+  for (let index = 0; index < 25; index += 1) {
+    const repeated = await runSelectorRuntime(storage.db, { userId: 'owner', prompt: 'status again', config, law, now: `2026-07-08T02:${String(index).padStart(2, '0')}:00.000Z`, adapter });
+    assert.equal(repeated.injected, true, `instant guidance must remain available beyond the former daily cap (${index + 1}/25)`);
+  }
+  assert.equal(storage.db.prepare("SELECT COUNT(*) AS count FROM selector_hit_log WHERE user_id = ? AND action = 'inject' AND selected = 1").get('owner').count, 27);
+  assert.equal(adapterCalls, 0, 'repeated instant selections must remain local');
   const corrupt = storage.db.prepare("SELECT * FROM selector_hit_log WHERE action = 'inject' LIMIT 1").get();
   assert.equal(isValidSelectorHitLog(corrupt), true);
   storage.db.prepare("UPDATE selector_hit_log SET checksum = ? WHERE id = ?").run('c'.repeat(64), corrupt.id);
-  assert.equal(countDailySelectorInjections(storage.db, { userId: 'owner', now: '2026-07-08T01:02:00.000Z' }), 0, 'corrupt hit-log checksum ignored for budget');
+  assert.equal(isValidSelectorHitLog(storage.db.prepare("SELECT * FROM selector_hit_log WHERE id = ?").get(corrupt.id)), false, 'hit-log integrity remains independently verifiable without quota semantics');
 
-  const smartConfig = { ...config, selector_mode: 'smart', selector_daily_budget: 10 };
+  const smartConfig = { ...config, selector_mode: 'smart' };
   const invalid = await runSelectorRuntime(storage.db, { userId: 'owner', prompt: 'debug tests', config: smartConfig, law, now: '2026-07-08T01:03:00.000Z', adapter: { async select() { return { schema_version: 1, selected: [{ id: 'missing', confidence_bp: 9000 }] }; } } });
   assert.equal(invalid.injected, false);
   assert.equal(invalid.reason, 'invalid_selector_output');
@@ -195,7 +198,7 @@ try {
   const timeout = await runSelectorRuntime(storage.db, { userId: 'owner', prompt: 'debug tests', config: { ...smartConfig, selector_timeout_ms: 1 }, law, now: '2026-07-08T01:05:00.000Z', adapter: { async select() { await new Promise((resolve) => setTimeout(resolve, 20)); return { schema_version: 1, selected: [] }; } } });
   assert.equal(timeout.injected, false);
   assert.match(timeout.reason, /timeout/);
-  const staleLaw = await runSelectorRuntime(storage.db, { userId: 'owner', prompt: 'status', config: { ...config, selector_daily_budget: 10 }, law: lawSnapshotForTest('changed law'), now: '2026-07-08T01:06:00.000Z', adapter });
+  const staleLaw = await runSelectorRuntime(storage.db, { userId: 'owner', prompt: 'status', config, law: lawSnapshotForTest('changed law'), now: '2026-07-08T01:06:00.000Z', adapter });
   assert.equal(staleLaw.injected, false);
   assert.equal(staleLaw.reason, 'no_fresh_active_candidates');
 

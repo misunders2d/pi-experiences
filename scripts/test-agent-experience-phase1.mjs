@@ -5,6 +5,7 @@ import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import agentExperienceExtension from '../extensions/agent-experience/index.ts';
+import { formatAgentExperienceConfig, parseAgentExperienceConfig } from '../extensions/agent-experience/src/config.ts';
 import { getAgentExperiencePaths, readAgentExperienceConfig, setAgentExperienceSelectorEnabled } from '../extensions/agent-experience/src/paths.ts';
 
 const root = await mkdtemp(join(tmpdir(), 'agent-experience-phase1-'));
@@ -182,7 +183,7 @@ assert.equal(readResult.config.embedding_enabled, false, 'setup/on must not enab
 assert.equal(readResult.config.consolidation_enabled, false, 'setup/on must not enable consolidation/timer trap');
 assert.equal(readResult.config.timer_enabled, false, 'setup/on must not enable timers');
 assert.equal(readResult.config.selector_timeout_ms, 5000, 'selector timeout must default to the package smart-mode ceiling');
-assert.equal(readResult.config.selector_daily_budget, 20, 'package selector daily budget must default to a practical low cap; live installs may override higher');
+assert.equal('selector_daily_budget' in readResult.config, false, 'selector guidance must have no daily quota');
 assert.equal(readResult.config.law_path, 'law.md', 'law path must default to state-root law.md, not cwd docs');
 assert.equal(readResult.config.selector_min_confidence_bp, 7500, 'selector min confidence must default to 7500bp');
 assert.equal(readResult.config.selector_max_habits, 3, 'selector max injected habits must default to 3');
@@ -194,6 +195,10 @@ const afterEnableEntries = await readdir(paths.root);
 assert.deepEqual(afterEnableEntries.sort(), ['agent-experience.toml'], 'setup should create only intended config file');
 const configText = await readFile(paths.configPath, 'utf8');
 assert.match(configText, /law_path = "law\.md"/, 'config must persist law path');
+assert.doesNotMatch(configText, /selector_daily_budget|daily_budget/, 'new config must not emit a selector quota');
+const legacyConfig = parseAgentExperienceConfig(`${configText}\nselector_daily_budget = 1\n[selector]\ndaily_budget = 2\n`);
+assert.equal('selector_daily_budget' in legacyConfig, false, 'legacy daily-budget keys must be accepted and ignored');
+assert.doesNotMatch(formatAgentExperienceConfig(legacyConfig), /selector_daily_budget|daily_budget/, 'rewriting a legacy config must remove obsolete quota keys');
 assert.doesNotMatch(configText, /TOKEN|SECRET|PRIVATE_KEY|BEGIN PRIVATE KEY/i, 'config must not contain secret-like fixture text');
 
 setupChoices = ['Analyze saved examples now', undefined];

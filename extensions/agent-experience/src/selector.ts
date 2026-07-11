@@ -79,13 +79,6 @@ function overlapScore(prompt: string, candidate: SelectorCandidate): number {
 	return overlap * 1000 + confidence * 100 + activation * 10 - stalenessPenalty * 100;
 }
 
-function dayBounds(iso: string): { start: string; end: string } {
-	const day = new Date(iso).toISOString().slice(0, 10);
-	const start = `${day}T00:00:00.000Z`;
-	const end = new Date(Date.parse(start) + 24 * 60 * 60 * 1000).toISOString();
-	return { start, end };
-}
-
 function promptHash(_prompt: string): string {
 	// Do not persist hashes or derivatives of prompt text: even deterministic hashes of
 	// redacted prompts are linkable/dictionary-checkable user-content derivatives.
@@ -121,13 +114,6 @@ export function insertSelectorHitLog(db: any, input: { userId: string; habitId?:
 	db.prepare("INSERT INTO selector_hit_log (id, user_id, habit_id, action, selected, reason, confidence_bp, latency_ms, prompt_hash, data_json, checksum, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
 		.run(id, row.user_id, row.habit_id, row.action, row.selected, row.reason, row.confidence_bp, row.latency_ms, row.prompt_hash, row.data_json, checksum, row.created_at);
 	return { id, checksum, ...row };
-}
-
-export function countDailySelectorInjections(db: any, input: { userId: string; now: string }): number {
-	const userId = normalizeUserId(input.userId);
-	const { start, end } = dayBounds(input.now);
-	const rows = db.prepare("SELECT * FROM selector_hit_log WHERE user_id = ? AND action = 'inject' AND selected = 1 AND created_at >= ? AND created_at < ? ORDER BY created_at, id").all(userId, start, end);
-	return rows.filter(isValidSelectorHitLog).length;
 }
 
 export function selectActiveSelectorSnapshot(db: any, input: { userId: string }): SelectorCandidate[] {
@@ -240,8 +226,6 @@ export async function runSelectorRuntime(db: any, input: { userId: string; promp
 	const now = input.now;
 	const hash = promptHash(input.prompt);
 	if (!config.enabled || !config.selector_enabled) return noInjection("selector_disabled");
-	const dailyBudget = Math.max(0, Math.trunc(config.selector_daily_budget));
-	if (countDailySelectorInjections(db, { userId, now }) >= dailyBudget) return noInjection("daily_budget_exceeded");
 	const allActive = selectActiveSelectorSnapshot(db, { userId });
 	const lawFresh = allActive.filter((candidate) => candidate.law_hash === input.law.hash);
 	const candidates = preNarrowSelectorCandidates(lawFresh, { prompt: input.prompt, limit: 20, minConfidenceBp: config.selector_min_confidence_bp, stalenessMax: config.selector_staleness_max });

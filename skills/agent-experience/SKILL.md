@@ -161,7 +161,7 @@ Minimized evidence, provenance, integrity checks, and review audit remain. Redac
 
 ## Approved-habit reminders and steering provenance
 
-Reminders are off by default. Default instant mode uses local lexical/no-network matching against meaningful condition tokens only, never behavior text or common stopwords. It selects only the strongest overlap tier; several genuinely tied habits may apply. Only active same-user approved habits can be selected.
+Reminders are off by default. There is no daily quota: every genuinely matching eligible message may receive approved habit guidance. Never invent or recommend an arbitrary per-day guidance cap. Default instant mode uses local lexical/no-network matching against meaningful condition tokens only, never behavior text or common stopwords. It selects only the strongest overlap tier; several genuinely tied habits may apply. Only active same-user approved habits can be selected.
 
 Never show a generic “habits active” state and never steer invisibly. For every actual TUI injection, Pi must place response-specific provenance after the triggering user message and immediately before that response. Each collapsed line identifies one exact selected condition:
 
@@ -173,7 +173,7 @@ Expanded rendering shows every exact approved `When:` / `Do:` pair selected for 
 
 Only after marker append succeeds may a separate non-persisted guidance message enter that response's model context. Reuse it across the same tool loop without another marker; never let a new user message inherit prior steering. If the interface is not the Pi TUI, or marker registration/build/append fails, suppress habit guidance and emit only the static sanitized diagnostic. Never fall back to hidden steering or `sendMessage`.
 
-Never inject from suggestions, disabled/dormant/suppressed/archived habits, evidence, quarantine, reports, or raw observations. Selector hit logs do not persist raw prompt/session/injected text; `prompt_hash` remains `omitted`; the separate provenance marker stores approved wording only.
+Never inject from suggestions, disabled/dormant/suppressed/archived habits, evidence, quarantine, reports, or raw observations. Selector hit logs support audit/provenance, not quotas. They do not persist raw prompt/session/injected text; `prompt_hash` remains `omitted`; the separate provenance marker stores approved wording only.
 
 Optional advanced matching is separately controlled and must fail closed.
 

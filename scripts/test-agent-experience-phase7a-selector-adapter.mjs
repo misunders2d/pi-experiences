@@ -8,7 +8,7 @@ import agentExperienceExtension, { __setAgentExperienceSelectorAdapterForTest } 
 import { DEFAULT_AGENT_EXPERIENCE_CONFIG } from '../extensions/agent-experience/src/config.ts';
 import { createPiSelectorModelAdapter, DEFAULT_SELECTOR_MODEL } from '../extensions/agent-experience/src/selector-model.ts';
 import { lawSnapshotForTest, readConfiguredLawSnapshot } from '../extensions/agent-experience/src/review.ts';
-import { countDailySelectorInjections, runSelectorRuntime, selectActiveSelectorSnapshot } from '../extensions/agent-experience/src/selector.ts';
+import { runSelectorRuntime, selectActiveSelectorSnapshot } from '../extensions/agent-experience/src/selector.ts';
 import { getAgentExperiencePaths, readAgentExperienceConfig } from '../extensions/agent-experience/src/paths.ts';
 import { ensurePrivateRoot } from '../extensions/agent-experience/src/storage/private-root.ts';
 import { initExperienceStorage, insertStorageRecord } from '../extensions/agent-experience/src/storage/sqlite.ts';
@@ -114,7 +114,7 @@ const storage = await initExperienceStorage(root, { allowInit: true, userId: 'ow
 try {
   const law = lawSnapshotForTest('phase7a law');
   insertStorageRecord(storage.db, 'habits', { id: 'active-1', userId: 'owner', data: habitData({ law_hash: law.hash }), now: '2026-07-08T00:00:00.000Z' });
-  const config = { ...DEFAULT_AGENT_EXPERIENCE_CONFIG, enabled: true, selector_enabled: true, selector_mode: 'smart', selector_daily_budget: 1, selector_min_confidence_bp: 7500, selector_max_habits: 3, selector_staleness_max: 0.8 };
+  const config = { ...DEFAULT_AGENT_EXPERIENCE_CONFIG, enabled: true, selector_enabled: true, selector_mode: 'smart', selector_min_confidence_bp: 7500, selector_max_habits: 3, selector_staleness_max: 0.8 };
   let sawSignal = false;
   const ok = await runSelectorRuntime(storage.db, {
     userId: 'owner',
@@ -126,20 +126,25 @@ try {
   });
   assert.equal(ok.injected, true);
   assert.equal(sawSignal, true, 'runSelectorRuntime must pass AbortSignal to adapter');
-  assert.equal(countDailySelectorInjections(storage.db, { userId: 'owner', now: '2026-07-08T01:00:01.000Z' }), 1);
+  assert.equal(storage.db.prepare("SELECT COUNT(*) AS count FROM selector_hit_log WHERE user_id = ? AND action = 'inject' AND selected = 1").get('owner').count, 1);
 
-  let budgetCalls = 0;
-  const budget = await runSelectorRuntime(storage.db, { userId: 'owner', prompt: 'again', config, law, now: '2026-07-08T01:01:00.000Z', adapter: { async select() { budgetCalls += 1; return { schema_version: 1, selected: [] }; } } });
-  assert.equal(budget.injected, false);
-  assert.equal(budget.reason, 'daily_budget_exceeded');
-  assert.equal(budgetCalls, 0, 'budget must be checked before adapter/model call');
+  let repeatedCalls = 0;
+  const repeated = await runSelectorRuntime(storage.db, { userId: 'owner', prompt: 'selector adapter tests', config, law, now: '2026-07-08T01:01:00.000Z', adapter: { async select() { repeatedCalls += 1; return { schema_version: 1, selected: [{ id: 'active-1', confidence_bp: 9500 }] }; } } });
+  assert.equal(repeated.injected, true, 'smart selection must not stop after an arbitrary number of successful messages');
+  assert.equal(repeatedCalls, 1, 'every eligible smart selection may call its configured adapter');
+  for (let index = 0; index < 25; index += 1) {
+    const continued = await runSelectorRuntime(storage.db, { userId: 'owner', prompt: 'selector adapter tests', config, law, now: `2026-07-08T02:${String(index).padStart(2, '0')}:00.000Z`, adapter: { async select() { repeatedCalls += 1; return { schema_version: 1, selected: [{ id: 'active-1', confidence_bp: 9500 }] }; } } });
+    assert.equal(continued.injected, true, `smart guidance must remain available beyond the former daily cap (${index + 1}/25)`);
+  }
+  assert.equal(repeatedCalls, 26);
+  assert.equal(storage.db.prepare("SELECT COUNT(*) AS count FROM selector_hit_log WHERE user_id = ? AND action = 'inject' AND selected = 1").get('owner').count, 27);
 
   const beforeTimeoutLogs = storage.db.prepare('SELECT COUNT(*) AS count FROM selector_hit_log').get().count;
   let aborted = false;
   const timeout = await runSelectorRuntime(storage.db, {
     userId: 'owner',
     prompt: 'selector adapter tests',
-    config: { ...config, selector_daily_budget: 10, selector_timeout_ms: 5 },
+    config: { ...config, selector_timeout_ms: 5 },
     law,
     now: '2026-07-08T01:02:00.000Z',
     adapter: { async select({ signal }) { await new Promise((resolve, reject) => { signal.addEventListener('abort', () => { aborted = true; reject(new Error('selector_timeout')); }); }); } },
@@ -152,7 +157,7 @@ try {
   const malformed = await runSelectorRuntime(storage.db, {
     userId: 'owner',
     prompt: 'selector adapter tests',
-    config: { ...config, selector_daily_budget: 10 },
+    config,
     law,
     now: '2026-07-08T01:03:00.000Z',
     adapter: { async select() { return { schema_version: 1, selected: [{ id: 'unknown', confidence_bp: 9500 }] }; } },
@@ -160,7 +165,7 @@ try {
   assert.equal(malformed.injected, false);
   assert.equal(malformed.reason, 'invalid_selector_output');
 
-  const unavailable = await runSelectorRuntime(storage.db, { userId: 'owner', prompt: 'selector adapter tests', config: { ...config, selector_daily_budget: 10 }, law, now: '2026-07-08T01:04:00.000Z' });
+  const unavailable = await runSelectorRuntime(storage.db, { userId: 'owner', prompt: 'selector adapter tests', config, law, now: '2026-07-08T01:04:00.000Z' });
   assert.equal(unavailable.injected, false);
   assert.equal(unavailable.reason, 'selector_unavailable');
 

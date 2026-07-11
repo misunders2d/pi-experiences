@@ -198,7 +198,7 @@ Potential duplicates are never silently merged. **Resolve duplicate habits** sho
 
 ## See when a habit steers an answer
 
-Approved-habit reminders never steer invisibly. When one or more approved habits actually enter the model context for one specific answer, Pi places a muted marker between the triggering prompt and that answer. Every collapsed line identifies the exact selected condition instead of showing a generic enabled state or opaque count:
+Approved-habit reminders never steer invisibly. There is no daily quota: every genuinely matching eligible message may receive approved habit guidance. When one or more approved habits actually enter the model context for one specific answer, Pi places a muted marker between the triggering prompt and that answer. Every collapsed line identifies the exact selected condition instead of showing a generic enabled state or opaque count:
 
 ```text
 ◇ Steered by habit · When I ask for cobalt status
@@ -206,7 +206,7 @@ Approved-habit reminders never steer invisibly. When one or more approved habits
 
 If several habits genuinely apply, each selected condition gets its own line. Expand the marker to see every exact approved `When:` / `Do:` pair applied to that response. No marker means that response received no habit guidance.
 
-The marker is a local Pi session entry, not an LLM message, so it does not itself influence the answer. For traceability, the session entry retains only the selected approved wording, count, and time—never the raw prompt, IDs, checksums, confidence scores, provider/model details, source references, raw examples, private paths, or audit payloads. v0.1.31 enables reminders only in the Pi TUI where this response-specific marker is guaranteed visible; other interfaces fail closed rather than steering without provenance.
+The marker is a local Pi session entry, not an LLM message, so it does not itself influence the answer. For traceability, the session entry retains only the selected approved wording, count, and time—never the raw prompt, IDs, checksums, confidence scores, provider/model details, source references, raw examples, private paths, or audit payloads. Approved-habit reminders are enabled only in the Pi TUI where this response-specific marker is guaranteed visible; other interfaces fail closed rather than steering without provenance.
 
 ## Local duplicate prevention
 

@@ -28,6 +28,7 @@ assert.equal(packageJson.scripts?.postinstall,undefined);
 assert.equal(packageJson.scripts?.prepare,undefined,'package installation must never download local model assets');
 const configText=formatAgentExperienceConfig(DEFAULT_AGENT_EXPERIENCE_CONFIG);
 assert.doesNotMatch(configText,/embedding_(provider|model|dimensions|review_threshold|strong_threshold|timeout|openai)/i);
+assert.doesNotMatch(configText,/selector_daily_budget|daily_budget/i,'formatted config must not emit a selector quota');
 
 const readme=await readFile(join(root,'README.md'),'utf8');
 const technicalSummary='<summary><strong>For agents and maintainers: technical contract, caveats, and release discipline</strong></summary>';
@@ -54,7 +55,7 @@ const humanReadme=readme.slice(0,technicalOpenIndex);
 const technicalReadme=readme.slice(technicalSummaryIndex,technicalCloseIndex);
 assert.match(humanReadme,/situation and action separately/i,'normal-user duplicate explanation must preserve separate-field behavior');
 assert.match(humanReadme,/not globally against one another/i,'normal-user duplicate explanation must preserve approved-only candidate policy');
-for(const phrase of ['exact `When:` \/ `Do:` wording','later, explicit confirmation','bypasses only that repetition threshold','numbered plain-language items','◇ Steered by habit','No marker means that response received no habit guidance','not an LLM message']) assert.match(humanReadme,new RegExp(phrase,'i'),`README conversational/transparency contract missing: ${phrase}`);
+for(const phrase of ['exact `When:` \/ `Do:` wording','later, explicit confirmation','bypasses only that repetition threshold','numbered plain-language items','◇ Steered by habit','No marker means that response received no habit guidance','not an LLM message','There is no daily quota']) assert.match(humanReadme,new RegExp(phrase,'i'),`README conversational/transparency contract missing: ${phrase}`);
 for(const phrase of ['one short-lived draft and one numbered review snapshot','no raw conversation or confirmation utterance','If it is unavailable, no candidate','expire after 15 minutes','agent_experience.habit_steering','durable marker does not participate in LLM context','non-TUI modes suppress']) assert.match(technicalReadme,new RegExp(phrase,'i'),`README technical conversational/transparency contract missing: ${phrase}`);
 for(const phrase of ['lower of separate condition and behavior cosine scores','Review threshold: 5,500 basis points','candidate-to-candidate semantic routing is excluded','obsolete pending scoring-method relations','every pending relation involving it','keep-separate decisions survive scoring/cache method upgrades'])assert.match(technicalReadme,new RegExp(phrase,'i'),`README dedupe correction contract missing: ${phrase}`);
 const extensionReadme=await readFile(join(root,'extensions/agent-experience/README.md'),'utf8');
@@ -70,8 +71,13 @@ for(const [name,text] of [['extension README',extensionReadme],['public skill',e
   assert.match(text,/No marker means that response received no habit guidance/is,`${name} must define marker absence semantics`);
   assert.match(text,/never enters? LLM context|does not participate in LLM context/is,`${name} must keep steering provenance out of model context`);
   assert.match(text,/non-TUI|interface is not the Pi TUI/is,`${name} must preserve fail-closed interface visibility`);
+  assert.match(text,/no daily quota/is,`${name} must preserve unlimited eligible guidance`);
 }
 
+const selectorSource=await readFile(join(root,'extensions/agent-experience/src/selector.ts'),'utf8');
+const configSource=await readFile(join(root,'extensions/agent-experience/src/config.ts'),'utf8');
+assert.doesNotMatch(selectorSource,/daily_budget|dailyBudget|countDailySelectorInjections/,'selector runtime must never enforce a daily guidance quota');
+assert.doesNotMatch(configSource,/selector_daily_budget|selector\.daily_budget/,'active config schema must not expose a daily guidance quota');
 const steeringSource=await readFile(join(root,'extensions/agent-experience/src/steering-note.ts'),'utf8');
 assert.match(steeringSource,/agent_experience\.habit_steering/,'steering custom-entry type must remain stable');
 assert.doesNotMatch(steeringSource,/sendMessage|prompt_hash|confidence_bp|checksum|source_refs?|provider|model/,'steering entry module must not persist context-bearing or internal fields');

@@ -13,7 +13,6 @@ export interface AgentExperienceConfig {
 	selector_mode: "instant" | "smart";
 	selector_model: string;
 	selector_timeout_ms: number;
-	selector_daily_budget: number;
 	selector_min_confidence_bp: number;
 	selector_min_overlap_score: number;
 	selector_max_habits: number;
@@ -37,7 +36,6 @@ export const DEFAULT_AGENT_EXPERIENCE_CONFIG: AgentExperienceConfig = Object.fre
 	selector_mode: "instant",
 	selector_model: "openai-codex/gpt-5.4-mini",
 	selector_timeout_ms: 5000,
-	selector_daily_budget: 20,
 	selector_min_confidence_bp: 7500,
 	selector_min_overlap_score: 1,
 	selector_max_habits: 3,
@@ -59,7 +57,6 @@ const BOOLEAN_KEYS = new Set<keyof AgentExperienceConfig>([
 const NUMBER_KEYS = new Set<keyof AgentExperienceConfig>([
 	"break_in_auto_apply_min_confidence_bp",
 	"selector_timeout_ms",
-	"selector_daily_budget",
 	"selector_min_confidence_bp",
 	"selector_min_overlap_score",
 	"selector_max_habits",
@@ -83,7 +80,6 @@ const SECTION_KEY_MAP: Record<string, keyof AgentExperienceConfig> = {
 	"selector.mode": "selector_mode",
 	"selector.model": "selector_model",
 	"selector.timeout_ms": "selector_timeout_ms",
-	"selector.daily_budget": "selector_daily_budget",
 	"selector.min_confidence_bp": "selector_min_confidence_bp",
 	"selector.min_overlap_score": "selector_min_overlap_score",
 	"selector.max_habits": "selector_max_habits",
@@ -160,7 +156,6 @@ export function formatAgentExperienceConfig(config: AgentExperienceConfig): stri
 		`selector_mode = ${quote(merged.selector_mode)}`,
 		`selector_model = ${quote(merged.selector_model)}`,
 		`selector_timeout_ms = ${merged.selector_timeout_ms}`,
-		`selector_daily_budget = ${Math.trunc(merged.selector_daily_budget)}`,
 		`selector_min_confidence_bp = ${Math.trunc(merged.selector_min_confidence_bp)}`,
 		`selector_min_overlap_score = ${Math.trunc(merged.selector_min_overlap_score)}`,
 		`selector_max_habits = ${Math.trunc(merged.selector_max_habits)}`,
@@ -179,7 +174,7 @@ export function summarizeAgentExperienceConfig(config: AgentExperienceConfig, co
 		`Agent Experience: ${config.enabled ? "enabled" : "disabled"}`,
 		`config: ${configPath}${exists ? "" : " (not created; using defaults)"}`,
 		`capture=${config.capture_enabled}`,
-		`selector=${config.selector_enabled} mode=${config.selector_mode} timeout_ms=${config.selector_timeout_ms} daily_budget=${config.selector_daily_budget} min_confidence_bp=${config.selector_min_confidence_bp} min_overlap_score=${config.selector_min_overlap_score} max_habits=${config.selector_max_habits}`,
+		`selector=${config.selector_enabled} mode=${config.selector_mode} timeout_ms=${config.selector_timeout_ms} min_confidence_bp=${config.selector_min_confidence_bp} min_overlap_score=${config.selector_min_overlap_score} max_habits=${config.selector_max_habits}`,
 		config.selector_mode === "instant" ? "selector mode instant: local lexical/no-network selection" : `selector mode smart: may call configured model/provider ${config.selector_model}`,
 		`duplicate_prevention=${config.embedding_enabled ? "enabled_local" : "disabled"}`,
 		`consolidation=${config.consolidation_enabled} analyze_batch_max_records=${config.analyze_batch_max_records} analyze_batch_max_bytes=${config.analyze_batch_max_bytes}`,

@@ -73,12 +73,12 @@ Build and inspect the exact tarball:
 
 ```bash
 npm pack --dry-run
-npm pack --json --pack-destination /tmp/pi-experiences-031-pack
+npm pack --json --pack-destination /tmp/pi-experiences-032-pack
 ```
 
 The tarball must include:
 
-- `package.json` version `0.1.31` and Node floor `>=22.19.0`;
+- `package.json` version `0.1.32` and Node floor `>=22.19.0`;
 - wildcard Pi peer dependencies;
 - extension source, `steering-note.ts`, and public skill;
 - current executable `dist/experience-consolidate.mjs`;
@@ -90,7 +90,7 @@ The tarball must include:
 Fresh installation must use the exact generated tarball and disable lifecycle scripts:
 
 ```bash
-npm install --ignore-scripts /tmp/pi-experiences-031-pack/pi-experiences-0.1.31.tgz
+npm install --ignore-scripts /tmp/pi-experiences-032-pack/pi-experiences-0.1.32.tgz
 ```
 
 Use a dedicated disposable `/tmp/*smoke*` prefix. Verify package version, CLI help/status, extension import, skill loading, package-relative worker resolution, and file allowlist from that installed copy—not the source checkout.
@@ -104,7 +104,7 @@ Run Pi's actual skill loader against the installed package and require zero diag
 Use the packed/fresh-installed package with:
 
 ```bash
-AX_STATE_ROOT=/tmp/pi-experiences-031-tui-smoke-state
+AX_STATE_ROOT=/tmp/pi-experiences-032-tui-smoke-state
 ```
 
 Launch the real Pi TUI in a disposable Pi config/package root that references the installed tarball copy, not this repository. Exercise every major `/experience setup` section:
@@ -125,7 +125,7 @@ Launch the real Pi TUI in a disposable Pi config/package root that references th
 
 Also exercise the conversational tools in a fresh session: exact draft display, same-turn confirmation rejection, later-turn save, corrected-draft replacement, numbered suggestion/duplicate listing, explicit decision application, stale-list refresh, and idempotent retry.
 
-Seed one specific approved habit plus weaker generic and behavior-only decoys, enable reminders, and submit a matching prompt. Verify the user prompt renders first, then a muted `◇ Steered by habit · <exact selected condition>` entry, then response work/answer. The collapsed marker must identify each selected condition rather than show a generic count; expansion shows every exact approved `When:` / `Do:` pair. Weaker-overlap and behavior-only decoys must not appear. An unrelated prompt shows no marker. Verify tool-loop calls retain guidance without duplicate markers, a new user message cannot inherit it, and non-TUI/renderer/malformed/append failures suppress guidance.
+Seed one specific approved habit plus weaker generic and behavior-only decoys, enable reminders, and submit a matching prompt. Verify the user prompt renders first, then a muted `◇ Steered by habit · <exact selected condition>` entry, then response work/answer. The collapsed marker must identify each selected condition rather than show a generic count; expansion shows every exact approved `When:` / `Do:` pair. Weaker-overlap and behavior-only decoys must not appear. An unrelated prompt shows no marker. Repeated eligible messages on the same day must continue receiving guidance with no quota. Verify tool-loop calls retain guidance without duplicate markers, a new user message cannot inherit it, and non-TUI/renderer/malformed/append failures suppress guidance.
 
 Verify all visible UI/tool results contain no habit IDs, checksums, duplicate thresholds, local-model identifiers, provider endpoints, source refs, private paths, API-key instructions, audit fields, or required advanced subcommands.
 
@@ -161,6 +161,7 @@ Release evidence must include:
 - actual TUI steering renders and persists in order: triggering user message → one `agent_experience.habit_steering` entry → assistant response;
 - collapsed rendering identifies every exact selected condition; expanded/malformed rendering stays safe; no-selection emits no marker;
 - instant matching uses condition tokens only, removes common stopwords, and keeps only the strongest overlap tier while preserving genuine ties;
+- selector guidance has no daily quota in any mode; repeated eligible messages continue receiving guidance, while hit logs remain audit/provenance only;
 - durable provenance stores approved wording/count/time only and never enters LLM context; separate transient guidance enters only the marked response;
 - tool-loop context receives the same guidance without duplicate markers, and a new user message cannot inherit it;
 - non-TUI, renderer/build/append failure produces no habit guidance and only a static sanitized diagnostic.
@@ -178,4 +179,4 @@ git status --short
 
 Then obtain independent DeepSeek, an available model-diverse reviewer, and constitution review of the actual diff plus test evidence. Skip a reviewer that stalls or reports exhausted usage rather than blocking release evidence. Reviewer verdicts do not replace test evidence.
 
-After final commit/tag push, verify local `HEAD`, `origin/main`, and `refs/tags/v0.1.31` resolve to the same commit and `v0.1.25` through `v0.1.30` remain unchanged. npm publication is a separate manual action and is outside this release scope.
+After final commit/tag push, verify local `HEAD`, `origin/main`, and `refs/tags/v0.1.32` resolve to the same commit and `v0.1.25` through `v0.1.31` remain unchanged. npm publication is a separate manual action and is outside this release scope.

@@ -17,7 +17,7 @@ import { observationChecksumForTest, observationPairRefForTest } from '../extens
 import { validateObservationRecords } from '../extensions/agent-experience/src/consolidate/observations.ts';
 import { acquireConsolidationLock, runConsolidationOnce } from '../extensions/agent-experience/src/consolidate/runner.ts';
 import { lawSnapshotForTest } from '../extensions/agent-experience/src/review.ts';
-import { countDailySelectorInjections, lexicalOverlapScore, runSelectorRuntime } from '../extensions/agent-experience/src/selector.ts';
+import { lexicalOverlapScore, runSelectorRuntime } from '../extensions/agent-experience/src/selector.ts';
 
 const execFileAsync = promisify(execFile);
 
@@ -124,7 +124,7 @@ try {
   insertStorageRecord(storage.db, 'habits', { id: 'candidate-hidden', userId: 'owner', data: habitData({ status: 'candidate', condition: 'phase seven selector', behavior: 'must not inject', law_hash: law.hash }), now: '2026-07-08T00:02:00.000Z' });
   assert.equal(lexicalOverlapScore('phase seven selector questions', { id: 'x', user_id: 'owner', condition: 'phase seven selector', behavior: 'questions', polarity: 1, confidence_bp: 9000, activation: 1, staleness: 0, checksum: 'x' }), 3, 'behavior tokens must not create selector applicability');
   let adapterCalls = 0;
-  const instantConfig = { ...DEFAULT_AGENT_EXPERIENCE_CONFIG, enabled: true, selector_enabled: true, selector_mode: 'instant', selector_daily_budget: 10, selector_min_confidence_bp: 7500, selector_min_overlap_score: 2, selector_staleness_max: 0.8 };
+  const instantConfig = { ...DEFAULT_AGENT_EXPERIENCE_CONFIG, enabled: true, selector_enabled: true, selector_mode: 'instant', selector_min_confidence_bp: 7500, selector_min_overlap_score: 2, selector_staleness_max: 0.8 };
   const instant = await runSelectorRuntime(storage.db, { userId: 'owner', prompt: 'phase seven selector questions', config: instantConfig, law, now: '2026-07-08T02:00:00.000Z', adapter: { async select() { adapterCalls += 1; throw new Error('instant must not call model'); } } });
   assert.equal(instant.injected, true);
   assert.equal(instant.mode, 'instant');
@@ -133,8 +133,8 @@ try {
   const silent = await runSelectorRuntime(storage.db, { userId: 'owner', prompt: 'unrelated words only', config: instantConfig, law, now: '2026-07-08T02:01:00.000Z', adapter: { async select() { adapterCalls += 1; } } });
   assert.equal(silent.injected, false, 'min overlap preserves silence-default');
   assert.equal(adapterCalls, 0);
-  assert.equal(countDailySelectorInjections(storage.db, { userId: 'owner', now: '2026-07-08T02:02:00.000Z' }), 1);
-  const smart = await runSelectorRuntime(storage.db, { userId: 'owner', prompt: 'phase seven selector questions', config: { ...instantConfig, selector_mode: 'smart', selector_daily_budget: 10, selector_model: 'zai/glm-5.2' }, law, now: '2026-07-08T02:03:00.000Z', adapter: { async select({ model }) { adapterCalls += 1; assert.equal(model, 'zai/glm-5.2'); return { schema_version: 1, selected: [{ id: 'active-good', confidence_bp: 9000 }] }; } } });
+  assert.equal(storage.db.prepare("SELECT COUNT(*) AS count FROM selector_hit_log WHERE user_id = ? AND action = 'inject' AND selected = 1").get('owner').count, 1);
+  const smart = await runSelectorRuntime(storage.db, { userId: 'owner', prompt: 'phase seven selector questions', config: { ...instantConfig, selector_mode: 'smart', selector_model: 'zai/glm-5.2' }, law, now: '2026-07-08T02:03:00.000Z', adapter: { async select({ model }) { adapterCalls += 1; assert.equal(model, 'zai/glm-5.2'); return { schema_version: 1, selected: [{ id: 'active-good', confidence_bp: 9000 }] }; } } });
   assert.equal(smart.injected, true);
   assert.equal(smart.mode, 'smart');
   assert.equal(adapterCalls, 1);
