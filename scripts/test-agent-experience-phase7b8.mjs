@@ -243,6 +243,7 @@ try {
   const timer = await readFile('extensions/agent-experience/units/experience-consolidate.timer', 'utf8');
   assert.match(service, /Type=oneshot/);
   assert.match(service, / scheduled --root /);
+  assert.match(service, / --pi-runtime-root @PI_RUNTIME_ROOT@/);
   assert.doesNotMatch(service, /exit 1|\/usr\/bin\/env/);
   assert.match(timer, /OnCalendar=\*-\*-\* 03:30:00/);
   assert.match(timer, /Persistent=true/);

@@ -13,7 +13,9 @@ try{
   const generated=join(temp,'experience-consolidate.mjs');
   await execFileAsync(process.execPath,[join(root,'scripts/build-cli.mjs')],{cwd:root,env:{...process.env,AX_BUILD_OUTFILE:generated}});
   const committed=join(root,'dist/experience-consolidate.mjs');
-  assert.deepEqual(await readFile(generated),await readFile(committed),'dist/experience-consolidate.mjs is stale; run npm run build');
+  const committedBytes=await readFile(committed);
+  assert.deepEqual(await readFile(generated),committedBytes,'dist/experience-consolidate.mjs is stale; run npm run build');
+  assert.doesNotMatch(committedBytes.toString('utf8'),/from ["']@earendil-works\/pi-(?:ai|coding-agent)/,'standalone CLI must not contain bare Pi runtime imports');
   assert.ok(((await stat(committed)).mode&0o111)!==0,'generated CLI must be executable');
 }finally{await rm(temp,{recursive:true,force:true});}
 console.log('generated CLI artifact is current');

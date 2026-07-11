@@ -193,7 +193,7 @@ Current law checking uses deterministic freshness plus a dangerous-pattern denyl
 
 **Turn all experience features off** stops capture and runtime gates while preserving private records for audit/re-enable.
 
-Automatic schedule defaults off. On Linux with a working systemd user manager, `/experience setup` may explicitly render and install the package-owned daily 03:30 system-local timer with `Persistent=true`. Before enabling, show the exact Node path, CLI path, unit paths, state root, user, model, timezone, no-work/no-model-call behavior, suggestions-only rule, and sanitized next-session receipt behavior. Require a separate confirmation. Setup also owns explicit repair, disable, and removal. Package install/update never activates it.
+Automatic schedule defaults off. On Linux with a working systemd user manager, `/experience setup` may explicitly render and install the package-owned daily 03:30 system-local timer with `Persistent=true`. Before enabling, show the exact Node path, CLI path, host Pi runtime path, unit paths, state root, user, model, timezone, no-work/no-runtime-import/no-model-call behavior, suggestions-only rule, and sanitized next-session receipt behavior. Require a separate confirmation. Setup also owns explicit repair, disable, and removal. Package install/update never activates it.
 
 ## Maintainer-only controls
 

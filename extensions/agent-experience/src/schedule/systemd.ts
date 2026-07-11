@@ -23,6 +23,7 @@ export interface ScheduledAnalyzeUnitContext {
 	paths: AgentExperiencePaths;
 	userId: string;
 	piAgentDir: string;
+	piRuntimeRoot: string;
 }
 
 export interface ScheduledAnalyzeSystemdOptions {
@@ -32,6 +33,7 @@ export interface ScheduledAnalyzeSystemdOptions {
 	nodePath?: string;
 	cliPath?: string;
 	piAgentDir?: string;
+	piRuntimeRoot?: string;
 }
 
 function defaultExecutor(command: string, args: string[], options?: { timeout?: number }) {
@@ -77,7 +79,7 @@ export function renderScheduledAnalyzeUnits(context: ScheduledAnalyzeUnitContext
 		"",
 		"[Service]",
 		"Type=oneshot",
-		`ExecStart=${unitQuote(context.nodePath)} ${unitQuote(context.cliPath)} scheduled --root ${unitQuote(context.paths.root)} --user ${unitQuote(context.userId)}`,
+		`ExecStart=${unitQuote(context.nodePath)} ${unitQuote(context.cliPath)} scheduled --root ${unitQuote(context.paths.root)} --user ${unitQuote(context.userId)} --pi-runtime-root ${unitQuote(context.piRuntimeRoot)}`,
 		"TimeoutStartSec=150",
 		"Nice=10",
 		"IOSchedulingClass=best-effort",
@@ -156,10 +158,12 @@ async function resolveUnitContext(paths: AgentExperiencePaths, userId: string, o
 	let nodePath: string;
 	let cliPath: string;
 	let piAgentDir: string;
+	let piRuntimeRoot: string;
 	try {
 		nodePath = await realpath(options.nodePath || process.execPath);
 		cliPath = await realpath(options.cliPath || defaultCliPath());
 		piAgentDir = await realpath(options.piAgentDir || join(homedir(), ".pi", "agent"));
+		piRuntimeRoot = await realpath(options.piRuntimeRoot || "");
 		await executor(nodePath, ["--version"], { timeout: 5_000 });
 	} catch {
 		throw new Error("scheduled_runtime_unavailable");
@@ -170,6 +174,7 @@ async function resolveUnitContext(paths: AgentExperiencePaths, userId: string, o
 		paths,
 		userId,
 		piAgentDir,
+		piRuntimeRoot,
 	};
 }
 

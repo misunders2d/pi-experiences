@@ -958,7 +958,7 @@ var init_observations = __esm({
 
 // bin/experience-consolidate.mjs
 import { existsSync as existsSync3 } from "node:fs";
-import { readFile as readFile9 } from "node:fs/promises";
+import { readFile as readFile10 } from "node:fs/promises";
 import { dirname as dirname3, resolve as resolve3 } from "node:path";
 init_paths();
 
@@ -3447,9 +3447,10 @@ async function runConsolidationOnce(input) {
   }
 }
 
-// extensions/agent-experience/src/consolidate/model-adapter.ts
-import { completeSimple } from "@earendil-works/pi-ai/compat";
-import { AuthStorage, ModelRegistry } from "@earendil-works/pi-coding-agent";
+// extensions/agent-experience/src/consolidate/standalone-model-adapter.ts
+import { readFile as readFile7, realpath as realpath2 } from "node:fs/promises";
+import { isAbsolute as isAbsolute2, join as join2 } from "node:path";
+import { pathToFileURL } from "node:url";
 
 // extensions/agent-experience/src/consolidate/context.ts
 init_private_root();
@@ -3692,7 +3693,8 @@ function normalizeConsolidationModelOutput(raw, input) {
     proposals
   };
 }
-function createPiConsolidationModelAdapter(ctx, purpose = "agent-experience-manual-habit-learning") {
+function createPiConsolidationModelAdapter(ctx, options) {
+  const purpose = options.purpose || "agent-experience-manual-habit-learning";
   return {
     async generate(input) {
       const parsed = parseProviderModel(input.model);
@@ -3701,7 +3703,7 @@ function createPiConsolidationModelAdapter(ctx, purpose = "agent-experience-manu
       if (!model) throw new Error("habit_learning_model_unavailable");
       const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
       if (!auth.ok || !auth.apiKey) throw new Error("habit_learning_model_auth_unavailable");
-      const response = await completeSimple(model, {
+      const response = await options.complete(model, {
         systemPrompt: buildConsolidationSystemPrompt(input.expected.file_generation),
         messages: [{ role: "user", content: buildConsolidationUserPrompt(input), timestamp: Date.now() }]
       }, {
@@ -3722,19 +3724,67 @@ function createPiConsolidationModelAdapter(ctx, purpose = "agent-experience-manu
     }
   };
 }
-function createStandaloneConsolidationModelAdapter(options = {}) {
-  const authStorage = AuthStorage.create();
-  const modelRegistry = ModelRegistry.create(authStorage);
-  return createPiConsolidationModelAdapter({ modelRegistry, signal: options.signal }, "agent-experience-scheduled-habit-learning");
+
+// extensions/agent-experience/src/consolidate/standalone-model-adapter.ts
+init_redaction();
+var PI_CODING_AGENT_PACKAGE = "@earendil-works/pi-coding-agent";
+async function validatedRuntimeRoot(input) {
+  if (!input) throw new Error("pi_runtime_root_missing");
+  if (!isAbsolute2(input)) throw new Error("pi_runtime_root_not_absolute");
+  let root;
+  try {
+    root = await realpath2(input);
+  } catch {
+    throw new Error("pi_runtime_root_realpath_failed");
+  }
+  let manifest;
+  try {
+    manifest = JSON.parse(await readFile7(join2(root, "package.json"), "utf8"));
+  } catch (error) {
+    throw new Error(error instanceof SyntaxError ? "pi_runtime_root_invalid_package_json" : "pi_runtime_root_missing_package_json");
+  }
+  if (manifest?.name !== PI_CODING_AGENT_PACKAGE) throw new Error("pi_runtime_root_wrong_package");
+  return root;
+}
+async function loadStandalonePiRuntime(piRuntimeRoot) {
+  const root = await validatedRuntimeRoot(piRuntimeRoot);
+  const codingAgentUrl = pathToFileURL(join2(root, "dist", "index.js")).href;
+  const compatUrl = pathToFileURL(join2(root, "node_modules", "@earendil-works", "pi-ai", "dist", "compat.js")).href;
+  let codingAgent;
+  let compat;
+  try {
+    codingAgent = await import(codingAgentUrl);
+  } catch {
+    throw new Error("pi_runtime_root_import_failed");
+  }
+  try {
+    compat = await import(compatUrl);
+  } catch {
+    throw new Error("pi_runtime_compat_import_failed");
+  }
+  if (typeof codingAgent?.AuthStorage?.create !== "function" || typeof codingAgent?.ModelRegistry?.create !== "function") {
+    throw new Error("pi_runtime_root_missing_coding_agent_api");
+  }
+  if (typeof compat?.completeSimple !== "function") throw new Error("pi_runtime_compat_missing_api");
+  return { AuthStorage: codingAgent.AuthStorage, ModelRegistry: codingAgent.ModelRegistry, completeSimple: compat.completeSimple };
+}
+async function createStandaloneConsolidationModelAdapter(options) {
+  const runtime = await loadStandalonePiRuntime(options.piRuntimeRoot);
+  const authStorage = runtime.AuthStorage.create();
+  const modelRegistry = runtime.ModelRegistry.create(authStorage);
+  return createPiConsolidationModelAdapter(
+    { modelRegistry, signal: options.signal },
+    { complete: runtime.completeSimple, purpose: "agent-experience-scheduled-habit-learning" }
+  );
 }
 
 // extensions/agent-experience/src/review.ts
 init_checksum();
 init_private_root();
 init_redaction();
-import { lstat as lstat9, readFile as readFile7, writeFile } from "node:fs/promises";
+import { lstat as lstat9, readFile as readFile8, writeFile } from "node:fs/promises";
 import { existsSync as existsSync2, lstatSync, readFileSync } from "node:fs";
-import { isAbsolute as isAbsolute2, join as join2 } from "node:path";
+import { isAbsolute as isAbsolute3, join as join3 } from "node:path";
 var LAW_CHECKER_VERSION = "agent_experience_law_check_v1";
 function normalizeText2(value) {
   return String(value ?? "").trim().replace(/\s+/g, " ").toLowerCase();
@@ -3771,19 +3821,19 @@ async function readConfiguredLawSnapshot(root, config) {
   const info = await lstat9(file);
   if (!info.isFile() || info.isSymbolicLink()) throw new Error("Agent Experience safety file is not a regular private file");
   if (info.size > 1e6) throw new Error("Agent Experience safety file exceeds the 1 MB limit");
-  const text = await readFile7(file, "utf8");
+  const text = await readFile8(file, "utf8");
   const checksum = sha256Hex(text);
   const files = [{ path: file, checksum, required: true }];
   return { version: LAW_CHECKER_VERSION, hash: checksumJson({ version: LAW_CHECKER_VERSION, files }), files, text: `FILE: ${file}
 ${text}` };
 }
 function revalidateLawSnapshotSync(snapshot) {
-  const absoluteFiles = snapshot.files.filter((file) => isAbsolute2(file.path));
+  const absoluteFiles = snapshot.files.filter((file) => isAbsolute3(file.path));
   if (!absoluteFiles.length) return snapshot;
   const files = [];
   const parts = [];
   for (const file of snapshot.files) {
-    if (!isAbsolute2(file.path)) throw new Error("Agent Experience safety snapshot contains an invalid path");
+    if (!isAbsolute3(file.path)) throw new Error("Agent Experience safety snapshot contains an invalid path");
     const info = lstatSync(file.path);
     if (!info.isFile() || info.isSymbolicLink() || info.size > 1e6) throw new Error("Agent Experience safety file changed or is unsafe");
     const text = readFileSync(file.path, "utf8");
@@ -4100,7 +4150,7 @@ function safeScheduledAnalyzeErrorCode(error) {
 
 // extensions/agent-experience/src/schedule/receipts.ts
 import { randomUUID as randomUUID5 } from "node:crypto";
-import { chmod as chmod4, lstat as lstat10, mkdir as mkdir7, open as open4, readdir as readdir4, readFile as readFile8, rename as rename5, rm as rm5 } from "node:fs/promises";
+import { chmod as chmod4, lstat as lstat10, mkdir as mkdir7, open as open4, readdir as readdir4, readFile as readFile9, rename as rename5, rm as rm5 } from "node:fs/promises";
 import { constants as constants3 } from "node:fs";
 init_checksum();
 init_locks();
@@ -4186,7 +4236,7 @@ async function makeRoom(root) {
   for (const file of files) {
     let rank = 2;
     try {
-      const receipt = validateReceipt(JSON.parse(await readFile8(resolvePrivatePath(dir, file), "utf8")));
+      const receipt = validateReceipt(JSON.parse(await readFile9(resolvePrivatePath(dir, file), "utf8")));
       if (receipt.status === "ok" || receipt.status === "no_work") rank = 0;
       else if (receipt.status === "locked" || receipt.status === "disabled") rank = 1;
     } catch {
@@ -4242,7 +4292,7 @@ function argValue(args, name) {
 }
 function usage() {
   return [
-    "Usage: experience-consolidate status|now|scheduled [--dry-run] [--fixture-output FILE] [--root DIR] [--user USER] [--generation active]",
+    "Usage: experience-consolidate status|now|scheduled [--dry-run] [--fixture-output FILE] [--root DIR] [--user USER] [--generation active] [--pi-runtime-root DIR]",
     "Advanced runtime/maintainer CLI. Normal users should use only /experience setup.",
     "The setup menu contains model selection, Analyze saved examples now, review, approved-habit controls, and explicit local schedule management.",
     "--dry-run produces reviewable output and must not advance watermarks or mutate ledger state.",
@@ -4266,6 +4316,7 @@ async function main() {
     return;
   }
   if (command === "scheduled") {
+    const piRuntimeRoot = argValue(args, "--pi-runtime-root");
     const gatesOpen = exists2 && config.enabled && config.consolidation_enabled && config.timer_enabled;
     if (!gatesOpen) {
       await writeScheduledAnalyzeReceipt(paths.root, { user_id: userId, status: "disabled", severity: "info", safe_code: "config_gate_denied" });
@@ -4281,7 +4332,7 @@ async function main() {
         userId,
         config,
         signal: controller.signal,
-        adapterFactory: () => createStandaloneConsolidationModelAdapter({ signal: controller.signal })
+        adapterFactory: () => createStandaloneConsolidationModelAdapter({ piRuntimeRoot, signal: controller.signal })
       });
       if (result.status === "ok") {
         await writeScheduledAnalyzeReceipt(paths.root, { user_id: userId, status: "ok", severity: "info", checked: result.checked, total_unread: result.total_unread, new_suggestions: result.new_suggestions, has_more: result.has_more });
@@ -4322,7 +4373,7 @@ async function main() {
   const storage = await initExperienceStorage(paths.root, { allowInit: true, userId });
   try {
     const observations = await readValidatedObservationGeneration(paths.root, { file_generation: generation, path: "observations.jsonl" }, userId);
-    const output = JSON.parse(await readFile9(resolve3(fixturePath), "utf8"));
+    const output = JSON.parse(await readFile10(resolve3(fixturePath), "utf8"));
     const result = await runConsolidationOnce({ root: paths.root, db: storage.db, userId: storage.userId, observations, modelOutput: output, model: config.consolidation_model, config, dryRun, breakIn: config.break_in_enabled, now: (/* @__PURE__ */ new Date()).toISOString() });
     console.log(JSON.stringify(result, null, 2));
     if (!result.ok) process.exitCode = 2;

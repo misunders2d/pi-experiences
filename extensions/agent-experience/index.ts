@@ -1,8 +1,8 @@
 import { existsSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
-import type { Model } from "@earendil-works/pi-ai/compat";
-import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { completeSimple, type Model } from "@earendil-works/pi-ai/compat";
+import { getPackageDir, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Box, decodeKittyPrintable, fuzzyFilter, Input, Key, matchesKey, SettingsList, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component, type Focusable, type SettingItem, type SettingsListTheme } from "@earendil-works/pi-tui";
 import {
 	getAgentExperiencePaths,
@@ -59,7 +59,8 @@ import type { ValidatedObservationRecord } from "./src/consolidate/observations.
 import { buildCompactHabitContext, type CompactHabitContextItem } from "./src/consolidate/context.ts";
 import { getProposalReadWatermark } from "./src/consolidate/commit.ts";
 import { expectedRangeFromObservations, runConsolidationOnce } from "./src/consolidate/runner.ts";
-import { createPiConsolidationModelAdapter, truncateForModel, validateStandaloneConsolidationModel, type ConsolidationModelAdapter, type ConsolidationModelAdapterInput } from "./src/consolidate/model-adapter.ts";
+import { createPiConsolidationModelAdapter, truncateForModel, type ConsolidationModelAdapter, type ConsolidationModelAdapterInput } from "./src/consolidate/model-adapter.ts";
+import { validateStandaloneConsolidationModel } from "./src/consolidate/standalone-model-adapter.ts";
 export { __buildAgentExperienceConsolidationSystemPromptForTest, __normalizeAgentExperienceConsolidationModelOutputForTest } from "./src/consolidate/model-adapter.ts";
 import { noteAgentExperienceConversationInput, registerAgentExperienceConversationalTools } from "./src/conversational-tools.ts";
 import { buildHabitSteeringEntry, HABIT_STEERING_ENTRY_TYPE, renderHabitSteeringEntry, type HabitSteeringEntryData } from "./src/steering-note.ts";
@@ -795,7 +796,7 @@ async function buildStatusText(): Promise<{ text: string; enabled: boolean }> {
 	const reviewCount = summary.pending + summary.candidate;
 	let scheduleStatus = config.timer_enabled ? "configured ON; local timer status unavailable" : "OFF";
 	try {
-		const schedule = await inspectScheduledAnalyzeSystemd(paths, getConfiguredUserId());
+		const schedule = await inspectScheduledAnalyzeSystemd(paths, getConfiguredUserId(), { piRuntimeRoot: getPackageDir() });
 		scheduleStatus = schedule.enabled && !schedule.needsRepair ? `ON (daily 03:30 ${schedule.timezone}; persistent)` : schedule.installed && schedule.needsRepair ? "needs repair in setup" : schedule.installed ? "OFF (unit files retained)" : config.timer_enabled ? "config ON but timer missing; repair in setup" : "OFF";
 	} catch {}
 	let duplicateStatus = "OFF";
@@ -1052,7 +1053,7 @@ async function handleSetupTimer(ctx: ExtensionCommandContext) {
 	const { config } = await readAgentExperienceConfig(paths);
 	let status: Awaited<ReturnType<typeof inspectScheduledAnalyzeSystemd>>;
 	try {
-		status = await inspectScheduledAnalyzeSystemd(paths, userId);
+		status = await inspectScheduledAnalyzeSystemd(paths, userId, { piRuntimeRoot: getPackageDir() });
 	} catch {
 		status = { installed: false, enabled: false, needsRepair: false, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "system local time", unitDir: join(process.env.HOME || "~", ".config", "systemd", "user") };
 	}
@@ -1080,11 +1081,12 @@ async function handleSetupTimer(ctx: ExtensionCommandContext) {
 		if (!config.consolidation_enabled) return notify(ctx, "Choose a habit-learning model before enabling scheduled Analyze.", "warn");
 		const auth = await configuredModelAuthenticated(ctx, config.consolidation_model);
 		if (!auth.ok) return notify(ctx, `The selected habit-learning model is not ready for a background run. Detail: ${auth.reason}`, "warn");
-		const standaloneAuth = await validateStandaloneConsolidationModel(config.consolidation_model);
+		const piRuntimeRoot = getPackageDir();
+		const standaloneAuth = await validateStandaloneConsolidationModel(config.consolidation_model, piRuntimeRoot);
 		if (!standaloneAuth.ok) return notify(ctx, `The selected model works only inside the current Pi runtime and cannot be used by the standalone scheduler. Nothing changed. Detail: ${standaloneAuth.reason}`, "warn");
 		let preview: Awaited<ReturnType<typeof previewScheduledAnalyzeSystemd>>;
 		try {
-			preview = await previewScheduledAnalyzeSystemd(paths, userId);
+			preview = await previewScheduledAnalyzeSystemd(paths, userId, { piRuntimeRoot });
 		} catch (error: any) {
 			return notify(ctx, `Local systemd schedule is unavailable. Nothing changed. Detail: ${redactText(String(error?.message || error)).slice(0, 180)}`, "warn");
 		}
@@ -1096,6 +1098,7 @@ async function handleSetupTimer(ctx: ExtensionCommandContext) {
 			`State root: ${paths.root}`,
 			`Node: ${preview.context.nodePath}`,
 			`CLI: ${preview.context.cliPath}`,
+			`Pi runtime: ${preview.context.piRuntimeRoot}`,
 			`Service unit: ${join(preview.unitDir, SCHEDULED_ANALYZE_SERVICE)}`,
 			`Timer unit: ${join(preview.unitDir, SCHEDULED_ANALYZE_TIMER)}`,
 			"Calls the model only when unread saved examples exist.",
@@ -1108,7 +1111,7 @@ async function handleSetupTimer(ctx: ExtensionCommandContext) {
 			// catch-up cannot race past setup and record a false disabled run.
 			await setAgentExperienceTimerEnabled(true, paths);
 			try {
-				await installScheduledAnalyzeSystemd(paths, userId);
+				await installScheduledAnalyzeSystemd(paths, userId, { piRuntimeRoot });
 			} catch (error) {
 				await setAgentExperienceTimerEnabled(config.timer_enabled, paths).catch(() => undefined);
 				throw error;
@@ -1260,7 +1263,7 @@ async function runAnalyzeNowJob(ctx: ExtensionCommandContext, preflight: { lock:
 	const lock = preflight.lock;
 	const batch = preflight.observations;
 	const expected = expectedRangeFromObservations(batch, getConfiguredUserId());
-	const adapter = consolidationModelAdapter ?? createPiConsolidationModelAdapter(ctx);
+	const adapter = consolidationModelAdapter ?? createPiConsolidationModelAdapter(ctx, { complete: completeSimple });
 	let storage: Awaited<ReturnType<typeof initExperienceStorage>> | undefined;
 	try {
 		const userId = getConfiguredUserId();
@@ -2048,7 +2051,7 @@ async function handleOff(ctx: ExtensionCommandContext) {
 	const paths = getAgentExperiencePaths();
 	const { config } = await readAgentExperienceConfig(paths);
 	let scheduleEnabled = config.timer_enabled;
-	try { scheduleEnabled ||= (await inspectScheduledAnalyzeSystemd(paths, getConfiguredUserId())).enabled; } catch {}
+	try { scheduleEnabled ||= (await inspectScheduledAnalyzeSystemd(paths, getConfiguredUserId(), { piRuntimeRoot: getPackageDir() })).enabled; } catch {}
 	if (scheduleEnabled) {
 		try {
 			await disableScheduledAnalyzeSystemd();

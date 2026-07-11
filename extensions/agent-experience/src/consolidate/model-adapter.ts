@@ -1,6 +1,4 @@
-import { completeSimple } from "@earendil-works/pi-ai/compat";
-import type { AssistantMessage } from "@earendil-works/pi-ai/compat";
-import { AuthStorage, ModelRegistry } from "@earendil-works/pi-coding-agent";
+import type { AssistantMessage, completeSimple } from "@earendil-works/pi-ai/compat";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { compactContextIdentity, type CompactHabitContextItem } from "./context.ts";
 import type { ValidatedObservationRecord } from "./observations.ts";
@@ -20,7 +18,7 @@ export interface ConsolidationModelAdapter {
 	generate(input: ConsolidationModelAdapterInput): Promise<unknown>;
 }
 
-function parseProviderModel(value: string): { provider: string; modelId: string } | undefined {
+export function parseProviderModel(value: string): { provider: string; modelId: string } | undefined {
 	const slash = value.indexOf("/");
 	if (slash <= 0) return undefined;
 	const provider = value.slice(0, slash);
@@ -227,7 +225,11 @@ export function __buildAgentExperienceConsolidationSystemPromptForTest(fileGener
 	return buildConsolidationSystemPrompt(fileGeneration);
 }
 
-export function createPiConsolidationModelAdapter(ctx: Pick<ExtensionContext, "modelRegistry" | "signal">, purpose = "agent-experience-manual-habit-learning"): ConsolidationModelAdapter {
+export function createPiConsolidationModelAdapter(
+	ctx: Pick<ExtensionContext, "modelRegistry" | "signal">,
+	options: { complete: typeof completeSimple; purpose?: string },
+): ConsolidationModelAdapter {
+	const purpose = options.purpose || "agent-experience-manual-habit-learning";
 	return {
 		async generate(input) {
 			const parsed = parseProviderModel(input.model);
@@ -236,7 +238,7 @@ export function createPiConsolidationModelAdapter(ctx: Pick<ExtensionContext, "m
 			if (!model) throw new Error("habit_learning_model_unavailable");
 			const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
 			if (!auth.ok || !auth.apiKey) throw new Error("habit_learning_model_auth_unavailable");
-			const response = await completeSimple(model, {
+			const response = await options.complete(model, {
 				systemPrompt: buildConsolidationSystemPrompt(input.expected.file_generation),
 				messages: [{ role: "user", content: buildConsolidationUserPrompt(input), timestamp: Date.now() }],
 			}, {
@@ -256,28 +258,4 @@ export function createPiConsolidationModelAdapter(ctx: Pick<ExtensionContext, "m
 			return normalizeConsolidationModelOutput(extractionJson(text), input);
 		},
 	};
-}
-
-
-export async function validateStandaloneConsolidationModel(configured: string): Promise<{ ok: true } | { ok: false; reason: string }> {
-	const parsed = parseProviderModel(configured);
-	if (!parsed) return { ok: false, reason: "invalid provider/model id" };
-	try {
-		const authStorage = AuthStorage.create();
-		const modelRegistry = ModelRegistry.create(authStorage);
-		const model = modelRegistry.find(parsed.provider, parsed.modelId);
-		if (!model) return { ok: false, reason: "model is unavailable to the standalone scheduler" };
-		if (!modelRegistry.hasConfiguredAuth(model)) return { ok: false, reason: "model authentication is not configured" };
-		const auth = await modelRegistry.getApiKeyAndHeaders(model);
-		if (!auth.ok || !auth.apiKey) return { ok: false, reason: "model authentication is unavailable" };
-		return { ok: true };
-	} catch (error: any) {
-		return { ok: false, reason: redactText(String(error?.message || error)).slice(0, 180) };
-	}
-}
-
-export function createStandaloneConsolidationModelAdapter(options: { signal?: AbortSignal } = {}): ConsolidationModelAdapter {
-	const authStorage = AuthStorage.create();
-	const modelRegistry = ModelRegistry.create(authStorage);
-	return createPiConsolidationModelAdapter({ modelRegistry, signal: options.signal } as Pick<ExtensionContext, "modelRegistry" | "signal">, "agent-experience-scheduled-habit-learning");
 }

@@ -8,6 +8,7 @@ import { delimiter, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import agentExperienceExtension from '../extensions/agent-experience/index.ts';
 import { DEFAULT_AGENT_EXPERIENCE_CONFIG } from '../extensions/agent-experience/src/config.ts';
+import { loadStandalonePiRuntime } from '../extensions/agent-experience/src/consolidate/standalone-model-adapter.ts';
 import { setAgentExperienceConsolidationModel, setAgentExperienceTimerEnabled } from '../extensions/agent-experience/src/paths.ts';
 import { consumeScheduledAnalyzeReceipts, readScheduledAnalyzeReceipts, SCHEDULED_ANALYZE_RECEIPT_LIMIT, writeScheduledAnalyzeReceipt } from '../extensions/agent-experience/src/schedule/receipts.ts';
 import { runScheduledAnalyzeCore } from '../extensions/agent-experience/src/schedule/runner.ts';
@@ -18,10 +19,27 @@ import { appendObservation } from '../extensions/agent-experience/src/storage/ob
 const execFileAsync = promisify(execFile);
 const temp = await mkdtemp(join(tmpdir(), 'pi-experiences-phase17-'));
 try {
+  const fakeRuntimeRoot = join(temp, 'fake-pi-runtime');
+  await mkdir(join(fakeRuntimeRoot, 'dist'), { recursive: true });
+  await mkdir(join(fakeRuntimeRoot, 'node_modules', '@earendil-works', 'pi-ai', 'dist'), { recursive: true });
+  await writeFile(join(fakeRuntimeRoot, 'package.json'), JSON.stringify({ name: '@earendil-works/pi-coding-agent', type: 'module' }));
+  await writeFile(join(fakeRuntimeRoot, 'dist', 'index.js'), 'export class AuthStorage { static create() { return {}; } }\nexport class ModelRegistry { static create() { return {}; } }\n');
+  await writeFile(join(fakeRuntimeRoot, 'node_modules', '@earendil-works', 'pi-ai', 'dist', 'compat.js'), 'export async function completeSimple() { return {}; }\n');
+  const fakeRuntime = await loadStandalonePiRuntime(fakeRuntimeRoot);
+  assert.equal(typeof fakeRuntime.AuthStorage.create, 'function');
+  assert.equal(typeof fakeRuntime.ModelRegistry.create, 'function');
+  assert.equal(typeof fakeRuntime.completeSimple, 'function');
+  await assert.rejects(() => loadStandalonePiRuntime(undefined), /pi_runtime_root_missing/);
+  await assert.rejects(() => loadStandalonePiRuntime('relative/path'), /pi_runtime_root_not_absolute/);
+  const wrongRuntimeRoot = join(temp, 'wrong-runtime');
+  await mkdir(wrongRuntimeRoot, { recursive: true });
+  await writeFile(join(wrongRuntimeRoot, 'package.json'), JSON.stringify({ name: 'not-pi' }));
+  await assert.rejects(() => loadStandalonePiRuntime(wrongRuntimeRoot), /pi_runtime_root_wrong_package/);
+
   const stateRoot = join(temp, 'state');
   const paths = { root: stateRoot, configPath: join(stateRoot, 'agent-experience.toml') };
   const cliPath = resolve('dist/experience-consolidate.mjs');
-  const unitContext = { nodePath: process.execPath, cliPath, paths, userId: 'owner', piAgentDir: join(temp, 'pi-agent') };
+  const unitContext = { nodePath: process.execPath, cliPath, paths, userId: 'owner', piAgentDir: join(temp, 'pi-agent'), piRuntimeRoot: join(temp, 'pi-runtime') };
   const rendered = renderScheduledAnalyzeUnits(unitContext);
   assert.match(rendered.timer, new RegExp(`OnCalendar=${SCHEDULED_ANALYZE_ON_CALENDAR.replace(/[*]/g, '\\*')}`));
   assert.match(rendered.timer, /Persistent=true/);
@@ -34,6 +52,7 @@ try {
   assert.match(rendered.service, new RegExp(`ConditionPathExists=${paths.configPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
   assert.doesNotMatch(rendered.service, /ConditionPathExists=["']/);
   assert.match(rendered.service, / scheduled --root /);
+  assert.match(rendered.service, / --pi-runtime-root /);
   assert.match(rendered.service, /SyslogIdentifier=pi-experiences-analyze/);
   assert.doesNotMatch(rendered.service, /\/usr\/bin\/env|exit 1/);
 
@@ -58,12 +77,13 @@ try {
 
   const unitDir = join(temp, 'units');
   await mkdir(join(temp, 'pi-agent'), { recursive: true });
+  await mkdir(join(temp, 'pi-runtime'), { recursive: true });
   const calls = [];
   const executor = async (command, args) => {
     calls.push([command, ...args]);
     return { stdout: '' };
   };
-  await installScheduledAnalyzeSystemd(paths, 'owner', { executor, unitDir, nodePath: process.execPath, cliPath, piAgentDir: join(temp, 'pi-agent') });
+  await installScheduledAnalyzeSystemd(paths, 'owner', { executor, unitDir, nodePath: process.execPath, cliPath, piAgentDir: join(temp, 'pi-agent'), piRuntimeRoot: join(temp, 'pi-runtime') });
   assert.equal(existsSync(join(unitDir, SCHEDULED_ANALYZE_SERVICE)), true);
   assert.equal(existsSync(join(unitDir, SCHEDULED_ANALYZE_TIMER)), true);
   assert.deepEqual(calls.filter((call) => call[0] === 'systemctl').slice(-2), [
@@ -81,7 +101,7 @@ try {
     if (command === 'systemctl' && args.includes('enable')) throw new Error('enable failed');
     return { stdout: '' };
   };
-  await assert.rejects(() => installScheduledAnalyzeSystemd(paths, 'owner', { executor: failedEnableExecutor, unitDir: failedEnableDir, nodePath: process.execPath, cliPath, piAgentDir: join(temp, 'pi-agent') }), /systemd_enable_failed/);
+  await assert.rejects(() => installScheduledAnalyzeSystemd(paths, 'owner', { executor: failedEnableExecutor, unitDir: failedEnableDir, nodePath: process.execPath, cliPath, piAgentDir: join(temp, 'pi-agent'), piRuntimeRoot: join(temp, 'pi-runtime') }), /systemd_enable_failed/);
   assert.equal(existsSync(join(failedEnableDir, SCHEDULED_ANALYZE_SERVICE)), false, 'failed first enable removes newly rendered service');
   assert.equal(existsSync(join(failedEnableDir, SCHEDULED_ANALYZE_TIMER)), false, 'failed first enable removes newly rendered timer');
 

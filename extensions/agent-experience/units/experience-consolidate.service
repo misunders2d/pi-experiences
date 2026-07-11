@@ -6,7 +6,7 @@ ConditionPathExists=@CONFIG_PATH@
 [Service]
 Type=oneshot
 # /experience setup renders absolute, quoted paths and installs the package-owned unit.
-ExecStart=@NODE_PATH@ @CLI_PATH@ scheduled --root @STATE_ROOT@ --user @USER_ID@
+ExecStart=@NODE_PATH@ @CLI_PATH@ scheduled --root @STATE_ROOT@ --user @USER_ID@ --pi-runtime-root @PI_RUNTIME_ROOT@
 TimeoutStartSec=150
 Nice=10
 IOSchedulingClass=best-effort

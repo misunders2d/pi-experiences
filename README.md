@@ -434,7 +434,8 @@ The package never installs a timer during npm/Pi installation. From `/experience
 
 - daily at **03:30 in the computer's system-local timezone**;
 - `Persistent=true`, so a sleeping/offline laptop catches up once after returning;
-- no model authentication or model call when no unread saved examples exist;
+- the unit pins the exact host Pi runtime path needed by the standalone process; moving/updating Pi makes setup show repair before re-enabling;
+- no host-runtime import, model authentication, or model call when no unread saved examples exist;
 - the same bounded observation validation, Analyze lock, consolidation lock, watermark, suggestion, duplicate, and law gates as manual Analyze;
 - suggestions only—never automatic approval, merge, activation, law mutation, or conversation interruption;
 - a bounded private sanitized receipt queue, summarized once in the next eligible Pi TUI session;

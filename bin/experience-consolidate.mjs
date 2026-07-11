@@ -7,7 +7,7 @@ import { getAgentExperiencePaths, readAgentExperienceConfig } from '../extension
 import { initExperienceStorage } from '../extensions/agent-experience/src/storage/sqlite.ts';
 import { readValidatedObservationGeneration } from '../extensions/agent-experience/src/consolidate/observations.ts';
 import { runConsolidationOnce } from '../extensions/agent-experience/src/consolidate/runner.ts';
-import { createStandaloneConsolidationModelAdapter } from '../extensions/agent-experience/src/consolidate/model-adapter.ts';
+import { createStandaloneConsolidationModelAdapter } from '../extensions/agent-experience/src/consolidate/standalone-model-adapter.ts';
 import { runScheduledAnalyzeCore, safeScheduledAnalyzeErrorCode } from '../extensions/agent-experience/src/schedule/runner.ts';
 import { writeScheduledAnalyzeReceipt } from '../extensions/agent-experience/src/schedule/receipts.ts';
 import { normalizeUserId } from '../extensions/agent-experience/src/storage/private-root.ts';
@@ -19,7 +19,7 @@ function argValue(args, name) {
 
 function usage() {
   return [
-    'Usage: experience-consolidate status|now|scheduled [--dry-run] [--fixture-output FILE] [--root DIR] [--user USER] [--generation active]',
+    'Usage: experience-consolidate status|now|scheduled [--dry-run] [--fixture-output FILE] [--root DIR] [--user USER] [--generation active] [--pi-runtime-root DIR]',
     'Advanced runtime/maintainer CLI. Normal users should use only /experience setup.',
     'The setup menu contains model selection, Analyze saved examples now, review, approved-habit controls, and explicit local schedule management.',
     '--dry-run produces reviewable output and must not advance watermarks or mutate ledger state.',
@@ -41,6 +41,7 @@ async function main() {
     return;
   }
   if (command === 'scheduled') {
+    const piRuntimeRoot = argValue(args, '--pi-runtime-root');
     const gatesOpen = exists && config.enabled && config.consolidation_enabled && config.timer_enabled;
     if (!gatesOpen) {
       await writeScheduledAnalyzeReceipt(paths.root, { user_id: userId, status: 'disabled', severity: 'info', safe_code: 'config_gate_denied' });
@@ -56,7 +57,7 @@ async function main() {
         userId,
         config,
         signal: controller.signal,
-        adapterFactory: () => createStandaloneConsolidationModelAdapter({ signal: controller.signal }),
+        adapterFactory: () => createStandaloneConsolidationModelAdapter({ piRuntimeRoot, signal: controller.signal }),
       });
       if (result.status === 'ok') {
         await writeScheduledAnalyzeReceipt(paths.root, { user_id: userId, status: 'ok', severity: 'info', checked: result.checked, total_unread: result.total_unread, new_suggestions: result.new_suggestions, has_more: result.has_more });

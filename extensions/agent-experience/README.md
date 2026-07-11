@@ -149,7 +149,7 @@ habits-report.md
 
 Typed capture/consolidation/review/selector commands and `experience-consolidate` exist for maintainers and tests. Do not present them as the normal workflow. Natural conversation is optional; setup must remain complete by itself.
 
-Automatic schedule defaults off and is Linux/systemd-user only. Setup renders absolute Node, CLI, config, and state paths; shows them with the selected model, fixed daily 03:30 system-local time, and `Persistent=true`; then requires explicit confirmation before installing/enabling the package-owned units. Scheduled runs call the model only for unread saved examples, create suggestions only, and write a bounded sanitized receipt shown once in the next eligible Pi TUI session. Setup can repair, disable, or remove the units. Package installation and updates never activate them.
+Automatic schedule defaults off and is Linux/systemd-user only. Setup renders absolute Node, CLI, host Pi runtime, config, and state paths; shows them with the selected model, fixed daily 03:30 system-local time, and `Persistent=true`; then requires explicit confirmation before installing/enabling the package-owned units. Moving or updating the host Pi runtime makes the unit require explicit repair. Scheduled runs call the model only for unread saved examples, create suggestions only, and write a bounded sanitized receipt shown once in the next eligible Pi TUI session. Setup can repair, disable, or remove the units. Package installation and updates never activate them.
 
 ## Validation
 
