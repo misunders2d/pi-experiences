@@ -99,7 +99,7 @@ async function main() {
   try {
     const observations = await readValidatedObservationGeneration(paths.root, { file_generation: generation, path: 'observations.jsonl' }, userId);
     const output = JSON.parse(await readFile(resolve(fixturePath), 'utf8'));
-    const result = await runConsolidationOnce({ root: paths.root, db: storage.db, userId: storage.userId, observations, modelOutput: output, model: config.consolidation_model, config, dryRun, breakIn: config.break_in_enabled, now: new Date().toISOString() });
+    const result = await runConsolidationOnce({ root: paths.root, db: storage.db, userId: storage.userId, observations, modelOutput: output, model: config.consolidation_model, config, dryRun, now: new Date().toISOString() });
     console.log(JSON.stringify(result, null, 2));
     if (!result.ok) process.exitCode = 2;
   } finally {

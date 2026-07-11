@@ -26,7 +26,7 @@ function makePi() {
   };
   agentExperienceExtension(fakePi);
   assert.deepEqual([...commands.keys()], ['experience']);
-  assert.deepEqual([...handlers.keys()].sort(), ['agent_end', 'agent_settled', 'before_agent_start', 'context', 'input', 'session_shutdown', 'session_start']);
+  assert.deepEqual([...handlers.keys()].sort(), ['agent_end', 'agent_settled', 'before_agent_start', 'context', 'input', 'session_before_compact', 'session_compact', 'session_shutdown', 'session_start', 'tool_execution_end', 'tool_execution_start']);
   return { commands, handlers };
 }
 

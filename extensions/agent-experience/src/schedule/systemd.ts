@@ -34,6 +34,7 @@ export interface ScheduledAnalyzeSystemdOptions {
 	cliPath?: string;
 	piAgentDir?: string;
 	piRuntimeRoot?: string;
+	expectedStateRoot?: string;
 }
 
 function defaultExecutor(command: string, args: string[], options?: { timeout?: number }) {
@@ -60,6 +61,26 @@ function systemdConditionPath(value: string): string {
 
 export function __encodeSystemdConditionPathForTest(value: string): string {
 	return systemdConditionPath(value);
+}
+
+function serviceOwnsStateRoot(service: string, stateRoot: string): boolean {
+	const root = resolve(stateRoot);
+	return service.includes(` scheduled --root ${unitQuote(root)} --user `);
+}
+
+export function __serviceOwnsScheduledAnalyzeStateRootForTest(service: string, stateRoot: string): boolean {
+	return serviceOwnsStateRoot(service, stateRoot);
+}
+
+async function assertUnitOwnership(unitDir: string, expectedStateRoot?: string): Promise<void> {
+	if (!expectedStateRoot) return;
+	try {
+		const service = await readFile(resolve(unitDir, SCHEDULED_ANALYZE_SERVICE), "utf8");
+		if (!serviceOwnsStateRoot(service, expectedStateRoot)) throw new Error("scheduled_unit_owned_by_other_state");
+	} catch (error: any) {
+		if (error?.code === "ENOENT") return;
+		throw error;
+	}
 }
 
 function defaultCliPath(): string {
@@ -196,6 +217,7 @@ export async function installScheduledAnalyzeSystemd(paths: AgentExperiencePaths
 	};
 	const previousService = await readOptional(servicePath);
 	const previousTimer = await readOptional(timerPath);
+	if (previousService !== undefined && !serviceOwnsStateRoot(previousService, paths.root)) throw new Error("scheduled_unit_owned_by_other_state");
 	let wasEnabled = false;
 	try {
 		await executor("systemctl", ["--user", "is-enabled", SCHEDULED_ANALYZE_TIMER], { timeout: 5_000 });
@@ -227,6 +249,8 @@ export async function installScheduledAnalyzeSystemd(paths: AgentExperiencePaths
 export async function disableScheduledAnalyzeSystemd(options: ScheduledAnalyzeSystemdOptions = {}): Promise<void> {
 	if ((options.platform ?? process.platform) !== "linux") throw new Error("systemd_unavailable");
 	const executor = options.executor || defaultExecutor;
+	const unitDir = resolve(options.unitDir || defaultUnitDir());
+	await assertUnitOwnership(unitDir, options.expectedStateRoot);
 	try {
 		try {
 			await executor("systemctl", ["--user", "disable", "--now", SCHEDULED_ANALYZE_TIMER], { timeout: 15_000 });
@@ -259,7 +283,7 @@ export async function removeScheduledAnalyzeSystemd(options: ScheduledAnalyzeSys
 	}
 }
 
-export async function inspectScheduledAnalyzeSystemd(paths: AgentExperiencePaths, userId: string, options: ScheduledAnalyzeSystemdOptions = {}): Promise<{ installed: boolean; enabled: boolean; needsRepair: boolean; timezone: string; unitDir: string }> {
+export async function inspectScheduledAnalyzeSystemd(paths: AgentExperiencePaths, userId: string, options: ScheduledAnalyzeSystemdOptions = {}): Promise<{ installed: boolean; enabled: boolean; needsRepair: boolean; ownedByStateRoot: boolean; timezone: string; unitDir: string }> {
 	const unitDir = resolve(options.unitDir || defaultUnitDir());
 	const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "system local time";
 	let service: string;
@@ -268,9 +292,10 @@ export async function inspectScheduledAnalyzeSystemd(paths: AgentExperiencePaths
 		service = await readFile(resolve(unitDir, SCHEDULED_ANALYZE_SERVICE), "utf8");
 		timer = await readFile(resolve(unitDir, SCHEDULED_ANALYZE_TIMER), "utf8");
 	} catch (error: any) {
-		if (error?.code === "ENOENT") return { installed: false, enabled: false, needsRepair: false, timezone, unitDir };
+		if (error?.code === "ENOENT") return { installed: false, enabled: false, needsRepair: false, ownedByStateRoot: false, timezone, unitDir };
 		throw error;
 	}
+	const ownedByStateRoot = serviceOwnsStateRoot(service, paths.root);
 	let needsRepair = true;
 	try {
 		const context = await resolveUnitContext(paths, userId, options);
@@ -286,5 +311,5 @@ export async function inspectScheduledAnalyzeSystemd(paths: AgentExperiencePaths
 	} catch {
 		enabled = false;
 	}
-	return { installed: true, enabled, needsRepair, timezone, unitDir };
+	return { installed: true, enabled, needsRepair, ownedByStateRoot, timezone, unitDir };
 }

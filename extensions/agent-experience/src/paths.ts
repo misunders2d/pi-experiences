@@ -90,7 +90,7 @@ export async function setAgentExperienceEnabled(enabled: boolean, paths = getAge
 		embedding_enabled: false,
 		consolidation_enabled: false,
 		timer_enabled: false,
-		break_in_enabled: false,
+		break_in_enabled: enabled ? current.config.break_in_enabled : false,
 	};
 	await writeAgentExperienceConfig(config, paths);
 	return { config, path: paths.configPath };
@@ -109,8 +109,7 @@ export async function setAgentExperienceSimpleOn(paths = getAgentExperiencePaths
 		embedding_enabled: current.config.timer_enabled ? current.config.embedding_enabled : false,
 		consolidation_enabled: current.config.timer_enabled ? current.config.consolidation_enabled : false,
 		timer_enabled: current.config.timer_enabled,
-		// Scheduled Analyze never interrupts a live conversation.
-		break_in_enabled: false,
+		break_in_enabled: current.config.break_in_enabled,
 	};
 	await writeAgentExperienceConfig(config, paths);
 	return { config, path: paths.configPath };
@@ -149,10 +148,10 @@ export async function setAgentExperienceConsolidationEnabled(consolidationEnable
 		...DEFAULT_AGENT_EXPERIENCE_CONFIG,
 		...current.config,
 		consolidation_enabled: consolidationEnabled,
-		// Schedule lifecycle is managed explicitly by setup. This setter does not
-		// silently mutate an installed timer flag.
+		// Schedule and break-in lifecycles are managed explicitly by setup. This setter
+		// does not silently mutate either preference.
 		timer_enabled: current.config.timer_enabled,
-		break_in_enabled: false,
+		break_in_enabled: current.config.break_in_enabled,
 	};
 	await writeAgentExperienceConfig(config, paths);
 	return { config, path: paths.configPath };
@@ -167,7 +166,7 @@ export async function setAgentExperienceConsolidationModel(model: string, paths 
 		consolidation_enabled: true,
 		// Auth is validated by setup before a scheduled model change is accepted.
 		timer_enabled: current.config.timer_enabled,
-		break_in_enabled: false,
+		break_in_enabled: current.config.break_in_enabled,
 	};
 	await writeAgentExperienceConfig(config, paths);
 	return { config, path: paths.configPath };
@@ -188,8 +187,18 @@ export async function setAgentExperienceTimerEnabled(timerEnabled: boolean, path
 		...DEFAULT_AGENT_EXPERIENCE_CONFIG,
 		...current.config,
 		timer_enabled: timerEnabled,
-		// Scheduled Analyze only creates review suggestions and never interrupts Pi.
-		break_in_enabled: false,
+		break_in_enabled: current.config.break_in_enabled,
+	};
+	await writeAgentExperienceConfig(config, paths);
+	return { config, path: paths.configPath };
+}
+
+export async function setAgentExperienceBreakInEnabled(breakInEnabled: boolean, paths = getAgentExperiencePaths()): Promise<{ config: AgentExperienceConfig; path: string }> {
+	const current = await readAgentExperienceConfig(paths);
+	const config = {
+		...DEFAULT_AGENT_EXPERIENCE_CONFIG,
+		...current.config,
+		break_in_enabled: breakInEnabled,
 	};
 	await writeAgentExperienceConfig(config, paths);
 	return { config, path: paths.configPath };

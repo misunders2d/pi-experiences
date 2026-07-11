@@ -9,7 +9,6 @@ export interface AgentExperienceConfig {
 	analyze_batch_max_bytes: number;
 	timer_enabled: boolean;
 	break_in_enabled: boolean;
-	break_in_auto_apply_min_confidence_bp: number;
 	selector_mode: "instant" | "smart";
 	selector_model: string;
 	selector_timeout_ms: number;
@@ -32,7 +31,6 @@ export const DEFAULT_AGENT_EXPERIENCE_CONFIG: AgentExperienceConfig = Object.fre
 	analyze_batch_max_bytes: 80000,
 	timer_enabled: false,
 	break_in_enabled: false,
-	break_in_auto_apply_min_confidence_bp: 10001,
 	selector_mode: "instant",
 	selector_model: "openai-codex/gpt-5.4-mini",
 	selector_timeout_ms: 5000,
@@ -55,7 +53,6 @@ const BOOLEAN_KEYS = new Set<keyof AgentExperienceConfig>([
 ]);
 
 const NUMBER_KEYS = new Set<keyof AgentExperienceConfig>([
-	"break_in_auto_apply_min_confidence_bp",
 	"selector_timeout_ms",
 	"selector_min_confidence_bp",
 	"selector_min_overlap_score",
@@ -84,7 +81,6 @@ const SECTION_KEY_MAP: Record<string, keyof AgentExperienceConfig> = {
 	"selector.min_overlap_score": "selector_min_overlap_score",
 	"selector.max_habits": "selector_max_habits",
 	"selector.staleness_max": "selector_staleness_max",
-	"break_in.auto_apply_min_confidence_bp": "break_in_auto_apply_min_confidence_bp",
 };
 
 const ENV_KEY_MAP: Record<string, keyof AgentExperienceConfig> = {
@@ -152,7 +148,6 @@ export function formatAgentExperienceConfig(config: AgentExperienceConfig): stri
 		`consolidation_enabled = ${merged.consolidation_enabled}`,
 		`timer_enabled = ${merged.timer_enabled}`,
 		`break_in_enabled = ${merged.break_in_enabled}`,
-		`break_in_auto_apply_min_confidence_bp = ${Math.trunc(merged.break_in_auto_apply_min_confidence_bp)}`,
 		`selector_mode = ${quote(merged.selector_mode)}`,
 		`selector_model = ${quote(merged.selector_model)}`,
 		`selector_timeout_ms = ${merged.selector_timeout_ms}`,
@@ -181,7 +176,7 @@ export function summarizeAgentExperienceConfig(config: AgentExperienceConfig, co
 		`observation_retention_days=${config.observation_retention_days}`,
 		`law_path=${config.law_path} (relative paths resolve under state root)`,
 		`timer=${config.timer_enabled}`,
-		`break_in=${config.break_in_enabled} auto_apply_min_confidence_bp=${config.break_in_auto_apply_min_confidence_bp}`,
+		`break_in=${config.break_in_enabled} review_only=true`,
 		"Selector remains disabled unless master enabled and selector_enabled=true; selector activation requires the configured law file.",
 	];
 	return lines.join("\n");

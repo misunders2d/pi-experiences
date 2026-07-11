@@ -204,11 +204,6 @@ try {
     await lock.release();
   }
 
-  const breakIn = await runConsolidationOnce({ root, db: storage.db, userId: 'owner', observations, modelOutput: modelOutput(observations, { batch_id: 'break-in' }), model: 'openai-codex/gpt-5.5', breakIn: true, config: { break_in_auto_apply_min_confidence_bp: 9900 }, now: '2026-07-08T03:20:00.000Z' });
-  assert.equal(breakIn.dry_run, true);
-  assert.equal(breakIn.break_in_review_only, true);
-  assert.equal(storage.db.prepare('SELECT COUNT(*) AS count FROM habits WHERE condition = ?').get('When reviewing phase seven work').count, 0, 'break-in review-only must not commit');
-
   const commit = await runConsolidationOnce({ root, db: storage.db, userId: 'owner', observations, modelOutput: modelOutput(observations, { batch_id: 'commit-ok' }), model: 'openai-codex/gpt-5.5', dryRun: false, now: '2026-07-08T03:30:00.000Z' });
   assert.equal(commit.ok, true);
   assert.equal(commit.dry_run, false);

@@ -195,6 +195,8 @@ Current law checking uses deterministic freshness plus a dangerous-pattern denyl
 
 Automatic schedule defaults off. On Linux with a working systemd user manager, `/experience setup` may explicitly render and install the package-owned daily 03:30 system-local timer with `Persistent=true`. Before enabling, show the exact Node path, CLI path, host Pi runtime path, unit paths, state root, user, model, timezone, no-work/no-runtime-import/no-model-call behavior, suggestions-only rule, and sanitized next-session receipt behavior. Require a separate confirmation. Setup also owns explicit repair, disable, and removal. Package install/update never activates it.
 
+Break-in review prompts are separately explicit and default off. Setup must explain and confirm ON. After Analyze creates new suggestions, wait for safe idle TUI state; offer exactly Review now, Later, or Turn break-in off once per batch. Scheduled Analyze never opens UI itself; its bounded sanitized result waits for the next eligible TUI session. Never make an extra model call, expose private metadata, or auto-approve/apply from break-in. Suppress or defer during tools, compaction, streaming, queued messages, missing scope/UI, non-TUI modes, and shutdown.
+
 ## Maintainer-only controls
 
 Typed capture/consolidation/review/selector commands and `experience-consolidate` are compatibility/testing controls. Do not present them as the normal path.
@@ -230,5 +232,6 @@ From `/experience setup`:
 - **Review approved habits**: browse active/disabled habits or recheck waiting approvals.
 - **Prevent duplicate habits**: retry preparation, turn off while keeping files, or remove files.
 - **Automatic schedule**: explain/status; explicitly install/enable, repair/rewrite, disable, or remove the local systemd user units. Scheduled Analyze creates suggestions only and never auto-approves.
+- **Break-in review prompts**: explain and explicitly toggle private review-only prompts. Review now only opens Review; Later leaves suggestions waiting; Turn break-in off persists OFF.
 
 If corruption or a future schema is reported, do not bypass it. Preserve state and use a compatible/newer package or validated restore path.

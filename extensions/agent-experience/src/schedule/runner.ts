@@ -87,7 +87,6 @@ export async function runScheduledAnalyzeCore(input: {
 			model: input.config.consolidation_model,
 			config: input.config,
 			dryRun: false,
-			breakIn: false,
 			now: now(),
 		});
 		if (!result.ok) throw new Error(`scheduled_model_output_invalid:${String(result.reason || "invalid")}`);

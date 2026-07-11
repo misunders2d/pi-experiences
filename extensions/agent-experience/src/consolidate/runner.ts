@@ -70,7 +70,7 @@ function tableCounts(db: any): Record<string, number> {
 	return Object.fromEntries(tables.map((table) => [table, Number(db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get().count)]));
 }
 
-export async function runConsolidationOnce(input: { root: string; db: any; userId: string; observations: ValidatedObservationRecord[]; modelOutput: unknown; model: string; config?: AgentExperienceConfig; semantic?: { policy?: Partial<SemanticDedupePolicy>; provider?: EmbeddingAdapter; signal?: AbortSignal }; dryRun?: boolean; breakIn?: boolean; acceptBreakIn?: boolean; now?: string }) {
+export async function runConsolidationOnce(input: { root: string; db: any; userId: string; observations: ValidatedObservationRecord[]; modelOutput: unknown; model: string; config?: AgentExperienceConfig; semantic?: { policy?: Partial<SemanticDedupePolicy>; provider?: EmbeddingAdapter; signal?: AbortSignal }; dryRun?: boolean; now?: string }) {
 	const userId = normalizeUserId(input.userId);
 	const createdAt = input.now || new Date().toISOString();
 	const lock = await acquireConsolidationLock(input.root, { owner: "experience-consolidate", createdAt });
@@ -90,11 +90,8 @@ export async function runConsolidationOnce(input: { root: string; db: any; userI
 			return { ok: false, dry_run: !!input.dryRun, reason: String(error?.message || "model_output_invalid"), quarantined: !input.dryRun, expected, before, after: tableCounts(input.db) };
 		}
 		const diff = summarizeProposalDiff(output);
-		const threshold = Math.max(0, Math.min(10001, Math.trunc(input.config?.break_in_auto_apply_min_confidence_bp ?? 10001)));
-		const minConfidence = output.proposals.reduce((min, proposal) => Math.min(min, proposal.confidence_bp), 10000);
-		const breakInReviewOnly = !!input.breakIn && !input.acceptBreakIn && minConfidence < threshold;
-		if (input.dryRun || breakInReviewOnly) {
-			return { ok: true, dry_run: true, break_in_review_only: breakInReviewOnly, expected, diff, before, after: tableCounts(input.db) };
+		if (input.dryRun) {
+			return { ok: true, dry_run: true, expected, diff, before, after: tableCounts(input.db) };
 		}
 		const semanticPolicy = input.semantic?.policy ? sanitizePolicy(input.semantic.policy) : input.config ? semanticPolicyFromConfig(input.config) : undefined;
 		let semantic: Parameters<typeof processValidatedModelOutput>[0]["semantic"] | undefined;

@@ -7,6 +7,7 @@ import { Box, decodeKittyPrintable, fuzzyFilter, Input, Key, matchesKey, Setting
 import {
 	getAgentExperiencePaths,
 	readAgentExperienceConfig,
+	setAgentExperienceBreakInEnabled,
 	setAgentExperienceCaptureActive,
 	setAgentExperienceCaptureEnabled,
 	setAgentExperienceConsolidationEnabled,
@@ -64,7 +65,8 @@ import { validateStandaloneConsolidationModel } from "./src/consolidate/standalo
 export { __buildAgentExperienceConsolidationSystemPromptForTest, __normalizeAgentExperienceConsolidationModelOutputForTest } from "./src/consolidate/model-adapter.ts";
 import { noteAgentExperienceConversationInput, registerAgentExperienceConversationalTools } from "./src/conversational-tools.ts";
 import { buildHabitSteeringEntry, HABIT_STEERING_ENTRY_TYPE, renderHabitSteeringEntry, type HabitSteeringEntryData } from "./src/steering-note.ts";
-import { consumeScheduledAnalyzeReceipts } from "./src/schedule/receipts.ts";
+import { consumeScheduledAnalyzeReceipts, deleteScheduledAnalyzeReceiptFiles, transitionScheduledAnalyzeReceiptBreakInDelivery, type ScheduledAnalyzeReceiptRecord } from "./src/schedule/receipts.ts";
+import { BreakInQueue, breakInScopeKey, type BreakInScope, type PendingBreakInBatch } from "./src/break-in.ts";
 import { disableScheduledAnalyzeSystemd, inspectScheduledAnalyzeSystemd, installScheduledAnalyzeSystemd, previewScheduledAnalyzeSystemd, removeScheduledAnalyzeSystemd, SCHEDULED_ANALYZE_ON_CALENDAR, SCHEDULED_ANALYZE_SERVICE, SCHEDULED_ANALYZE_TIMER } from "./src/schedule/systemd.ts";
 
 const captureBuffer = new CapturePairBuffer();
@@ -74,7 +76,15 @@ const captureDiagnosticsShown = new Set<string>();
 
 
 let consolidationModelAdapter: ConsolidationModelAdapter | undefined;
+let breakInPendingReviewCountOverride: number | undefined;
 const analyzeJobs = new Map<string, Promise<void>>();
+const breakInQueue = new BreakInQueue();
+const breakInAgentActive = new Set<string>();
+const breakInCompacting = new Set<string>();
+const breakInExperienceCommands = new Set<string>();
+const breakInPromptActive = new Set<string>();
+const breakInShutdown = new Set<string>();
+const breakInToolCalls = new Map<string, Set<string>>();
 
 type SetupReviewAction = "Approve" | "Reject" | "Back to review list";
 type SetupHabitAction = "Disable habit" | "Re-enable habit" | "Archive/hide habit" | "Back to habit list";
@@ -82,7 +92,7 @@ type SetupHabitAction = "Disable habit" | "Re-enable habit" | "Archive/hide habi
 const DETAIL_PANEL_CUSTOM_OPTIONS = { overlay: false } as const;
 
 type LiveModelSearchResult = { model?: string; exact?: true };
-type SetupAction = "save" | "model" | "analyze" | "review" | "duplicates" | "habits" | "embedding" | "retention" | "use" | "schedule" | "status" | "help" | "off" | "done";
+type SetupAction = "save" | "model" | "analyze" | "review" | "duplicates" | "habits" | "embedding" | "retention" | "use" | "schedule" | "breakIn" | "status" | "help" | "off" | "done";
 
 const RESET = "\x1b[0m";
 const PANEL_BG = "\x1b[48;5;235m";
@@ -155,7 +165,7 @@ function modelValueForSetup(config: { consolidation_model: string }): string {
 	return config.consolidation_model || "choose model";
 }
 
-function buildSetupSettingItems(config: { enabled: boolean; capture_enabled: boolean; consolidation_enabled: boolean; consolidation_model: string; selector_enabled: boolean; embedding_enabled?: boolean; observation_retention_days?: number }): SettingItem[] {
+function buildSetupSettingItems(config: { enabled: boolean; capture_enabled: boolean; consolidation_enabled: boolean; consolidation_model: string; selector_enabled: boolean; embedding_enabled?: boolean; observation_retention_days?: number; timer_enabled?: boolean; break_in_enabled?: boolean }): SettingItem[] {
 	const captureActive = config.enabled && config.capture_enabled;
 	const anythingEnabled = config.enabled || config.capture_enabled || config.consolidation_enabled || config.selector_enabled || config.embedding_enabled;
 	return [
@@ -169,6 +179,7 @@ function buildSetupSettingItems(config: { enabled: boolean; capture_enabled: boo
 		{ id: "retention", label: "Keep analyzed source examples", currentValue: `${config.observation_retention_days || 7} days`, values: ["7 days", "14 days", "30 days"], description: "Choose short private retention for rotated redacted source text." },
 		{ id: "use", label: "Use approved habits before replies", currentValue: checkboxValue(config.selector_enabled), values: ["[ ] OFF", "[x] ON"], description: "Space/Enter toggles approved-habit reminders. Suggestions still require review first." },
 		{ id: "schedule", label: "Automatic schedule", currentValue: config.timer_enabled ? "ON" : "off", values: [config.timer_enabled ? "ON" : "off"], description: "Inspect, install, repair, disable, or remove the explicit local 03:30 systemd user timer." },
+		{ id: "breakIn", label: "Break-in review prompts", currentValue: config.break_in_enabled ? "ON" : "off", values: [config.break_in_enabled ? "ON" : "off"], description: "After Analyze creates suggestions and Pi is idle, privately ask whether to open Review. Never auto-applies." },
 		{ id: "status", label: "Show current settings", currentValue: "open", values: ["open"], description: "Show current Agent Experience status." },
 		{ id: "help", label: "Explain these settings", currentValue: "open", values: ["open"], description: "Show setup help." },
 		...(anythingEnabled ? [{ id: "off", label: "Turn all experience features off", currentValue: "open", values: ["open"], description: "Stops capture and runtime gates. Existing local records stay." } satisfies SettingItem] : []),
@@ -180,12 +191,12 @@ class SetupSettingsComponent implements Component {
 	private readonly box: Box;
 	private readonly list: SettingsList;
 
-	constructor(config: { enabled: boolean; capture_enabled: boolean; consolidation_enabled: boolean; consolidation_model: string; selector_enabled: boolean; embedding_enabled?: boolean; observation_retention_days?: number }, done: (result: SetupAction | undefined) => void) {
+	constructor(config: { enabled: boolean; capture_enabled: boolean; consolidation_enabled: boolean; consolidation_model: string; selector_enabled: boolean; embedding_enabled?: boolean; observation_retention_days?: number; timer_enabled?: boolean; break_in_enabled?: boolean }, done: (result: SetupAction | undefined) => void) {
 		this.box = new Box(2, 1, panelBg);
 		this.box.addChild(new Text(style("Agent Experience setup", FG_ACCENT, BOLD), 0, 0));
 		this.box.addChild(new Text(style("Space/Enter toggles checkbox rows or opens action rows. Esc closes.", FG_DIM), 0, 0));
 		this.box.addChild({ render: () => [""], invalidate() {} });
-		this.list = new SettingsList(buildSetupSettingItems(config), 13, setupSettingsTheme, (id) => done(id as SetupAction), () => done("done"), { enableSearch: false });
+		this.list = new SettingsList(buildSetupSettingItems(config), 14, setupSettingsTheme, (id) => done(id as SetupAction), () => done("done"), { enableSearch: false });
 		this.box.addChild(this.list);
 	}
 
@@ -640,11 +651,32 @@ export function __setAgentExperienceConsolidationAdapterForTest(adapter: Consoli
 	consolidationModelAdapter = adapter;
 }
 
+export function __setAgentExperienceBreakInPendingCountForTest(count: number | undefined) {
+	breakInPendingReviewCountOverride = count;
+}
+
+export function __enqueueAgentExperienceBreakInForTest(ctx: ExtensionContext, batchId: string, suggestionCount = 1) {
+	const scope = breakInScopeFromContext(ctx);
+	if (!scope) throw new Error("break_in_scope_invalid");
+	return breakInQueue.enqueue({ origin: "manual", batchId, scope, suggestionCount });
+}
+
+export function __resetAgentExperienceBreakInForTest() {
+	breakInQueue.clear();
+	breakInPendingReviewCountOverride = undefined;
+	breakInAgentActive.clear();
+	breakInCompacting.clear();
+	breakInExperienceCommands.clear();
+	breakInPromptActive.clear();
+	breakInShutdown.clear();
+	breakInToolCalls.clear();
+}
+
 export function __getAgentExperienceDetailPanelOptionsForTest(): typeof DETAIL_PANEL_CUSTOM_OPTIONS {
 	return DETAIL_PANEL_CUSTOM_OPTIONS;
 }
 
-function notify(ctx: ExtensionCommandContext, message: string, level: "info" | "warn" | "error" = "info") {
+function notify(ctx: ExtensionContext, message: string, level: "info" | "warn" | "error" = "info") {
 	try {
 		const ui = (ctx as { ui?: { notify?: (message: string, level?: string) => void } })?.ui;
 		if (typeof ui?.notify === "function") return ui.notify(message, level);
@@ -666,6 +698,92 @@ function captureKeyFromContext(ctx: Pick<ExtensionContext, "sessionManager"> | {
 	const sessionFile = ctx.sessionManager.getSessionFile?.();
 	if (!sessionId || !sessionFile) return undefined;
 	return { sessionId, sessionFile, userId: getConfiguredUserId() };
+}
+
+function breakInScopeFromContext(ctx: Pick<ExtensionContext, "sessionManager"> | { sessionManager?: ExtensionContext["sessionManager"] }): BreakInScope | undefined {
+	const key = captureKeyFromContext(ctx);
+	return key ? { userId: key.userId, sessionId: key.sessionId, sessionFile: key.sessionFile } : undefined;
+}
+
+function scheduleBreakInPrompt(ctx: ExtensionContext, trigger: "manual-job-complete" | "session-start"): void {
+	setTimeout(() => { void maybePromptBreakInReview(ctx, trigger); }, 0);
+}
+
+async function pendingBreakInReviewCount(): Promise<number> {
+	if (breakInPendingReviewCountOverride !== undefined) return breakInPendingReviewCountOverride;
+	try {
+		return await withExistingReviewStorage((storage) => listPendingReviewItems(storage.db, { userId: storage.userId }).items.length);
+	} catch {
+		return 0;
+	}
+}
+
+async function enqueueManualBreakIn(ctx: ExtensionContext, batchId: string, suggestionCount: number): Promise<void> {
+	const scope = breakInScopeFromContext(ctx);
+	if (!scope || ctx.mode !== "tui") return;
+	try {
+		const { config } = await readAgentExperienceConfig(getAgentExperiencePaths());
+		if (!config.enabled || !config.break_in_enabled || suggestionCount < 1) return;
+		const queued = breakInQueue.enqueue({ origin: "manual", batchId, scope, suggestionCount });
+		if (queued.overflowed) notify(ctx, "An older break-in reminder expired because the private in-memory queue reached its bound. Suggestions remain in Review.", "warn");
+		if (queued.queued) scheduleBreakInPrompt(ctx, "manual-job-complete");
+	} catch {
+		// Break-in is optional. Analyze suggestions remain committed and reviewable.
+	}
+}
+
+async function maybePromptBreakInReview(ctx: ExtensionContext, _trigger: "manual-job-complete" | "session-start" | "agent-settled"): Promise<void> {
+	const scope = breakInScopeFromContext(ctx);
+	if (!scope || ctx.mode !== "tui" || ctx.hasUI === false || typeof ctx.ui?.select !== "function" || typeof ctx.isIdle !== "function" || typeof ctx.hasPendingMessages !== "function") return;
+	const scopeKey = breakInScopeKey(scope);
+	if (breakInShutdown.has(scopeKey) || breakInAgentActive.has(scopeKey) || breakInCompacting.has(scopeKey) || breakInExperienceCommands.has(scopeKey) || breakInPromptActive.has(scopeKey) || (breakInToolCalls.get(scopeKey)?.size || 0) > 0) return;
+	if (!ctx.isIdle() || ctx.signal !== undefined || ctx.hasPendingMessages()) return;
+	let config: AgentExperienceConfig;
+	try { ({ config } = await readAgentExperienceConfig(getAgentExperiencePaths())); } catch { return; }
+	if (!config.enabled || !config.break_in_enabled) { breakInQueue.cancelScope(scope); return; }
+	breakInPromptActive.add(scopeKey);
+	try {
+		while (true) {
+			if (!ctx.isIdle() || ctx.signal !== undefined || ctx.hasPendingMessages() || breakInAgentActive.has(scopeKey) || breakInCompacting.has(scopeKey) || breakInExperienceCommands.has(scopeKey) || (breakInToolCalls.get(scopeKey)?.size || 0) > 0) return;
+			const batch = breakInQueue.peek(scope);
+			if (!batch) return;
+			if ((await pendingBreakInReviewCount()) < 1) { breakInQueue.remove(batch); continue; }
+			if (batch.receipt) {
+				const marked = await transitionScheduledAnalyzeReceiptBreakInDelivery(getAgentExperiencePaths().root, {
+					file: batch.receipt.file,
+					receiptId: batch.receipt.id,
+					userId: scope.userId,
+					expected: "queued",
+					next: "prompted",
+				});
+				if (marked !== "updated") { breakInQueue.remove(batch); continue; }
+			}
+			breakInQueue.remove(batch);
+			let choice: string | undefined;
+			try {
+				choice = await ctx.ui.select("Analyze found new review suggestions. What would you like to do?", ["Review now", "Later", "Turn break-in off"]);
+			} catch {
+				notify(ctx, "Break-in review prompt closed safely. Suggestions remain available in Review.", "warn");
+			}
+			if (batch.receipt) {
+				try { await deleteScheduledAnalyzeReceiptFiles(getAgentExperiencePaths().root, [batch.receipt.file]); } catch { notify(ctx, "Break-in receipt cleanup will retry later; suggestions remain safe.", "warn"); }
+			}
+			if (choice === "Turn break-in off") {
+				try {
+					await setAgentExperienceBreakInEnabled(false);
+					breakInQueue.clear();
+					notify(ctx, "Break-in review prompts: OFF. Existing suggestions remain available in Review.", "info");
+				} catch {
+					notify(ctx, "Break-in review prompts could not be turned off safely. No review item was changed; use /experience setup to retry.", "warn");
+				}
+				return;
+			}
+			if (choice === "Review now") await handleReviewSetup(ctx);
+			// Later, cancel, or a closed selector is terminal for this batch.
+		}
+	} finally {
+		breakInPromptActive.delete(scopeKey);
+	}
 }
 
 async function getEffectiveCapture(paths = getAgentExperiencePaths()) {
@@ -821,6 +939,7 @@ async function buildStatusText(): Promise<{ text: string; enabled: boolean }> {
 		`Prevent duplicate habits: ${duplicateStatus}`,
 		`Use approved habits before replies: ${selectorActive ? (config.selector_mode === "instant" ? "ON (local/no-network)" : `ON (${config.selector_mode})`) : config.selector_enabled ? "configured ON, inactive because Experience is OFF" : "OFF"}`,
 		`Automatic schedule: ${scheduleStatus}`,
+		`Break-in review prompts: ${config.break_in_enabled ? "ON (private TUI review-only)" : "OFF"}`,
 		`Next: ${nextStep}`,
 	].join("\n") };
 }
@@ -842,7 +961,7 @@ async function handleHelpSetup(ctx: ExtensionCommandContext, config: AgentExperi
 	notify(ctx, message, "info");
 }
 
-function buildSetupOptions(config: { enabled: boolean; capture_enabled: boolean; consolidation_enabled: boolean; consolidation_model: string; selector_enabled: boolean; embedding_enabled?: boolean; observation_retention_days?: number }): string[] {
+function buildSetupOptions(config: { enabled: boolean; capture_enabled: boolean; consolidation_enabled: boolean; consolidation_model: string; selector_enabled: boolean; embedding_enabled?: boolean; observation_retention_days?: number; timer_enabled?: boolean; break_in_enabled?: boolean }): string[] {
 	const captureActive = config.enabled && config.capture_enabled;
 	const anythingEnabled = config.enabled || config.capture_enabled || config.consolidation_enabled || config.selector_enabled || config.embedding_enabled;
 	return [
@@ -856,6 +975,7 @@ function buildSetupOptions(config: { enabled: boolean; capture_enabled: boolean;
 		`Keep analyzed source examples (${config.observation_retention_days || 7} days)`,
 		`${config.selector_enabled ? "[x]" : "[ ]"} Use approved habits before replies`,
 		`Automatic schedule: ${config.timer_enabled ? "ON" : "off"} (manage/explain)`,
+		`${config.break_in_enabled ? "[x]" : "[ ]"} Break-in review prompts`,
 		"Show current settings",
 		"Explain these settings",
 		...(anythingEnabled ? ["Turn all experience features off"] : []),
@@ -877,7 +997,7 @@ function setupUnavailableMessage(): string {
 	return setupControlsMessage();
 }
 
-function setupHelpMessage(config: { enabled: boolean; capture_enabled: boolean; consolidation_enabled: boolean; selector_enabled: boolean; embedding_enabled?: boolean; observation_retention_days?: number; selector_mode: string; selector_model: string }): string {
+function setupHelpMessage(config: { enabled: boolean; capture_enabled: boolean; consolidation_enabled: boolean; selector_enabled: boolean; embedding_enabled?: boolean; observation_retention_days?: number; selector_mode: string; selector_model: string; break_in_enabled?: boolean }): string {
 	const anythingEnabled = config.enabled || config.capture_enabled || config.consolidation_enabled || config.selector_enabled || config.embedding_enabled;
 	return [
 		"Agent Experience setup help:",
@@ -889,6 +1009,7 @@ function setupHelpMessage(config: { enabled: boolean; capture_enabled: boolean; 
 			? "Use approved habits before replies: lets Pi add only human-approved habits as reminders before future replies. Current mode is local/no-network."
 			: "Use approved habits before replies: lets Pi add only human-approved habits as reminders before future replies. Optional advanced matching remains separately controlled and fail-closed.",
 		"Automatic schedule: optional Linux systemd user timer at 03:30 system-local time with persistent catch-up. Setup shows exact paths and requires confirmation before install/enable; scheduled runs create suggestions only.",
+		"Break-in review prompts: explicit opt-in. After Analyze creates suggestions and Pi is safely idle, one private TUI prompt offers Review now, Later, or Turn break-in off. It makes no extra model call and never approves or applies anything.",
 		"Review suggested habits: opens the list of proposed habits for you to approve or reject. Nothing is auto-approved.",
 		"Resolve duplicate habits: compares both full habit wordings, states exactly what each outcome keeps or hides, and confirms destructive choices inside setup.",
 		"Review approved habits: opens actual active/disabled approved habits so you can inspect, disable, re-enable, or archive/hide one without typing ids or checksums.",
@@ -900,7 +1021,7 @@ function setupHelpMessage(config: { enabled: boolean; capture_enabled: boolean; 
 	].join("\n");
 }
 
-async function chooseSetup(ctx: ExtensionCommandContext, title: string, options: readonly string[], showUnavailable = true): Promise<string | undefined> {
+async function chooseSetup(ctx: ExtensionContext, title: string, options: readonly string[], showUnavailable = true): Promise<string | undefined> {
 	const ui = (ctx as { hasUI?: boolean; ui?: { select?: (title: string, options: string[]) => Promise<string | undefined> | string | undefined } })?.ui;
 	if ((ctx as { hasUI?: boolean }).hasUI === false || typeof ui?.select !== "function") {
 		if (showUnavailable) notify(ctx, setupUnavailableMessage(), "info");
@@ -1047,6 +1168,38 @@ async function handleSetupSelector(ctx: ExtensionCommandContext) {
 	return notify(ctx, "Approved-habit reminder setup cancelled. No config changed.", "info");
 }
 
+async function handleSetupBreakIn(ctx: ExtensionCommandContext) {
+	const paths = getAgentExperiencePaths();
+	const { config } = await readAgentExperienceConfig(paths);
+	const explain = "Explain break-in review prompts (no changes)";
+	const back = "Back/cancel (no changes)";
+	const toggle = config.break_in_enabled ? "Turn break-in review prompts OFF" : "Turn break-in review prompts ON";
+	const choice = await chooseSetup(ctx, "Break-in review prompts", [explain, toggle, back]);
+	if (!choice || choice === back) return notify(ctx, "Break-in review prompt setting unchanged.", "info");
+	if (choice === explain) return notify(ctx, [
+		"Break-in review prompts are private TUI reminders after Analyze creates new suggestions and Pi is safely idle.",
+		"Each Analyze batch can prompt once with Review now, Later, or Turn break-in off.",
+		"They make no extra model call and never approve, reject, merge, activate, or apply anything automatically.",
+		"Scheduled Analyze remains headless; its sanitized result waits for the next eligible private TUI session.",
+	].join("\n"), "info");
+	if (config.break_in_enabled) {
+		await setAgentExperienceBreakInEnabled(false, paths);
+		breakInQueue.clear();
+		return notify(ctx, "Break-in review prompts: OFF. Existing suggestions remain available in Review.", "info");
+	}
+	const confirmation = await chooseActionInPanel(ctx, "Confirm break-in review prompts", [
+		"Scope: private Pi TUI only",
+		"Timing: only after Analyze creates new suggestions and Pi is safely idle",
+		"Choices: Review now, Later, Turn break-in off",
+		"Model calls: none beyond the Analyze run already requested or scheduled",
+		"Authority: review-only; never auto-approves or auto-applies",
+		"Scheduled results: next eligible private TUI session",
+	].join("\n"), [back, "Turn break-in review prompts ON"]);
+	if (confirmation !== "Turn break-in review prompts ON") return notify(ctx, "Break-in review prompt setting unchanged.", "info");
+	await setAgentExperienceBreakInEnabled(true, paths);
+	return notify(ctx, "Break-in review prompts: ON. Prompts remain review-only and private to the TUI.", "info");
+}
+
 async function handleSetupTimer(ctx: ExtensionCommandContext) {
 	const paths = getAgentExperiencePaths();
 	const userId = getConfiguredUserId();
@@ -1125,7 +1278,7 @@ async function handleSetupTimer(ctx: ExtensionCommandContext) {
 		const confirmation = await chooseSetup(ctx, "Disable daily scheduled Analyze?", ["Back/cancel (no changes)", "Disable timer but keep unit files"]);
 		if (confirmation !== "Disable timer but keep unit files") return notify(ctx, "Schedule setup cancelled. No config changed.", "info");
 		try {
-			await disableScheduledAnalyzeSystemd();
+			await disableScheduledAnalyzeSystemd({ expectedStateRoot: paths.root });
 			await setAgentExperienceTimerEnabled(false, paths);
 			return notify(ctx, "Automatic schedule: OFF. Unit files were retained for explicit repair/re-enable or removal.", "info");
 		} catch (error: any) {
@@ -1136,7 +1289,7 @@ async function handleSetupTimer(ctx: ExtensionCommandContext) {
 		const confirmation = await chooseSetup(ctx, "Remove local schedule units?", ["Back/cancel (no changes)", "Disable timer and remove both unit files"]);
 		if (confirmation !== "Disable timer and remove both unit files") return notify(ctx, "Schedule setup cancelled. No config changed.", "info");
 		try {
-			await removeScheduledAnalyzeSystemd();
+			await removeScheduledAnalyzeSystemd({ expectedStateRoot: paths.root });
 			await setAgentExperienceTimerEnabled(false, paths);
 			return notify(ctx, "Automatic schedule: OFF. The package-owned user service and timer files were removed.", "info");
 		} catch (error: any) {
@@ -1206,7 +1359,7 @@ async function chooseActionInPanel(ctx: ExtensionCommandContext, title: string, 
 	return chooseSetup(ctx, title, actions, false);
 }
 
-async function chooseReviewActionInPanel(ctx: ExtensionCommandContext, title: string, details: string): Promise<SetupReviewAction | undefined> {
+async function chooseReviewActionInPanel(ctx: ExtensionContext, title: string, details: string): Promise<SetupReviewAction | undefined> {
 	const ui = (ctx as { hasUI?: boolean; ui?: { custom?: ExtensionCommandContext["ui"]["custom"] } })?.ui;
 	if ((ctx as { hasUI?: boolean }).hasUI !== false && typeof ui?.custom === "function") {
 		return ui.custom<SetupReviewAction | undefined>((_tui, _theme, _keybindings, done) => new ReviewDecisionComponent(title, details, done), DETAIL_PANEL_CUSTOM_OPTIONS);
@@ -1269,7 +1422,7 @@ async function runAnalyzeNowJob(ctx: ExtensionCommandContext, preflight: { lock:
 		const userId = getConfiguredUserId();
 		const output = await adapter.generate({ model, userId, observations: batch, habitContext: preflight.habitContext, expected, signal: (ctx as any).signal });
 		storage = await initExperienceStorage(paths.root, { allowInit: true, userId });
-		const result = await runConsolidationOnce({ root: paths.root, db: storage.db, userId: storage.userId, observations: batch, modelOutput: output, model, config, dryRun: false, breakIn: false, now: new Date().toISOString() });
+		const result = await runConsolidationOnce({ root: paths.root, db: storage.db, userId: storage.userId, observations: batch, modelOutput: output, model, config, dryRun: false, now: new Date().toISOString() });
 		if (!result.ok) return notify(ctx, `Habit learning did not create suggestions: ${redactText(String(result.reason || "model output invalid"))}`, "warn");
 		let promotionNote = "";
 		let promotionProvider: any;
@@ -1300,6 +1453,9 @@ async function runAnalyzeNowJob(ctx: ExtensionCommandContext, preflight: { lock:
 		const inserted = (result as any).result?.inserted || {};
 		const newSuggestionCount = Number(inserted.candidates || 0) + Number(inserted.pending_review || 0);
 		const modelProposalCount = Number((result as any).diff?.proposal_count ?? candidateIds.length ?? 0);
+		if (newSuggestionCount > 0) {
+			await enqueueManualBreakIn(ctx, `manual:${expected.file_generation}:${expected.seq_start}:${expected.seq_end}`, newSuggestionCount);
+		}
 		const rangeLine = `Analyze saved examples finished: ${plural(batch.length, "new saved example")} checked${preflight.totalUnread > batch.length ? ` of ${preflight.totalUnread} waiting` : ""}.`;
 		const moreLine = preflight.hasMore ? "More unread examples remain; choose Analyze saved examples now again for the next bounded batch." : "All currently saved examples are analyzed.";
 		return notify(ctx, newSuggestionCount > 0 ? [
@@ -1771,7 +1927,7 @@ async function handleApprovedHabitsSetup(ctx: ExtensionCommandContext) {
 	}
 }
 
-async function handleReviewSetup(ctx: ExtensionCommandContext) {
+async function handleReviewSetup(ctx: ExtensionContext) {
 	const paths = getAgentExperiencePaths();
 	if (!(await fileExists(resolvePrivatePath(paths.root, "ledger.sqlite")))) return notify(ctx, "No review list yet. Choose Analyze saved examples now first.", "info");
 	while (true) {
@@ -1813,7 +1969,7 @@ async function handleReviewSetup(ctx: ExtensionCommandContext) {
 	}
 }
 
-async function ensureLawFileForSetup(ctx: ExtensionCommandContext): Promise<boolean> {
+async function ensureLawFileForSetup(ctx: ExtensionContext): Promise<boolean> {
 	const paths = getAgentExperiencePaths();
 	const { config } = await readAgentExperienceConfig(paths);
 	try {
@@ -1957,6 +2113,11 @@ async function handleSetupDirect(args: string[], ctx: ExtensionCommandContext): 
 			if (!value || ["explain", "status", "on", "enable", "off", "disable", "remove", "repair"].includes(value)) await handleSetupTimer(ctx);
 			else notify(ctx, "Open /experience setup and use the Automatic schedule row for explicit install, disable, repair, or removal.", "warn");
 			return true;
+		case "break-in":
+		case "breakin":
+		case "review-prompts":
+			await handleSetupBreakIn(ctx);
+			return true;
 		case "8":
 		case "help": {
 			const { config } = await readAgentExperienceConfig(getAgentExperiencePaths());
@@ -2000,6 +2161,7 @@ async function handleSetup(ctx: ExtensionCommandContext, args: string[] = []) {
 			else if (choice.startsWith("Choose model for habit learning")) await handleSetupModel(ctx);
 			else if (choice === "Analyze saved examples now") { await handleAnalyzeNow(ctx); return; }
 			else if (choice.startsWith("Automatic schedule")) await handleSetupTimer(ctx);
+			else if (choice.includes("Break-in review prompts")) await handleSetupBreakIn(ctx);
 			else if (choice.includes("Use approved habits before replies")) await handleSetupUseHabitsToggle(ctx, !config.selector_enabled);
 			else if (choice.includes("Save chat examples locally")) {
 				if (config.enabled && config.capture_enabled) captureBuffer.clearAll();
@@ -2023,6 +2185,7 @@ async function handleSetup(ctx: ExtensionCommandContext, args: string[] = []) {
 		else if (action === "retention") await handleSetupRetention(ctx);
 		else if (action === "use") await handleSetupUseHabitsToggle(ctx, !config.selector_enabled);
 		else if (action === "schedule") await handleSetupTimer(ctx);
+		else if (action === "breakIn") await handleSetupBreakIn(ctx);
 		else if (action === "status") await handleStatusSetup(ctx);
 		else if (action === "help") await handleHelpSetup(ctx, config);
 		else if (action === "off") await handleOff(ctx);
@@ -2041,6 +2204,7 @@ async function handleOn(ctx: ExtensionCommandContext) {
 			"Analyze saved examples now: available from /experience setup after choosing a model",
 			`Use approved habits before replies: ${config.selector_enabled ? "ON" : "OFF until enabled from setup"}`,
 			`Automatic schedule: ${config.timer_enabled ? "ON" : "OFF until explicitly enabled from setup"}`,
+			`Break-in review prompts: ${config.break_in_enabled ? "ON" : "OFF until explicitly enabled from setup"}`,
 			"Open /experience setup anytime for current settings and next step.",
 		].join("\n"),
 		"info",
@@ -2051,10 +2215,13 @@ async function handleOff(ctx: ExtensionCommandContext) {
 	const paths = getAgentExperiencePaths();
 	const { config } = await readAgentExperienceConfig(paths);
 	let scheduleEnabled = config.timer_enabled;
-	try { scheduleEnabled ||= (await inspectScheduledAnalyzeSystemd(paths, getConfiguredUserId(), { piRuntimeRoot: getPackageDir() })).enabled; } catch {}
+	try {
+		const schedule = await inspectScheduledAnalyzeSystemd(paths, getConfiguredUserId(), { piRuntimeRoot: getPackageDir() });
+		scheduleEnabled ||= schedule.enabled && schedule.ownedByStateRoot;
+	} catch {}
 	if (scheduleEnabled) {
 		try {
-			await disableScheduledAnalyzeSystemd();
+			await disableScheduledAnalyzeSystemd({ expectedStateRoot: paths.root });
 		} catch (error: any) {
 			return notify(ctx, `Agent Experience remains ON because setup could not verify the scheduled timer was disabled. Detail: ${redactText(String(error?.message || error)).slice(0, 180)}`, "warn");
 		}
@@ -2406,10 +2573,27 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 	registerAgentExperienceConversationalTools(pi);
 
 	pi.on("session_start", async (event, ctx) => {
+		const scope = breakInScopeFromContext(ctx);
+		if (scope) breakInShutdown.delete(breakInScopeKey(scope));
 		if (ctx.mode !== "tui" || !["startup", "new", "resume"].includes(event.reason)) return;
 		const paths = getAgentExperiencePaths();
 		try {
-			await consumeScheduledAnalyzeReceipts(paths.root, getConfiguredUserId(), (message, level) => ctx.ui.notify(message, level));
+			const { config } = await readAgentExperienceConfig(paths);
+			const holdEligibleForBreakIn = !!scope && config.enabled && config.break_in_enabled;
+			const consumed = await consumeScheduledAnalyzeReceipts(paths.root, getConfiguredUserId(), (message, level) => ctx.ui.notify(message, level), { holdEligibleForBreakIn });
+			if (scope) {
+				for (const record of consumed.held) {
+					const queued = breakInQueue.enqueue({
+						origin: "scheduled",
+						batchId: `scheduled:${record.receipt.id}`,
+						scope,
+						suggestionCount: record.receipt.new_suggestions || 1,
+						receipt: { file: record.file, id: record.receipt.id },
+					});
+					if (queued.overflowed) ctx.ui.notify("An older break-in reminder expired because the private in-memory queue reached its bound. Suggestions remain in Review.", "warning");
+				}
+				if (consumed.held.length) scheduleBreakInPrompt(ctx, "session-start");
+			}
 		} catch {
 			console.warn("Agent Experience scheduled receipt remains pending because it could not be shown or consumed safely.");
 		}
@@ -2434,9 +2618,13 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 	pi.registerCommand("experience", {
 		description: "Agent Experience setup control panel; advanced/backcompat commands remain hidden for maintainers",
 		handler: async (args, ctx) => {
-			const tokens = String(args || "").trim().split(/\s+/).filter(Boolean);
-			const [command = "status", subcommand] = tokens;
-			switch (command.toLowerCase()) {
+			const breakInScope = breakInScopeFromContext(ctx);
+			const breakInKey = breakInScope ? breakInScopeKey(breakInScope) : undefined;
+			if (breakInKey) breakInExperienceCommands.add(breakInKey);
+			try {
+				const tokens = String(args || "").trim().split(/\s+/).filter(Boolean);
+				const [command = "status", subcommand] = tokens;
+				switch (command.toLowerCase()) {
 				case "status":
 					await handleStatus(ctx);
 					return;
@@ -2480,13 +2668,18 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 				case "--help":
 				case "-h":
 					return notify(ctx, usage(subcommand), "info");
-				default:
-					return notify(ctx, `${usage()}\nUnknown subcommand: ${command}`, "warn");
+					default:
+						return notify(ctx, `${usage()}\nUnknown subcommand: ${command}`, "warn");
+				}
+			} finally {
+				if (breakInKey) breakInExperienceCommands.delete(breakInKey);
 			}
 		},
 	});
 
 	pi.on("before_agent_start", async (event, ctx) => {
+		const breakScope = breakInScopeFromContext(ctx);
+		if (breakScope) breakInAgentActive.add(breakInScopeKey(breakScope));
 		// Every normal user turn replaces prior transient steering state in this
 		// exact user/session scope. Approved wording is persisted only in the later
 		// custom marker entry, never in this in-memory key.
@@ -2670,14 +2863,56 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 		}
 	});
 
+	pi.on("tool_execution_start", async (event, ctx) => {
+		const scope = breakInScopeFromContext(ctx);
+		if (!scope) return;
+		const key = breakInScopeKey(scope);
+		const tools = breakInToolCalls.get(key) || new Set<string>();
+		tools.add(event.toolCallId);
+		breakInToolCalls.set(key, tools);
+	});
+
+	pi.on("tool_execution_end", async (event, ctx) => {
+		const scope = breakInScopeFromContext(ctx);
+		if (!scope) return;
+		const key = breakInScopeKey(scope);
+		const tools = breakInToolCalls.get(key);
+		tools?.delete(event.toolCallId);
+		if (!tools?.size) breakInToolCalls.delete(key);
+	});
+
+	pi.on("session_before_compact", async (_event, ctx) => {
+		const scope = breakInScopeFromContext(ctx);
+		if (scope) breakInCompacting.add(breakInScopeKey(scope));
+	});
+
+	pi.on("session_compact", async (_event, ctx) => {
+		const scope = breakInScopeFromContext(ctx);
+		if (scope) breakInCompacting.delete(breakInScopeKey(scope));
+	});
+
 	pi.on("agent_settled", async (_event, ctx) => {
 		const steeringScope = steeringScopeFromContext(ctx);
 		if (steeringScope) pendingSteeringRuns.delete(steeringScope);
+		const breakScope = breakInScopeFromContext(ctx);
+		if (breakScope) breakInAgentActive.delete(breakInScopeKey(breakScope));
+		await maybePromptBreakInReview(ctx, "agent-settled");
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {
 		const steeringScope = steeringScopeFromContext(ctx);
 		if (steeringScope) pendingSteeringRuns.delete(steeringScope);
+		const breakScope = breakInScopeFromContext(ctx);
+		if (breakScope) {
+			const key = breakInScopeKey(breakScope);
+			breakInShutdown.add(key);
+			breakInQueue.cancelScope(breakScope);
+			breakInAgentActive.delete(key);
+			breakInCompacting.delete(key);
+			breakInExperienceCommands.delete(key);
+			breakInPromptActive.delete(key);
+			breakInToolCalls.delete(key);
+		}
 		const { paths, active } = await getEffectiveCapture();
 		const key = captureKeyFromContext(ctx);
 		if (!active || !key) {

@@ -8,6 +8,8 @@ import { ensurePrivateRoot, resolvePrivatePath } from "../storage/private-root.t
 
 export type ScheduledAnalyzeReceiptStatus = "ok" | "failed" | "no_work" | "locked" | "disabled";
 
+export type ScheduledAnalyzeBreakInDeliveryState = "queued" | "prompted";
+
 export interface ScheduledAnalyzeReceipt {
 	schema_version: 1;
 	id: string;
@@ -22,6 +24,12 @@ export interface ScheduledAnalyzeReceipt {
 	has_more?: boolean;
 	safe_code?: string;
 	queue_overflowed?: true;
+	break_in_delivery?: { state: ScheduledAnalyzeBreakInDeliveryState; updated_at: string };
+}
+
+export interface ScheduledAnalyzeReceiptRecord {
+	file: string;
+	receipt: ScheduledAnalyzeReceipt;
 }
 
 const MAX_PENDING_RECEIPTS = 20;
@@ -78,6 +86,14 @@ function validateReceipt(value: unknown): ScheduledAnalyzeReceipt {
 	if (typeof raw.has_more === "boolean") receipt.has_more = raw.has_more;
 	if (raw.safe_code) receipt.safe_code = raw.safe_code;
 	if (raw.queue_overflowed === true) receipt.queue_overflowed = true;
+	if (raw.break_in_delivery !== undefined) {
+		const delivery = raw.break_in_delivery;
+		if (!delivery || typeof delivery !== "object" || Array.isArray(delivery)) throw new Error("scheduled_receipt_invalid");
+		if (Object.keys(delivery).some((key) => key !== "state" && key !== "updated_at")) throw new Error("scheduled_receipt_invalid");
+		if (delivery.state !== "queued" && delivery.state !== "prompted") throw new Error("scheduled_receipt_invalid");
+		if (typeof delivery.updated_at !== "string" || !Number.isFinite(Date.parse(delivery.updated_at))) throw new Error("scheduled_receipt_invalid");
+		receipt.break_in_delivery = { state: delivery.state, updated_at: new Date(delivery.updated_at).toISOString() };
+	}
 	return receipt;
 }
 
@@ -115,7 +131,8 @@ async function makeRoom(root: string): Promise<boolean> {
 		let rank = 2;
 		try {
 			const receipt = validateReceipt(JSON.parse(await readFile(resolvePrivatePath(dir, file), "utf8")));
-			if (receipt.status === "ok" || receipt.status === "no_work") rank = 0;
+			if (receipt.break_in_delivery?.state === "queued") rank = 1;
+			else if (receipt.status === "ok" || receipt.status === "no_work") rank = 0;
 			else if (receipt.status === "locked" || receipt.status === "disabled") rank = 1;
 		} catch {
 			// Preserve unreadable evidence before valid informational receipts.
@@ -206,7 +223,66 @@ export function formatScheduledAnalyzeReceiptSummary(data: { receipts: Scheduled
 	return lines.join("\n");
 }
 
+async function replaceScheduledAnalyzeReceiptFile(root: string, file: string, receipt: ScheduledAnalyzeReceipt): Promise<void> {
+	if (basename(file) !== file || !RECEIPT_FILE_RE.test(file)) throw new Error("scheduled_receipt_invalid_filename");
+	const dir = pendingDir(root);
+	const target = resolvePrivatePath(dir, file);
+	const temp = resolvePrivatePath(dir, `.tmp-${randomUUID()}`);
+	const nofollow = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
+	const handle = await open(temp, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | nofollow, 0o600);
+	try {
+		await handle.writeFile(canonicalJson(validateReceipt(receipt)), "utf8");
+		await handle.sync();
+	} finally {
+		await handle.close();
+	}
+	await rename(temp, target);
+	await chmod(target, 0o600);
+	await fsyncDirectory(dir);
+}
+
+export type ScheduledAnalyzeBreakInTransitionResult = "updated" | "missing" | "mismatch" | "invalid" | "already_marked";
+
+export async function transitionScheduledAnalyzeReceiptBreakInDelivery(root: string, input: {
+	file: string;
+	receiptId: string;
+	userId: string;
+	expected: "none" | "queued";
+	next: ScheduledAnalyzeBreakInDeliveryState;
+	updatedAt?: string;
+}): Promise<ScheduledAnalyzeBreakInTransitionResult> {
+	if (basename(input.file) !== input.file || !RECEIPT_FILE_RE.test(input.file)) return "invalid";
+	return withOwnedLock(root, "scheduled-receipts", async () => {
+		const path = resolvePrivatePath(pendingDir(root), input.file);
+		let receipt: ScheduledAnalyzeReceipt;
+		try {
+			const info = await lstat(path);
+			if (!info.isFile() || info.isSymbolicLink()) return "invalid";
+			receipt = validateReceipt(JSON.parse(await readFile(path, "utf8")));
+		} catch (error: any) {
+			if (error?.code === "ENOENT") return "missing";
+			return "invalid";
+		}
+		if (receipt.id !== input.receiptId || receipt.user_id !== input.userId) return "mismatch";
+		const current = receipt.break_in_delivery?.state;
+		if (current === input.next) return "already_marked";
+		if ((input.expected === "none" && current !== undefined) || (input.expected === "queued" && current !== "queued")) return "mismatch";
+		const updatedAt = input.updatedAt || new Date().toISOString();
+		if (!Number.isFinite(Date.parse(updatedAt))) return "invalid";
+		await replaceScheduledAnalyzeReceiptFile(root, input.file, {
+			...receipt,
+			break_in_delivery: { state: input.next, updated_at: new Date(updatedAt).toISOString() },
+		});
+		return "updated";
+	}, { waitMs: 2_000 });
+}
+
+export function isScheduledAnalyzeBreakInEligible(receipt: ScheduledAnalyzeReceipt): boolean {
+	return receipt.status === "ok" && (receipt.new_suggestions || 0) > 0;
+}
+
 export async function deleteScheduledAnalyzeReceiptFiles(root: string, files: string[]): Promise<void> {
+	if (!files.length) return;
 	await withOwnedLock(root, "scheduled-receipts", async () => {
 		const dir = pendingDir(root);
 		for (const file of files) {
@@ -217,15 +293,37 @@ export async function deleteScheduledAnalyzeReceiptFiles(root: string, files: st
 	}, { waitMs: 2_000 });
 }
 
-export async function consumeScheduledAnalyzeReceipts(root: string, userId: string, notify: (message: string, level: "info" | "warn") => void | Promise<void>): Promise<{ shown: boolean; deleted: number }> {
+export async function consumeScheduledAnalyzeReceipts(root: string, userId: string, notify: (message: string, level: "info" | "warn") => void | Promise<void>, options: { holdEligibleForBreakIn?: boolean } = {}): Promise<{ shown: boolean; deleted: number; held: ScheduledAnalyzeReceiptRecord[] }> {
 	const pending = await readScheduledAnalyzeReceipts(root);
-	const selected = pending.receipts.map((receipt, index) => ({ receipt, file: pending.files[index] })).filter((item) => item.receipt.user_id === userId);
-	const message = formatScheduledAnalyzeReceiptSummary({ receipts: selected.map((item) => item.receipt), unreadable: pending.unreadable });
-	if (!message) return { shown: false, deleted: 0 };
-	const level = selected.some((item) => item.receipt.severity === "warn") || pending.unreadable ? "warn" : "info";
-	await notify(message, level);
-	await deleteScheduledAnalyzeReceiptFiles(root, selected.map((item) => item.file));
-	return { shown: true, deleted: selected.length };
+	const selected: ScheduledAnalyzeReceiptRecord[] = pending.receipts.map((receipt, index) => ({ receipt, file: pending.files[index] })).filter((item) => item.receipt.user_id === userId);
+	const prompted = selected.filter((item) => item.receipt.break_in_delivery?.state === "prompted");
+	const queued = options.holdEligibleForBreakIn ? selected.filter((item) => item.receipt.break_in_delivery?.state === "queued" && isScheduledAnalyzeBreakInEligible(item.receipt)) : [];
+	const queuedWhileOff = options.holdEligibleForBreakIn ? [] : selected.filter((item) => item.receipt.break_in_delivery?.state === "queued");
+	const freshHeld = options.holdEligibleForBreakIn ? selected.filter((item) => !item.receipt.break_in_delivery && isScheduledAnalyzeBreakInEligible(item.receipt)) : [];
+	const excluded = new Set([...prompted, ...queued, ...queuedWhileOff, ...freshHeld].map((item) => item.file));
+	const normal = selected.filter((item) => !excluded.has(item.file));
+	const visible = [...normal, ...freshHeld];
+	const message = formatScheduledAnalyzeReceiptSummary({ receipts: visible.map((item) => item.receipt), unreadable: pending.unreadable });
+	if (message) {
+		const level = visible.some((item) => item.receipt.severity === "warn") || pending.unreadable ? "warn" : "info";
+		await notify(message, level);
+	}
+	const held: ScheduledAnalyzeReceiptRecord[] = [...queued];
+	for (const item of freshHeld) {
+		const queuedAt = new Date().toISOString();
+		const transition = await transitionScheduledAnalyzeReceiptBreakInDelivery(root, {
+			file: item.file,
+			receiptId: item.receipt.id,
+			userId,
+			expected: "none",
+			next: "queued",
+			updatedAt: queuedAt,
+		});
+		if (transition === "updated") held.push({ ...item, receipt: { ...item.receipt, break_in_delivery: { state: "queued", updated_at: queuedAt } } });
+	}
+	const deleteFiles = [...normal, ...prompted, ...queuedWhileOff].map((item) => item.file);
+	await deleteScheduledAnalyzeReceiptFiles(root, deleteFiles);
+	return { shown: !!message, deleted: deleteFiles.length, held };
 }
 
 export const SCHEDULED_ANALYZE_RECEIPT_LIMIT = MAX_PENDING_RECEIPTS;

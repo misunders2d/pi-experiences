@@ -151,6 +151,8 @@ Typed capture/consolidation/review/selector commands and `experience-consolidate
 
 Automatic schedule defaults off and is Linux/systemd-user only. Setup renders absolute Node, CLI, host Pi runtime, config, and state paths; shows them with the selected model, fixed daily 03:30 system-local time, and `Persistent=true`; then requires explicit confirmation before installing/enabling the package-owned units. Moving or updating the host Pi runtime makes the unit require explicit repair. Scheduled runs call the model only for unread saved examples, create suggestions only, and write a bounded sanitized receipt shown once in the next eligible Pi TUI session. Setup can repair, disable, or remove the units. Package installation and updates never activate them.
 
+Break-in review prompts are a separate explicit setup toggle and default off. After Analyze creates new suggestions and Pi is safely idle, one private TUI prompt per batch offers Review now, Later, or Turn break-in off. It makes no extra model call, stores no suggestion text in its queue, and never auto-approves or applies anything. Scheduled Analyze stays headless; eligible results wait for the next private TUI session.
+
 ## Validation
 
 Run from package root:

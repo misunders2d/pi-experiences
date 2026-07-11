@@ -74,7 +74,6 @@ var init_config = __esm({
       analyze_batch_max_bytes: 8e4,
       timer_enabled: false,
       break_in_enabled: false,
-      break_in_auto_apply_min_confidence_bp: 10001,
       selector_mode: "instant",
       selector_model: "openai-codex/gpt-5.4-mini",
       selector_timeout_ms: 5e3,
@@ -95,7 +94,6 @@ var init_config = __esm({
       "break_in_enabled"
     ]);
     NUMBER_KEYS = /* @__PURE__ */ new Set([
-      "break_in_auto_apply_min_confidence_bp",
       "selector_timeout_ms",
       "selector_min_confidence_bp",
       "selector_min_overlap_score",
@@ -112,8 +110,7 @@ var init_config = __esm({
       "selector.min_confidence_bp": "selector_min_confidence_bp",
       "selector.min_overlap_score": "selector_min_overlap_score",
       "selector.max_habits": "selector_max_habits",
-      "selector.staleness_max": "selector_staleness_max",
-      "break_in.auto_apply_min_confidence_bp": "break_in_auto_apply_min_confidence_bp"
+      "selector.staleness_max": "selector_staleness_max"
     };
     ENV_KEY_MAP = {
       AX_SELECTOR_MODE: "selector_mode",
@@ -3421,11 +3418,8 @@ async function runConsolidationOnce(input) {
       return { ok: false, dry_run: !!input.dryRun, reason: String(error?.message || "model_output_invalid"), quarantined: !input.dryRun, expected, before, after: tableCounts(input.db) };
     }
     const diff = summarizeProposalDiff(output);
-    const threshold = Math.max(0, Math.min(10001, Math.trunc(input.config?.break_in_auto_apply_min_confidence_bp ?? 10001)));
-    const minConfidence = output.proposals.reduce((min, proposal) => Math.min(min, proposal.confidence_bp), 1e4);
-    const breakInReviewOnly = !!input.breakIn && !input.acceptBreakIn && minConfidence < threshold;
-    if (input.dryRun || breakInReviewOnly) {
-      return { ok: true, dry_run: true, break_in_review_only: breakInReviewOnly, expected, diff, before, after: tableCounts(input.db) };
+    if (input.dryRun) {
+      return { ok: true, dry_run: true, expected, diff, before, after: tableCounts(input.db) };
     }
     const semanticPolicy = input.semantic?.policy ? sanitizePolicy(input.semantic.policy) : input.config ? semanticPolicyFromConfig(input.config) : void 0;
     let semantic;
@@ -4083,7 +4077,6 @@ async function runScheduledAnalyzeCore(input) {
       model: input.config.consolidation_model,
       config: input.config,
       dryRun: false,
-      breakIn: false,
       now: now()
     });
     if (!result.ok) throw new Error(`scheduled_model_output_invalid:${String(result.reason || "invalid")}`);
@@ -4205,6 +4198,14 @@ function validateReceipt(value) {
   if (typeof raw.has_more === "boolean") receipt.has_more = raw.has_more;
   if (raw.safe_code) receipt.safe_code = raw.safe_code;
   if (raw.queue_overflowed === true) receipt.queue_overflowed = true;
+  if (raw.break_in_delivery !== void 0) {
+    const delivery = raw.break_in_delivery;
+    if (!delivery || typeof delivery !== "object" || Array.isArray(delivery)) throw new Error("scheduled_receipt_invalid");
+    if (Object.keys(delivery).some((key) => key !== "state" && key !== "updated_at")) throw new Error("scheduled_receipt_invalid");
+    if (delivery.state !== "queued" && delivery.state !== "prompted") throw new Error("scheduled_receipt_invalid");
+    if (typeof delivery.updated_at !== "string" || !Number.isFinite(Date.parse(delivery.updated_at))) throw new Error("scheduled_receipt_invalid");
+    receipt.break_in_delivery = { state: delivery.state, updated_at: new Date(delivery.updated_at).toISOString() };
+  }
   return receipt;
 }
 async function listReceiptFiles(root) {
@@ -4237,7 +4238,8 @@ async function makeRoom(root) {
     let rank = 2;
     try {
       const receipt = validateReceipt(JSON.parse(await readFile9(resolvePrivatePath(dir, file), "utf8")));
-      if (receipt.status === "ok" || receipt.status === "no_work") rank = 0;
+      if (receipt.break_in_delivery?.state === "queued") rank = 1;
+      else if (receipt.status === "ok" || receipt.status === "no_work") rank = 0;
       else if (receipt.status === "locked" || receipt.status === "disabled") rank = 1;
     } catch {
       rank = 3;
@@ -4374,7 +4376,7 @@ async function main() {
   try {
     const observations = await readValidatedObservationGeneration(paths.root, { file_generation: generation, path: "observations.jsonl" }, userId);
     const output = JSON.parse(await readFile10(resolve3(fixturePath), "utf8"));
-    const result = await runConsolidationOnce({ root: paths.root, db: storage.db, userId: storage.userId, observations, modelOutput: output, model: config.consolidation_model, config, dryRun, breakIn: config.break_in_enabled, now: (/* @__PURE__ */ new Date()).toISOString() });
+    const result = await runConsolidationOnce({ root: paths.root, db: storage.db, userId: storage.userId, observations, modelOutput: output, model: config.consolidation_model, config, dryRun, now: (/* @__PURE__ */ new Date()).toISOString() });
     console.log(JSON.stringify(result, null, 2));
     if (!result.ok) process.exitCode = 2;
   } finally {

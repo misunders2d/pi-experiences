@@ -443,6 +443,12 @@ The package never installs a timer during npm/Pi installation. From `/experience
 
 Setup can inspect, repair/rewrite, disable, or remove the package-owned user units. Because the rendered service pins absolute Node and package CLI paths, rerun setup after a Node/package-path change if status reports that the schedule needs repair. For local diagnostics, use `journalctl --user -u pi-experiences-agent-experience-analyze.service`; journal output contains only sanitized status codes.
 
+### Optional break-in review prompts
+
+`/experience setup` can explicitly enable private TUI break-in prompts. Default is off. After a manual Analyze batch creates new suggestions, the prompt waits until Pi is idle; scheduled results wait for the next eligible private TUI session. Each Analyze batch prompts at most once with exactly **Review now**, **Later**, or **Turn break-in off**.
+
+Break-in is review-only. It makes no extra model call and never approves, rejects, merges, activates, or applies a habit. `Review now` only opens the existing review UI, where every decision still requires human action. `Later` ends that batch reminder while leaving suggestions in Review. Missing session scope, UI, idle state, readable review state, or safe lifecycle suppresses/defer the prompt. Tool execution, compaction, streaming, queued messages, headless modes, and session shutdown cannot open it. Only bounded sanitized metadata is retained; no suggestion text, source references, prompts, model output, credentials, or private paths enter the break-in queue.
+
 ### Law-check caveat
 
 The current law checker is deterministic v1: it verifies configured-law freshness/integrity and blocks a small denylist of dangerous habit text patterns. It does **not** semantically compare every habit against the full law text. Future semantic contradiction checks must route to pending human review, not direct activation.

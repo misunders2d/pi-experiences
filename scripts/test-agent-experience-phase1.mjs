@@ -35,7 +35,7 @@ const fakePi = {
 agentExperienceExtension(fakePi);
 assert.deepEqual([...commands.keys()], ['experience'], 'extension should register only /experience command');
 assert.deepEqual([...tools.keys()].sort(), ['agent_experience_apply_review', 'agent_experience_confirm_habit', 'agent_experience_draft_habit', 'agent_experience_list_review'], 'extension should register only the four conversational Agent Experience tools');
-assert.deepEqual([...handlers.keys()].sort(), ['agent_end', 'agent_settled', 'before_agent_start', 'context', 'input', 'session_shutdown', 'session_start'], 'extension may register capture lifecycle, scheduled receipt delivery, plus response-specific fail-closed selector hooks');
+assert.deepEqual([...handlers.keys()].sort(), ['agent_end', 'agent_settled', 'before_agent_start', 'context', 'input', 'session_before_compact', 'session_compact', 'session_shutdown', 'session_start', 'tool_execution_end', 'tool_execution_start'], 'extension may register capture, scheduled receipt, response steering, and fail-closed break-in lifecycle hooks');
 
 const plainSetupLeakPattern = /capture=|learning=|guidance=|consolidation=|timer=|break_in=|selector=|selector_mode=|pre-injection/i;
 const paths = getAgentExperiencePaths();
@@ -140,6 +140,7 @@ assert.deepEqual(notes.find((note) => note.level === 'select').options, [
   'Keep analyzed source examples (7 days)',
   '[ ] Use approved habits before replies',
   'Automatic schedule: off (manage/explain)',
+  '[ ] Break-in review prompts',
   'Show current settings',
   'Explain these settings',
   'Done',

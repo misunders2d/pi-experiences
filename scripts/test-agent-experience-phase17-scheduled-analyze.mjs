@@ -10,9 +10,9 @@ import agentExperienceExtension from '../extensions/agent-experience/index.ts';
 import { DEFAULT_AGENT_EXPERIENCE_CONFIG } from '../extensions/agent-experience/src/config.ts';
 import { loadStandalonePiRuntime } from '../extensions/agent-experience/src/consolidate/standalone-model-adapter.ts';
 import { setAgentExperienceConsolidationModel, setAgentExperienceTimerEnabled } from '../extensions/agent-experience/src/paths.ts';
-import { consumeScheduledAnalyzeReceipts, readScheduledAnalyzeReceipts, SCHEDULED_ANALYZE_RECEIPT_LIMIT, writeScheduledAnalyzeReceipt } from '../extensions/agent-experience/src/schedule/receipts.ts';
+import { consumeScheduledAnalyzeReceipts, readScheduledAnalyzeReceipts, SCHEDULED_ANALYZE_RECEIPT_LIMIT, transitionScheduledAnalyzeReceiptBreakInDelivery, writeScheduledAnalyzeReceipt } from '../extensions/agent-experience/src/schedule/receipts.ts';
 import { runScheduledAnalyzeCore } from '../extensions/agent-experience/src/schedule/runner.ts';
-import { __encodeSystemdConditionPathForTest, installScheduledAnalyzeSystemd, renderScheduledAnalyzeUnits, SCHEDULED_ANALYZE_ON_CALENDAR, SCHEDULED_ANALYZE_SERVICE, SCHEDULED_ANALYZE_TIMER } from '../extensions/agent-experience/src/schedule/systemd.ts';
+import { __encodeSystemdConditionPathForTest, __serviceOwnsScheduledAnalyzeStateRootForTest, disableScheduledAnalyzeSystemd, installScheduledAnalyzeSystemd, renderScheduledAnalyzeUnits, SCHEDULED_ANALYZE_ON_CALENDAR, SCHEDULED_ANALYZE_SERVICE, SCHEDULED_ANALYZE_TIMER } from '../extensions/agent-experience/src/schedule/systemd.ts';
 import { acquireOwnedLock } from '../extensions/agent-experience/src/storage/locks.ts';
 import { appendObservation } from '../extensions/agent-experience/src/storage/observations.ts';
 
@@ -55,6 +55,8 @@ try {
   assert.match(rendered.service, / --pi-runtime-root /);
   assert.match(rendered.service, /SyslogIdentifier=pi-experiences-analyze/);
   assert.doesNotMatch(rendered.service, /\/usr\/bin\/env|exit 1/);
+  assert.equal(__serviceOwnsScheduledAnalyzeStateRootForTest(rendered.service, paths.root), true);
+  assert.equal(__serviceOwnsScheduledAnalyzeStateRootForTest(rendered.service, join(temp, 'other-state')), false);
 
   if (process.platform === 'linux') {
     const verifyDir = join(temp, 'verify-units');
@@ -90,7 +92,10 @@ try {
     ['systemctl', '--user', 'daemon-reload'],
     ['systemctl', '--user', 'enable', '--now', SCHEDULED_ANALYZE_TIMER],
   ]);
-
+  const callsBeforeForeignDisable = calls.length;
+  await assert.rejects(() => disableScheduledAnalyzeSystemd({ executor, platform: 'linux', unitDir, expectedStateRoot: join(temp, 'other-state') }), /scheduled_unit_owned_by_other_state/);
+  assert.equal(calls.length, callsBeforeForeignDisable, 'foreign state root cannot disable existing user timer');
+  await assert.rejects(() => installScheduledAnalyzeSystemd({ root: join(temp, 'other-state'), configPath: join(temp, 'other-state', 'agent-experience.toml') }, 'owner', { executor, unitDir, nodePath: process.execPath, cliPath, piAgentDir: join(temp, 'pi-agent'), piRuntimeRoot: join(temp, 'pi-runtime') }), /scheduled_unit_owned_by_other_state/);
   const failedDir = join(temp, 'failed-units');
   await assert.rejects(() => installScheduledAnalyzeSystemd(paths, 'owner', { executor: async () => { throw new Error('offline'); }, unitDir: failedDir, nodePath: process.execPath, cliPath }), /systemd_unavailable/);
   assert.equal(existsSync(failedDir), false, 'failed preflight writes no units');
@@ -180,8 +185,33 @@ try {
     assert.match(message, /Nothing was approved automatically|no unread saved examples/);
   });
   assert.equal(consumed.deleted, SCHEDULED_ANALYZE_RECEIPT_LIMIT);
+  assert.equal(consumed.held.length, 0);
   assert.equal((await readScheduledAnalyzeReceipts(receiptRoot)).receipts.length, 0, 'successful visible notify consumes receipts once');
   assert.equal(notified, 2);
+
+  const breakInReceiptRoot = join(temp, 'break-in-receipts');
+  const eligibleReceipt = await writeScheduledAnalyzeReceipt(breakInReceiptRoot, { user_id: 'owner', status: 'ok', severity: 'info', checked: 4, new_suggestions: 2 });
+  let summaryNotifications = 0;
+  let heldResult = await consumeScheduledAnalyzeReceipts(breakInReceiptRoot, 'owner', (message) => {
+    summaryNotifications += 1;
+    assert.match(message, /2 new suggestions created/);
+  }, { holdEligibleForBreakIn: true });
+  assert.equal(heldResult.deleted, 0);
+  assert.equal(heldResult.held.length, 1);
+  assert.equal((await readScheduledAnalyzeReceipts(breakInReceiptRoot)).receipts[0].break_in_delivery.state, 'queued');
+  heldResult = await consumeScheduledAnalyzeReceipts(breakInReceiptRoot, 'owner', () => { summaryNotifications += 1; }, { holdEligibleForBreakIn: true });
+  assert.equal(summaryNotifications, 1, 'queued receipt summary is shown once');
+  assert.equal(heldResult.held.length, 1, 'queued receipt survives restart for prompt delivery');
+  assert.equal(await transitionScheduledAnalyzeReceiptBreakInDelivery(breakInReceiptRoot, { file: heldResult.held[0].file, receiptId: eligibleReceipt.id, userId: 'owner', expected: 'queued', next: 'prompted' }), 'updated');
+  const promptedCleanup = await consumeScheduledAnalyzeReceipts(breakInReceiptRoot, 'owner', () => { summaryNotifications += 1; }, { holdEligibleForBreakIn: true });
+  assert.equal(promptedCleanup.deleted, 1);
+  assert.equal(promptedCleanup.held.length, 0);
+  assert.equal(summaryNotifications, 1, 'prompted receipt is cleaned without duplicate summary');
+
+  const notifyFailureRoot = join(temp, 'break-in-notify-failure');
+  await writeScheduledAnalyzeReceipt(notifyFailureRoot, { user_id: 'owner', status: 'ok', severity: 'info', checked: 1, new_suggestions: 1 });
+  await assert.rejects(() => consumeScheduledAnalyzeReceipts(notifyFailureRoot, 'owner', () => { throw new Error('summary unavailable'); }, { holdEligibleForBreakIn: true }), /summary unavailable/);
+  assert.equal((await readScheduledAnalyzeReceipts(notifyFailureRoot)).receipts[0].break_in_delivery, undefined, 'summary failure marks and deletes nothing');
 
   process.env.AX_STATE_ROOT = receiptRoot;
   await writeScheduledAnalyzeReceipt(receiptRoot, { user_id: 'owner', status: 'ok', severity: 'info', checked: 1, new_suggestions: 0 });
