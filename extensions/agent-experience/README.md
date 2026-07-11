@@ -31,7 +31,7 @@ The panel contains every normal action:
 - choose 7/14/30-day source-example retention;
 - enable approved-habit reminders;
 - inspect current settings;
-- confirm scheduling is Phase 2/off;
+- explain, inspect, explicitly install/enable, repair, disable, or remove the local Linux systemd schedule;
 - turn everything off.
 
 Conversational tools expose only numbered `When:` / `Do:` summaries and supported outcomes. Normal users do not type IDs, checksums, thresholds, endpoints, model-server settings, source references, private paths, or advanced commands.
@@ -42,7 +42,7 @@ Conversational tools expose only numbered `When:` / `Do:` summaries and supporte
 - Exact normalized evidence may increase support for an unchanged approved identity.
 - Exact strong contradiction may make one uniquely matched active habit dormant; replacement wording remains a proposal.
 - Direct instructions and law override habits.
-- No automatic approval, merge, replacement activation, law write, or timer installation.
+- No automatic approval, merge, replacement activation, law write, or timer installation. Schedule writes require the human to select and confirm the exact setup action.
 - One private state root represents one human.
 - Missing/corrupt/stale state fails closed.
 
@@ -149,7 +149,7 @@ habits-report.md
 
 Typed capture/consolidation/review/selector commands and `experience-consolidate` exist for maintainers and tests. Do not present them as the normal workflow. Natural conversation is optional; setup must remain complete by itself.
 
-Timer unit files are disabled templates only. No setup action installs or enables them.
+Automatic schedule defaults off and is Linux/systemd-user only. Setup renders absolute Node, CLI, config, and state paths; shows them with the selected model, fixed daily 03:30 system-local time, and `Persistent=true`; then requires explicit confirmation before installing/enabling the package-owned units. Scheduled runs call the model only for unread saved examples, create suggestions only, and write a bounded sanitized receipt shown once in the next eligible Pi TUI session. Setup can repair, disable, or remove the units. Package installation and updates never activate them.
 
 ## Validation
 

@@ -1,12 +1,10 @@
 [Unit]
-Description=Agent Experience daily consolidation timer (package template; manual install only)
+Description=Pi Experiences Agent Experience daily scheduled Analyze (setup-rendered template)
 
 [Timer]
-OnCalendar=daily
+OnCalendar=*-*-* 03:30:00
 Persistent=true
-RandomizedDelaySec=20m
-# Optional laptop safety: uncomment if desired after manual review.
-# ConditionACPower=true
+Unit=pi-experiences-agent-experience-analyze.service
 
 [Install]
 WantedBy=timers.target

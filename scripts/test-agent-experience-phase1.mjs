@@ -35,7 +35,7 @@ const fakePi = {
 agentExperienceExtension(fakePi);
 assert.deepEqual([...commands.keys()], ['experience'], 'extension should register only /experience command');
 assert.deepEqual([...tools.keys()].sort(), ['agent_experience_apply_review', 'agent_experience_confirm_habit', 'agent_experience_draft_habit', 'agent_experience_list_review'], 'extension should register only the four conversational Agent Experience tools');
-assert.deepEqual([...handlers.keys()].sort(), ['agent_end', 'agent_settled', 'before_agent_start', 'context', 'input', 'session_shutdown'], 'extension may register capture lifecycle plus response-specific fail-closed selector hooks');
+assert.deepEqual([...handlers.keys()].sort(), ['agent_end', 'agent_settled', 'before_agent_start', 'context', 'input', 'session_shutdown', 'session_start'], 'extension may register capture lifecycle, scheduled receipt delivery, plus response-specific fail-closed selector hooks');
 
 const plainSetupLeakPattern = /capture=|learning=|guidance=|consolidation=|timer=|break_in=|selector=|selector_mode=|pre-injection/i;
 const paths = getAgentExperiencePaths();
@@ -139,7 +139,7 @@ assert.deepEqual(notes.find((note) => note.level === 'select').options, [
   '[ ] Prevent duplicate habits',
   'Keep analyzed source examples (7 days)',
   '[ ] Use approved habits before replies',
-  'Automatic schedule: Phase 2 / off (explain)',
+  'Automatic schedule: off (manage/explain)',
   'Show current settings',
   'Explain these settings',
   'Done',
@@ -163,7 +163,7 @@ assert.ok(notes.some((note) => /Use approved habits before replies/.test(note.me
 await commands.get('experience').handler('setup help', ctx);
 assert.equal(existsSync(paths.root), false, 'setup help subcommand must not create state root');
 assert.match(notes.at(-1).message, /Agent Experience setup help/);
-assert.match(notes.at(-1).message, /Automatic schedule: Phase 2/);
+assert.match(notes.at(-1).message, /Automatic schedule: optional Linux systemd user timer/);
 assert.match(notes.at(-1).message, /turn this on first to start/);
 setupChoices = ['[ ] Save chat examples locally', undefined];
 await commands.get('experience').handler('setup', ctx);
@@ -264,12 +264,12 @@ readResult = await readAgentExperienceConfig(paths);
 assert.equal(readResult.config.selector_enabled, false, 'advanced/backcompat setup subcommand can disable guidance');
 
 await commands.get('experience').handler('setup suggest on', ctx);
-setupChoices = ['Automatic schedule: Phase 2 / off (explain)', 'Keep automatic schedule Phase 2/off', undefined];
+setupChoices = ['Automatic schedule: off (manage/explain)', 'Explain automatic schedule (no changes)', undefined];
 await commands.get('experience').handler('setup', ctx);
 readResult = await readAgentExperienceConfig(paths);
-assert.equal(readResult.config.consolidation_enabled, true, 'timer setup must not disable manual consolidation flag');
-assert.equal(readResult.config.timer_enabled, false, 'timer setup keeps timer disabled');
-assert.equal(readResult.config.break_in_enabled, false, 'timer setup keeps break-in disabled');
+assert.equal(readResult.config.consolidation_enabled, true, 'schedule explanation must not disable manual consolidation flag');
+assert.equal(readResult.config.timer_enabled, false, 'schedule explanation makes no timer change');
+assert.equal(readResult.config.break_in_enabled, false, 'schedule explanation keeps break-in disabled');
 
 await commands.get('experience').handler('review', ctx);
 assert.match(notes.at(-1).message, /No review list yet/);

@@ -79,7 +79,7 @@ A direct declaration bypasses only the repeated-observation threshold. Law, conf
 9. Optionally enable **Use approved habits before replies**.
 10. Choose 7/14/30-day source-example retention as needed.
 
-The panel also exposes duplicate resolution, current settings, help, schedule Phase 2/off, all-off, and Done.
+The panel also exposes duplicate resolution, current settings, help, explicit local schedule management, all-off, and Done.
 
 ## Hard product invariants
 
@@ -88,7 +88,7 @@ The panel also exposes duplicate resolution, current settings, help, schedule Ph
 - Exact strong contradictory evidence may make one uniquely matched old active habit dormant; replacement remains a proposal.
 - Direct user instructions and configured law override habits.
 - Never auto-approve, auto-merge, auto-activate replacement wording, or modify law.
-- Never install or enable timers in this release.
+- Never install, enable, disable, repair, or remove a timer from implication or conversation alone. Schedule mutation is allowed only after the human selects the exact `/experience setup` action, reviews the rendered details, and confirms.
 - One private state root represents one human.
 - Semantic similarity supports review quality; it is not the product center.
 - Missing/corrupt/stale state fails closed.
@@ -193,7 +193,7 @@ Current law checking uses deterministic freshness plus a dangerous-pattern denyl
 
 **Turn all experience features off** stops capture and runtime gates while preserving private records for audit/re-enable.
 
-Automatic schedule remains Phase 2/off. Unit files are disabled maintainer templates; do not install or enable them as normal UX.
+Automatic schedule defaults off. On Linux with a working systemd user manager, `/experience setup` may explicitly render and install the package-owned daily 03:30 system-local timer with `Persistent=true`. Before enabling, show the exact Node path, CLI path, unit paths, state root, user, model, timezone, no-work/no-model-call behavior, suggestions-only rule, and sanitized next-session receipt behavior. Require a separate confirmation. Setup also owns explicit repair, disable, and removal. Package install/update never activates it.
 
 ## Maintainer-only controls
 
@@ -229,6 +229,6 @@ From `/experience setup`:
 - **Resolve duplicate habits**: handle potential duplicate wording.
 - **Review approved habits**: browse active/disabled habits or recheck waiting approvals.
 - **Prevent duplicate habits**: retry preparation, turn off while keeping files, or remove files.
-- **Automatic schedule**: verify Phase 2/off.
+- **Automatic schedule**: explain/status; explicitly install/enable, repair/rewrite, disable, or remove the local systemd user units. Scheduled Analyze creates suggestions only and never auto-approves.
 
 If corruption or a future schema is reported, do not bypass it. Preserve state and use a compatible/newer package or validated restore path.

@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
-import { completeSimple } from "@earendil-works/pi-ai/compat";
-import type { AssistantMessage, Model } from "@earendil-works/pi-ai/compat";
+import { join } from "node:path";
+import type { Model } from "@earendil-works/pi-ai/compat";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Box, decodeKittyPrintable, fuzzyFilter, Input, Key, matchesKey, SettingsList, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component, type Focusable, type SettingItem, type SettingsListTheme } from "@earendil-works/pi-tui";
 import {
@@ -56,30 +56,21 @@ import { createPiSelectorModelAdapter } from "./src/selector-model.ts";
 import { collectAgentExperienceMetrics, formatAgentExperienceMetrics } from "./src/metrics.ts";
 import type { AgentExperienceConfig } from "./src/config.ts";
 import type { ValidatedObservationRecord } from "./src/consolidate/observations.ts";
-import { buildCompactHabitContext, compactContextIdentity, type CompactHabitContextItem } from "./src/consolidate/context.ts";
+import { buildCompactHabitContext, type CompactHabitContextItem } from "./src/consolidate/context.ts";
 import { getProposalReadWatermark } from "./src/consolidate/commit.ts";
-import { GENERALIZED_HABIT_INSTRUCTIONS } from "./src/consolidate/prompt.ts";
 import { expectedRangeFromObservations, runConsolidationOnce } from "./src/consolidate/runner.ts";
+import { createPiConsolidationModelAdapter, truncateForModel, validateStandaloneConsolidationModel, type ConsolidationModelAdapter, type ConsolidationModelAdapterInput } from "./src/consolidate/model-adapter.ts";
+export { __buildAgentExperienceConsolidationSystemPromptForTest, __normalizeAgentExperienceConsolidationModelOutputForTest } from "./src/consolidate/model-adapter.ts";
 import { noteAgentExperienceConversationInput, registerAgentExperienceConversationalTools } from "./src/conversational-tools.ts";
 import { buildHabitSteeringEntry, HABIT_STEERING_ENTRY_TYPE, renderHabitSteeringEntry, type HabitSteeringEntryData } from "./src/steering-note.ts";
+import { consumeScheduledAnalyzeReceipts } from "./src/schedule/receipts.ts";
+import { disableScheduledAnalyzeSystemd, inspectScheduledAnalyzeSystemd, installScheduledAnalyzeSystemd, previewScheduledAnalyzeSystemd, removeScheduledAnalyzeSystemd, SCHEDULED_ANALYZE_ON_CALENDAR, SCHEDULED_ANALYZE_SERVICE, SCHEDULED_ANALYZE_TIMER } from "./src/schedule/systemd.ts";
 
 const captureBuffer = new CapturePairBuffer();
 let selectorModelAdapter: SelectorModelAdapter | undefined;
 const selectorDiagnosticsShown = new Set<string>();
 const captureDiagnosticsShown = new Set<string>();
 
-interface ConsolidationModelAdapterInput {
-	model: string;
-	userId: string;
-	observations: ValidatedObservationRecord[];
-	habitContext: CompactHabitContextItem[];
-	expected: { file_generation: string; seq_start: number; seq_end: number; read_checksum: string };
-	signal?: AbortSignal;
-}
-
-interface ConsolidationModelAdapter {
-	generate(input: ConsolidationModelAdapterInput): Promise<unknown>;
-}
 
 let consolidationModelAdapter: ConsolidationModelAdapter | undefined;
 const analyzeJobs = new Map<string, Promise<void>>();
@@ -176,7 +167,7 @@ function buildSetupSettingItems(config: { enabled: boolean; capture_enabled: boo
 		{ id: "embedding", label: "Prevent duplicate habits", currentValue: checkboxValue(config.embedding_enabled === true), values: ["[ ] OFF", "[x] ON"], description: "Space/Enter checks current habits before turning on private local duplicate prevention." },
 		{ id: "retention", label: "Keep analyzed source examples", currentValue: `${config.observation_retention_days || 7} days`, values: ["7 days", "14 days", "30 days"], description: "Choose short private retention for rotated redacted source text." },
 		{ id: "use", label: "Use approved habits before replies", currentValue: checkboxValue(config.selector_enabled), values: ["[ ] OFF", "[x] ON"], description: "Space/Enter toggles approved-habit reminders. Suggestions still require review first." },
-		{ id: "schedule", label: "Automatic schedule", currentValue: "Phase 2 / off", values: ["Phase 2 / off"], description: "No timer is installed or enabled by setup." },
+		{ id: "schedule", label: "Automatic schedule", currentValue: config.timer_enabled ? "ON" : "off", values: [config.timer_enabled ? "ON" : "off"], description: "Inspect, install, repair, disable, or remove the explicit local 03:30 systemd user timer." },
 		{ id: "status", label: "Show current settings", currentValue: "open", values: ["open"], description: "Show current Agent Experience status." },
 		{ id: "help", label: "Explain these settings", currentValue: "open", values: ["open"], description: "Show setup help." },
 		...(anythingEnabled ? [{ id: "off", label: "Turn all experience features off", currentValue: "open", values: ["open"], description: "Stops capture and runtime gates. Existing local records stay." } satisfies SettingItem] : []),
@@ -771,234 +762,6 @@ async function configuredModelAuthenticated(ctx: Pick<ExtensionContext, "modelRe
 	}
 }
 
-function truncateForModel(value: unknown, max = 900): string {
-	const text = redactText(typeof value === "string" ? value : JSON.stringify(value ?? {}));
-	return text.length > max ? `${text.slice(0, max)}…` : text;
-}
-
-function observationsForModelPrompt(observations: ValidatedObservationRecord[]): unknown[] {
-	return observations.map((record) => {
-		const payload = record.payload_redacted as any;
-		return {
-			seq: record.seq,
-			checksum: record.checksum,
-			created_at: record.created_at,
-			user: truncateForModel(payload?.user_text_redacted, 900),
-			assistant: truncateForModel(payload?.assistant_text_redacted, 1200),
-		};
-	});
-}
-
-function extractionJson(text: string): unknown {
-	const trimmed = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
-	try { return JSON.parse(trimmed); } catch {}
-	const start = trimmed.indexOf("{");
-	const end = trimmed.lastIndexOf("}");
-	if (start >= 0 && end > start) return JSON.parse(trimmed.slice(start, end + 1));
-	throw new Error("habit_learning_model_invalid_json");
-}
-
-function extractAssistantText(message: AssistantMessage | undefined): string {
-	const parts = Array.isArray((message as any)?.content) ? (message as any).content : [];
-	return parts
-		.filter((part: any) => part?.type === "text" && typeof part.text === "string")
-		.map((part: any) => part.text)
-		.join("\n")
-		.slice(0, 20000);
-}
-
-function buildConsolidationSystemPrompt(fileGeneration: string): string {
-	const outputSchema = {
-		schema_version: 1,
-		user_id: "owner",
-		file_generation: fileGeneration,
-		batch_id: "manual-id",
-		model: "provider/model",
-		created_at: "ISO",
-		observations_read: { seq_start: 1, seq_end: 3, checksum: "last-read-checksum" },
-		proposals: [{
-			proposal_id: "p1",
-			kind: "habit_candidate",
-			candidate_key: "stable-kebab-key",
-			condition: "When ...",
-			behavior: "Do ...",
-			polarity: 1,
-			confidence_bp: 8000,
-			source_refs: [{ file_generation: fileGeneration, seq: 1, checksum: "..." }],
-			evidence_summary: "short redacted summary",
-			ambiguous: false,
-		}],
-	};
-	return [
-		"You are Agent Experience habit learning.",
-		"Return JSON only. No prose. No markdown unless JSON object only.",
-		"Infer durable user preferences/corrections from redacted user/assistant examples.",
-		"Only propose habits supported by the provided examples. Do not invent facts.",
-		"Do not include secrets, emails, phone numbers, file paths, tokens, raw prompts, or private identifiers.",
-		"Prefer 1-6 concise candidate habits. Return zero proposals if evidence is weak.",
-		"Only propose repeated patterns: use compact existing habit context plus the new unread examples. Cite source_refs only from the new examples provided in this request.",
-		"A repeated habit needs at least 3 total supporting examples across at least 2 days, combining existing_habit_context counts with new source_refs. Reuse the same normalized condition/behavior/polarity wording when adding evidence to an existing identity.",
-		"Similar meanings in different wording or languages may support the same habit; cite each new matching example separately.",
-		...GENERALIZED_HABIT_INSTRUCTIONS,
-		"Every proposal must cite source_refs using only provided seq/checksum values.",
-		"Exact output schema:",
-		JSON.stringify(outputSchema),
-	].join("\n");
-}
-
-function buildConsolidationUserPrompt(input: ConsolidationModelAdapterInput): string {
-	return JSON.stringify({
-		task: "Analyze these redacted examples and produce reviewable habit suggestions.",
-		user_id: input.userId,
-		file_generation: input.expected.file_generation,
-		model: input.model,
-		created_at: new Date().toISOString(),
-		observations_read: { seq_start: input.expected.seq_start, seq_end: input.expected.seq_end, checksum: input.expected.read_checksum },
-		existing_habit_context: input.habitContext || [],
-		observations: observationsForModelPrompt(input.observations),
-	}, null, 2);
-}
-
-function requireNonEmptyString(value: unknown, field: string): string {
-	if (typeof value !== "string" || !value.trim()) throw new Error(`habit_learning_model_missing_${field}`);
-	return redactText(value.trim()).slice(0, 1000);
-}
-
-function normalizeSourceRefs(rawRefs: unknown, input: ConsolidationModelAdapterInput): { file_generation: string; seq: number; checksum: string }[] {
-	if (!Array.isArray(rawRefs) || rawRefs.length === 0) throw new Error("habit_learning_model_missing_source_refs");
-	const bySeq = new Map(input.observations.map((record) => [record.seq, record]));
-	const refs = rawRefs.map((ref: any) => {
-		if (!Number.isInteger(ref?.seq)) throw new Error("habit_learning_model_missing_source_ref_seq");
-		const record = bySeq.get(ref.seq);
-		if (!record) throw new Error("habit_learning_model_invalid_source_ref");
-		const suppliedGeneration = typeof ref?.file_generation === "string" ? ref.file_generation : input.expected.file_generation;
-		if (suppliedGeneration !== record.file_generation) throw new Error("habit_learning_model_source_ref_generation_mismatch");
-		return { file_generation: record.file_generation, seq: record.seq, checksum: record.checksum };
-	});
-	return refs.filter((ref, index, array) => array.findIndex((candidate) => candidate.seq === ref.seq) === index);
-}
-
-function newEvidenceStats(refs: { seq: number }[], input: ConsolidationModelAdapterInput) {
-	const bySeq = new Map(input.observations.map((record) => [record.seq, record]));
-	const uniqueSeqs = [...new Set(refs.map((ref) => ref.seq))];
-	const days = new Set(uniqueSeqs.map((seq) => bySeq.get(seq)?.created_at).filter(Boolean).map((iso) => new Date(String(iso)).toISOString().slice(0, 10)));
-	return { count: uniqueSeqs.length, days };
-}
-
-function matchingHabitContext(input: ConsolidationModelAdapterInput, candidate: { condition: unknown; behavior: unknown; polarity: unknown }): CompactHabitContextItem | undefined {
-	const identity = compactContextIdentity(candidate);
-	return (input.habitContext || []).find((item) => compactContextIdentity(item) === identity);
-}
-
-function hasEnoughRepeatedEvidence(refs: { seq: number }[], input: ConsolidationModelAdapterInput, candidate: { condition: unknown; behavior: unknown; polarity: unknown }): boolean {
-	const fresh = newEvidenceStats(refs, input);
-	const existing = matchingHabitContext(input, candidate);
-	const days = new Set([...(existing?.source_dates || []), ...fresh.days]);
-	return fresh.count + Number(existing?.unique_observations || 0) >= 3 && days.size >= 2;
-}
-
-function normalizeConfidence(value: unknown): number {
-	if (!Number.isInteger(value) || value < 0 || value > 10000) throw new Error("habit_learning_model_invalid_confidence");
-	return value;
-}
-
-function normalizeConsolidationModelOutput(raw: any, input: ConsolidationModelAdapterInput): unknown {
-	const proposals = Array.isArray(raw?.proposals) ? raw.proposals.slice(0, 50).flatMap((proposal: any) => {
-		const source_refs = normalizeSourceRefs(proposal?.source_refs, input);
-		if (proposal?.kind === "correction_split") {
-			const old_condition = requireNonEmptyString(proposal.old_condition, "old_condition");
-			const old_behavior = requireNonEmptyString(proposal.old_behavior, "old_behavior");
-			const new_condition = requireNonEmptyString(proposal.new_condition, "new_condition");
-			const new_behavior = requireNonEmptyString(proposal.new_behavior, "new_behavior");
-			const confidence_bp = normalizeConfidence(proposal.confidence_bp);
-			const repeatedReplacement = hasEnoughRepeatedEvidence(source_refs, input, { condition: new_condition, behavior: new_behavior, polarity: 1 });
-			const oldContext = matchingHabitContext(input, { condition: old_condition, behavior: old_behavior, polarity: 1 });
-			const explicitCorrection = confidence_bp >= 8500 && source_refs.length >= 1 && oldContext?.status === "active";
-			const evidence_stage = repeatedReplacement || explicitCorrection ? "reviewable" : "collecting";
-			return [{
-				proposal_id: requireNonEmptyString(proposal.proposal_id, "proposal_id"),
-				kind: "correction_split",
-				candidate_key: requireNonEmptyString(proposal.candidate_key, "candidate_key"),
-				old_condition,
-				old_behavior,
-				new_condition,
-				new_behavior,
-				confidence_bp,
-				source_refs,
-				evidence_stage,
-				...(proposal.evidence_summary ? { evidence_summary: redactText(String(proposal.evidence_summary)).slice(0, 1000) } : {}),
-				ambiguous: proposal.ambiguous === true,
-			}];
-		}
-		if (proposal?.kind !== "habit_candidate") throw new Error("habit_learning_model_invalid_proposal_kind");
-		const condition = requireNonEmptyString(proposal.condition, "condition");
-		const behavior = requireNonEmptyString(proposal.behavior, "behavior");
-		const polarity = proposal.polarity === -1 ? -1 : 1;
-		const evidence_stage = hasEnoughRepeatedEvidence(source_refs, input, { condition, behavior, polarity }) ? "reviewable" : "collecting";
-		return [{
-			proposal_id: requireNonEmptyString(proposal.proposal_id, "proposal_id"),
-			kind: "habit_candidate",
-			candidate_key: requireNonEmptyString(proposal.candidate_key, "candidate_key"),
-			condition,
-			behavior,
-			polarity,
-			confidence_bp: normalizeConfidence(proposal.confidence_bp),
-			source_refs,
-			evidence_stage,
-			...(proposal.evidence_summary ? { evidence_summary: redactText(String(proposal.evidence_summary)).slice(0, 1000) } : {}),
-			ambiguous: proposal.ambiguous === true,
-		}];
-	}) : [];
-	return {
-		schema_version: 1,
-		user_id: input.userId,
-		file_generation: input.expected.file_generation,
-		batch_id: String(raw?.batch_id || `manual-${Date.now()}`),
-		model: input.model,
-		created_at: new Date().toISOString(),
-		observations_read: { seq_start: input.expected.seq_start, seq_end: input.expected.seq_end, checksum: input.expected.read_checksum },
-		proposals,
-	};
-}
-
-export function __normalizeAgentExperienceConsolidationModelOutputForTest(raw: any, input: ConsolidationModelAdapterInput): unknown {
-	return normalizeConsolidationModelOutput(raw, input);
-}
-
-export function __buildAgentExperienceConsolidationSystemPromptForTest(fileGeneration = "active"): string {
-	return buildConsolidationSystemPrompt(fileGeneration);
-}
-
-function createPiConsolidationModelAdapter(ctx: Pick<ExtensionContext, "modelRegistry" | "signal">): ConsolidationModelAdapter {
-	return {
-		async generate(input) {
-			const parsed = parseProviderModel(input.model);
-			if (!parsed) throw new Error("habit_learning_model_invalid");
-			const model = ctx.modelRegistry?.find?.(parsed.provider, parsed.modelId);
-			if (!model) throw new Error("habit_learning_model_unavailable");
-			const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-			if (!auth.ok || !auth.apiKey) throw new Error("habit_learning_model_auth_unavailable");
-			const response = await completeSimple(model, {
-				systemPrompt: buildConsolidationSystemPrompt(input.expected.file_generation),
-				messages: [{ role: "user", content: buildConsolidationUserPrompt(input), timestamp: Date.now() }],
-			}, {
-				apiKey: auth.apiKey,
-				headers: auth.headers,
-				env: auth.env,
-				signal: input.signal ?? ctx.signal,
-				timeoutMs: 120000,
-				maxRetries: 0,
-				maxRetryDelayMs: 0,
-				maxTokens: 4096,
-				metadata: { purpose: "agent-experience-manual-habit-learning" },
-			} as any);
-			if ((response as any)?.stopReason === "length") throw new Error("habit_learning_model_truncated_response");
-			const text = extractAssistantText(response);
-			if (!text.trim()) throw new Error("habit_learning_model_empty_response");
-			return normalizeConsolidationModelOutput(extractionJson(text), input);
-		},
-	};
-}
 
 async function reviewSummary(root: string, userId: string): Promise<{ ledger: boolean; pending: number; active: number; candidate: number; error?: string }> {
 	const dbPath = resolvePrivatePath(root, "ledger.sqlite");
@@ -1030,6 +793,11 @@ async function buildStatusText(): Promise<{ text: string; enabled: boolean }> {
 	const captureActive = config.enabled && config.capture_enabled;
 	const selectorActive = config.enabled && config.selector_enabled;
 	const reviewCount = summary.pending + summary.candidate;
+	let scheduleStatus = config.timer_enabled ? "configured ON; local timer status unavailable" : "OFF";
+	try {
+		const schedule = await inspectScheduledAnalyzeSystemd(paths, getConfiguredUserId());
+		scheduleStatus = schedule.enabled && !schedule.needsRepair ? `ON (daily 03:30 ${schedule.timezone}; persistent)` : schedule.installed && schedule.needsRepair ? "needs repair in setup" : schedule.installed ? "OFF (unit files retained)" : config.timer_enabled ? "config ON but timer missing; repair in setup" : "OFF";
+	} catch {}
 	let duplicateStatus = "OFF";
 	if (config.embedding_enabled || existsSync(resolvePrivatePath(paths.root, "models"))) {
 		const assets = await getLocalEmbeddingAssetStatus(paths.root, { deep: false });
@@ -1051,7 +819,7 @@ async function buildStatusText(): Promise<{ text: string; enabled: boolean }> {
 		`Review suggested habits: ${summary.error ? `ledger unreadable (${summary.error})` : summary.ledger ? `${plural(reviewCount, "suggestion")} waiting, ${plural(summary.active, "approved habit")}${summary.approvedWaiting ? `, ${plural(summary.approvedWaiting, "approved habit")} waiting for activation` : ""}` : "no review list yet"}`,
 		`Prevent duplicate habits: ${duplicateStatus}`,
 		`Use approved habits before replies: ${selectorActive ? (config.selector_mode === "instant" ? "ON (local/no-network)" : `ON (${config.selector_mode})`) : config.selector_enabled ? "configured ON, inactive because Experience is OFF" : "OFF"}`,
-		"Automatic schedule: Phase 2 / OFF",
+		`Automatic schedule: ${scheduleStatus}`,
 		`Next: ${nextStep}`,
 	].join("\n") };
 }
@@ -1086,7 +854,7 @@ function buildSetupOptions(config: { enabled: boolean; capture_enabled: boolean;
 		`${config.embedding_enabled ? "[x]" : "[ ]"} Prevent duplicate habits`,
 		`Keep analyzed source examples (${config.observation_retention_days || 7} days)`,
 		`${config.selector_enabled ? "[x]" : "[ ]"} Use approved habits before replies`,
-		"Automatic schedule: Phase 2 / off (explain)",
+		`Automatic schedule: ${config.timer_enabled ? "ON" : "off"} (manage/explain)`,
 		"Show current settings",
 		"Explain these settings",
 		...(anythingEnabled ? ["Turn all experience features off"] : []),
@@ -1119,7 +887,7 @@ function setupHelpMessage(config: { enabled: boolean; capture_enabled: boolean; 
 		config.selector_mode === "instant"
 			? "Use approved habits before replies: lets Pi add only human-approved habits as reminders before future replies. Current mode is local/no-network."
 			: "Use approved habits before replies: lets Pi add only human-approved habits as reminders before future replies. Optional advanced matching remains separately controlled and fail-closed.",
-		"Automatic schedule: Phase 2 / off in this release. Setup will not install, enable, or start a timer.",
+		"Automatic schedule: optional Linux systemd user timer at 03:30 system-local time with persistent catch-up. Setup shows exact paths and requires confirmation before install/enable; scheduled runs create suggestions only.",
 		"Review suggested habits: opens the list of proposed habits for you to approve or reject. Nothing is auto-approved.",
 		"Resolve duplicate habits: compares both full habit wordings, states exactly what each outcome keeps or hides, and confirms destructive choices inside setup.",
 		"Review approved habits: opens actual active/disabled approved habits so you can inspect, disable, re-enable, or archive/hide one without typing ids or checksums.",
@@ -1163,8 +931,8 @@ async function handleSetupConsolidation(ctx: ExtensionCommandContext) {
 	if (choice === "Explain Analyze saved examples now (no changes)") {
 		return notify(ctx, [
 			"Analyze saved examples now lets Pi read saved redacted examples and create proposed habits for you to review.",
-			"This release does not run that automatically: no timer or scheduled model job is installed.",
-			"Turning this on only allows the setup menu action. It does not create or approve habits by itself.",
+			"Manual Analyze runs only when you choose it. Automatic schedule is a separate explicit setup action.",
+			"Analyze creates review suggestions only. It never approves habits by itself.",
 		].join("\n"), "info");
 	}
 	if (choice === "Allow Analyze saved examples now") return handleConsolidation("on", ctx);
@@ -1279,29 +1047,99 @@ async function handleSetupSelector(ctx: ExtensionCommandContext) {
 }
 
 async function handleSetupTimer(ctx: ExtensionCommandContext) {
-	const choice = await chooseSetup(ctx, "Automatic schedule", [
+	const paths = getAgentExperiencePaths();
+	const userId = getConfiguredUserId();
+	const { config } = await readAgentExperienceConfig(paths);
+	let status: Awaited<ReturnType<typeof inspectScheduledAnalyzeSystemd>>;
+	try {
+		status = await inspectScheduledAnalyzeSystemd(paths, userId);
+	} catch {
+		status = { installed: false, enabled: false, needsRepair: false, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "system local time", unitDir: join(process.env.HOME || "~", ".config", "systemd", "user") };
+	}
+	const choices = [
 		"Explain automatic schedule (no changes)",
-		"Keep automatic schedule Phase 2/off",
-		"Show advanced timer notes (no changes)",
+		status.enabled && !status.needsRepair ? "Repair/rewrite and keep daily scheduled Analyze ON" : "Enable daily scheduled Analyze at 03:30 local time",
+		...(status.enabled || config.timer_enabled ? ["Disable daily scheduled Analyze"] : []),
+		...(status.installed ? ["Remove scheduled Analyze systemd units"] : []),
 		"Back/cancel (no changes)",
-	]);
+	];
+	const choice = await chooseSetup(ctx, "Automatic schedule", choices);
 	if (!choice || choice === "Back/cancel (no changes)") return notify(ctx, "Schedule setup cancelled. No config changed.", "info");
-	if (choice === "Keep automatic schedule Phase 2/off") {
-		const { config, path } = await setAgentExperienceTimerEnabled(false);
+	if (choice === "Explain automatic schedule (no changes)") {
 		return notify(ctx, [
-			"Automatic schedule remains Phase 2/off. No systemd unit was installed or started.",
-			`Config file: ${path}`,
-			`Analyze saved examples now: ${config.consolidation_enabled ? "available from setup" : "available when you choose it in setup"}`,
-			"Automatic schedule: Phase 2 / OFF",
-			"Break-in/interruption behavior: OFF",
+			"Automatic schedule is an optional local systemd user timer on Linux.",
+			`It runs Analyze at 03:30 in the computer's current local timezone (${status.timezone}) and catches up once after sleep/offline time (Persistent=true).`,
+			"It calls the selected model only when unread saved examples exist.",
+			"It creates suggestions only. It never approves habits, interrupts a conversation, or sends a desktop/remote notification.",
+			"A sanitized success/failure summary is retained privately and shown once in the next eligible Pi TUI session.",
+			"No timer is installed or changed until you select an action and confirm it.",
 		].join("\n"), "info");
 	}
-	return notify(ctx, [
-		"Automatic schedule would mean a scheduled job periodically tries to create review suggestions from saved examples.",
-		"This release does not provide a package-owned timer or scheduled learning adapter.",
-		"The bundled systemd files are disabled maintainer templates only and are not installed by the setup menu.",
-		"So there is no timer to manage for normal users right now.",
-	].join("\n"), "info");
+	if (choice.startsWith("Enable daily") || choice.startsWith("Repair/rewrite")) {
+		if (!config.enabled || !config.capture_enabled) return notify(ctx, "Turn on Save chat examples locally before enabling scheduled Analyze.", "warn");
+		if (!config.consolidation_enabled) return notify(ctx, "Choose a habit-learning model before enabling scheduled Analyze.", "warn");
+		const auth = await configuredModelAuthenticated(ctx, config.consolidation_model);
+		if (!auth.ok) return notify(ctx, `The selected habit-learning model is not ready for a background run. Detail: ${auth.reason}`, "warn");
+		const standaloneAuth = await validateStandaloneConsolidationModel(config.consolidation_model);
+		if (!standaloneAuth.ok) return notify(ctx, `The selected model works only inside the current Pi runtime and cannot be used by the standalone scheduler. Nothing changed. Detail: ${standaloneAuth.reason}`, "warn");
+		let preview: Awaited<ReturnType<typeof previewScheduledAnalyzeSystemd>>;
+		try {
+			preview = await previewScheduledAnalyzeSystemd(paths, userId);
+		} catch (error: any) {
+			return notify(ctx, `Local systemd schedule is unavailable. Nothing changed. Detail: ${redactText(String(error?.message || error)).slice(0, 180)}`, "warn");
+		}
+		const confirmation = await chooseActionInPanel(ctx, "Confirm daily scheduled Analyze", [
+			`Time: 03:30 ${status.timezone} (system local time)`,
+			`Calendar: ${SCHEDULED_ANALYZE_ON_CALENDAR}`,
+			"Catch-up after sleep/offline: ON (Persistent=true)",
+			`Model: ${config.consolidation_model}`,
+			`State root: ${paths.root}`,
+			`Node: ${preview.context.nodePath}`,
+			`CLI: ${preview.context.cliPath}`,
+			`Service unit: ${join(preview.unitDir, SCHEDULED_ANALYZE_SERVICE)}`,
+			`Timer unit: ${join(preview.unitDir, SCHEDULED_ANALYZE_TIMER)}`,
+			"Calls the model only when unread saved examples exist.",
+			"Creates review suggestions only; never approves habits or interrupts Pi.",
+			"Shows one sanitized receipt in the next eligible Pi TUI session.",
+		].join("\n"), ["Back/cancel (no changes)", "Install and enable this exact local schedule"]);
+		if (confirmation !== "Install and enable this exact local schedule") return notify(ctx, "Schedule setup cancelled. No config changed.", "info");
+		try {
+			// Open the runtime gate immediately before enabling the timer so a Persistent
+			// catch-up cannot race past setup and record a false disabled run.
+			await setAgentExperienceTimerEnabled(true, paths);
+			try {
+				await installScheduledAnalyzeSystemd(paths, userId);
+			} catch (error) {
+				await setAgentExperienceTimerEnabled(config.timer_enabled, paths).catch(() => undefined);
+				throw error;
+			}
+			return notify(ctx, [`Automatic schedule: ON`, `Daily time: 03:30 ${status.timezone}`, "Persistent catch-up: ON", "Suggestions only; nothing is auto-approved.", "No model call occurs when no unread examples exist."].join("\n"), "info");
+		} catch (error: any) {
+			return notify(ctx, `Schedule installation failed safely. The previous timer setting was restored when possible. Detail: ${redactText(String(error?.message || error)).slice(0, 180)}`, "warn");
+		}
+	}
+	if (choice === "Disable daily scheduled Analyze") {
+		const confirmation = await chooseSetup(ctx, "Disable daily scheduled Analyze?", ["Back/cancel (no changes)", "Disable timer but keep unit files"]);
+		if (confirmation !== "Disable timer but keep unit files") return notify(ctx, "Schedule setup cancelled. No config changed.", "info");
+		try {
+			await disableScheduledAnalyzeSystemd();
+			await setAgentExperienceTimerEnabled(false, paths);
+			return notify(ctx, "Automatic schedule: OFF. Unit files were retained for explicit repair/re-enable or removal.", "info");
+		} catch (error: any) {
+			return notify(ctx, `Could not verify the timer was disabled, so setup did not clear the schedule flag. Detail: ${redactText(String(error?.message || error)).slice(0, 180)}`, "warn");
+		}
+	}
+	if (choice === "Remove scheduled Analyze systemd units") {
+		const confirmation = await chooseSetup(ctx, "Remove local schedule units?", ["Back/cancel (no changes)", "Disable timer and remove both unit files"]);
+		if (confirmation !== "Disable timer and remove both unit files") return notify(ctx, "Schedule setup cancelled. No config changed.", "info");
+		try {
+			await removeScheduledAnalyzeSystemd();
+			await setAgentExperienceTimerEnabled(false, paths);
+			return notify(ctx, "Automatic schedule: OFF. The package-owned user service and timer files were removed.", "info");
+		} catch (error: any) {
+			return notify(ctx, `Could not safely remove the local schedule. Detail: ${redactText(String(error?.message || error)).slice(0, 180)}`, "warn");
+		}
+	}
 }
 
 async function inputSetup(ctx: ExtensionCommandContext, title: string, placeholder: string): Promise<string | undefined> {
@@ -1384,6 +1222,10 @@ async function handleSetupModel(ctx: ExtensionCommandContext) {
 	const choice = await chooseLiveModel(ctx, models, recommended, config.consolidation_model);
 	if (!choice || choice === "Back/cancel (no changes)") return notify(ctx, "Habit-learning model unchanged.", "info");
 	if (!models.includes(choice) && !configuredModelAvailable(ctx, choice)) return notify(ctx, `Model is not available/authenticated: ${redactText(choice)}`, "warn");
+	if (config.timer_enabled) {
+		const auth = await configuredModelAuthenticated(ctx, choice);
+		if (!auth.ok) return notify(ctx, `The schedule remains unchanged and the model was not changed because background authentication failed. Detail: ${auth.reason}`, "warn");
+	}
 	const { path } = await setAgentExperienceConsolidationModel(choice);
 	return notify(ctx, [`Habit-learning model: ${choice}`, `Config file: ${path}`, "Analyze saved examples now is available inside /experience setup."].join("\n"), "info");
 }
@@ -2099,11 +1941,8 @@ async function handleSetupDirect(args: string[], ctx: ExtensionCommandContext): 
 		case "7":
 		case "background":
 		case "timer":
-			if (!value || value === "explain" || value === "status") await handleSetupTimer(ctx);
-			else if (value === "off" || value === "disable") {
-				const { config, path } = await setAgentExperienceTimerEnabled(false);
-				notify(ctx, [`Automatic schedule: Phase 2 / OFF`, `Config file: ${path}`, `Break-in/interruption behavior: ${config.break_in_enabled ? "ON" : "OFF"}`].join("\n"), "info");
-			} else notify(ctx, "Open /experience setup and use the Automatic schedule row. It stays Phase 2/off.", "warn");
+			if (!value || ["explain", "status", "on", "enable", "off", "disable", "remove", "repair"].includes(value)) await handleSetupTimer(ctx);
+			else notify(ctx, "Open /experience setup and use the Automatic schedule row for explicit install, disable, repair, or removal.", "warn");
 			return true;
 		case "8":
 		case "help": {
@@ -2179,7 +2018,7 @@ async function handleSetup(ctx: ExtensionCommandContext, args: string[] = []) {
 }
 
 async function handleOn(ctx: ExtensionCommandContext) {
-	const { path } = await setAgentExperienceSimpleOn();
+	const { config, path } = await setAgentExperienceSimpleOn();
 	notify(
 		ctx,
 		[
@@ -2187,8 +2026,8 @@ async function handleOn(ctx: ExtensionCommandContext) {
 			`Config file: ${path}`,
 			"Save chat examples locally: ON",
 			"Analyze saved examples now: available from /experience setup after choosing a model",
-			"Use approved habits before replies: OFF until enabled from setup",
-			"Automatic schedule: Phase 2 / OFF",
+			`Use approved habits before replies: ${config.selector_enabled ? "ON" : "OFF until enabled from setup"}`,
+			`Automatic schedule: ${config.timer_enabled ? "ON" : "OFF until explicitly enabled from setup"}`,
 			"Open /experience setup anytime for current settings and next step.",
 		].join("\n"),
 		"info",
@@ -2196,8 +2035,19 @@ async function handleOn(ctx: ExtensionCommandContext) {
 }
 
 async function handleOff(ctx: ExtensionCommandContext) {
+	const paths = getAgentExperiencePaths();
+	const { config } = await readAgentExperienceConfig(paths);
+	let scheduleEnabled = config.timer_enabled;
+	try { scheduleEnabled ||= (await inspectScheduledAnalyzeSystemd(paths, getConfiguredUserId())).enabled; } catch {}
+	if (scheduleEnabled) {
+		try {
+			await disableScheduledAnalyzeSystemd();
+		} catch (error: any) {
+			return notify(ctx, `Agent Experience remains ON because setup could not verify the scheduled timer was disabled. Detail: ${redactText(String(error?.message || error)).slice(0, 180)}`, "warn");
+		}
+	}
 	captureBuffer.clearAll();
-	const { path } = await setAgentExperienceEnabled(false);
+	const { path } = await setAgentExperienceEnabled(false, paths);
 	notify(
 		ctx,
 		[
@@ -2206,7 +2056,7 @@ async function handleOff(ctx: ExtensionCommandContext) {
 			"Save chat examples locally: OFF",
 			"Analyze saved examples now: OFF",
 			"Use approved habits before replies: OFF",
-			"Automatic schedule: Phase 2 / OFF",
+			"Automatic schedule: OFF (unit files, if any, are retained)",
 			"Off drops in-memory capture buffers without writing observations. Existing records are preserved.",
 		].join("\n"),
 		"info",
@@ -2313,8 +2163,8 @@ async function handleReview(args: string[], ctx: ExtensionCommandContext) {
 		return notify(ctx, [
 			"No review list yet.",
 			"Saved examples can exist before suggestions are created.",
-			"Open /experience setup and choose Analyze saved examples now to create suggestions.",
-			"This release does not run scheduled learning, install a timer, or call a model automatically.",
+			"Open /experience setup and choose Analyze saved examples now to create suggestions, or explicitly enable the local daily schedule.",
+			"Scheduled Analyze calls the selected model only when unread examples exist and never approves suggestions automatically.",
 		].join("\n"), "info");
 	}
 	if (action === "list") {
@@ -2412,13 +2262,16 @@ async function handleConsolidation(command: string | undefined, ctx: ExtensionCo
 	if (value !== "on" && value !== "off") {
 		return notify(ctx, "Usage: /experience consolidation on|off", "warn");
 	}
-	const { config, path } = await setAgentExperienceConsolidationEnabled(value === "on");
+	const paths = getAgentExperiencePaths();
+	const current = await readAgentExperienceConfig(paths);
+	if (value === "off" && current.config.timer_enabled) return notify(ctx, "Disable Automatic schedule from /experience setup first. Analyze remains ON so the installed timer cannot silently diverge from config.", "warn");
+	const { config, path } = await setAgentExperienceConsolidationEnabled(value === "on", paths);
 	notify(
 		ctx,
 		[
 			`Analyze saved examples now from setup: ${value === "on" ? "ON" : "OFF"}`,
 			`Config file: ${path}`,
-			"Use the Analyze saved examples now row inside /experience setup to start one model call when you choose. No timer starts automatically.",
+			config.timer_enabled ? "Daily scheduled Analyze remains ON." : "No timer starts automatically; schedule changes require explicit confirmation in /experience setup.",
 			`Save chat examples locally: ${config.enabled && config.capture_enabled ? "ON" : "OFF"}`,
 		].join("\n"),
 		value === "on" ? "warn" : "info",
@@ -2478,7 +2331,7 @@ function usage(topic = "") {
 			"/experience setup                         # complete control panel and fallback",
 			"Inside that menu: save examples, choose model, analyze saved examples, review suggestions, review approved habits, disable/re-enable habits, and use approved habits.",
 			"Use arrow keys plus Space/Enter on menu rows. No typed setup subcommands are required for normal use. Checkbox rows show [x]/[ ].",
-			"Automatic schedule is Phase 2/off. Analyze saved examples from the setup menu when you want suggestions.",
+			"Automatic schedule is optional and explicit: local Linux systemd at 03:30 system-local time with persistent catch-up and one sanitized next-session receipt.",
 		].join("\n");
 	}
 	if (normalized === "review") {
@@ -2532,12 +2385,22 @@ function usage(topic = "") {
 		"Ask Pi to show numbered suggestions/duplicates for conversational review, or use /experience setup as the complete control panel.",
 		"Inside setup: save examples, choose model, analyze saved examples, review suggestions, approve/reject, and use approved habits.",
 		"No typed subcommand, internal ID, or checksum is required for normal declaration, setup, analysis, review, approval, or approved-habit reminders.",
-		"Automatic schedule is Phase 2/off. Suggestions are never auto-approved.",
+		"Automatic schedule is optional, local, and confirmation-gated. Scheduled suggestions are never auto-approved.",
 	].join("\n");
 }
 
 export default function agentExperienceExtension(pi: ExtensionAPI) {
 	registerAgentExperienceConversationalTools(pi);
+
+	pi.on("session_start", async (event, ctx) => {
+		if (ctx.mode !== "tui" || !["startup", "new", "resume"].includes(event.reason)) return;
+		const paths = getAgentExperiencePaths();
+		try {
+			await consumeScheduledAnalyzeReceipts(paths.root, getConfiguredUserId(), (message, level) => ctx.ui.notify(message, level));
+		} catch {
+			console.warn("Agent Experience scheduled receipt remains pending because it could not be shown or consumed safely.");
+		}
+	});
 	const HABIT_GUIDANCE_CUSTOM_TYPE = "agent_experience.habit_guidance";
 	type PendingSteeringRun = { prompt: string; entry: HabitSteeringEntryData; guidance: string; markerCommitted: boolean; userMessageCount?: number };
 	const pendingSteeringRuns = new Map<string, PendingSteeringRun>();

@@ -103,13 +103,13 @@ export async function setAgentExperienceSimpleOn(paths = getAgentExperiencePaths
 		...current.config,
 		enabled: true,
 		capture_enabled: true,
-		// Simple on/setup is intentionally capture-only in this release. These gates stay off
-		// because there is no bundled scheduled/live learning adapter or package-owned timer;
-		// on-demand analysis is available from the /experience setup menu.
-		selector_enabled: false,
-		embedding_enabled: false,
-		consolidation_enabled: false,
-		timer_enabled: false,
+		// Simple on is capture-only for a fresh/disabled setup, but it must not silently
+		// dismantle an explicitly installed schedule or its prerequisite gates.
+		selector_enabled: current.config.timer_enabled ? current.config.selector_enabled : false,
+		embedding_enabled: current.config.timer_enabled ? current.config.embedding_enabled : false,
+		consolidation_enabled: current.config.timer_enabled ? current.config.consolidation_enabled : false,
+		timer_enabled: current.config.timer_enabled,
+		// Scheduled Analyze never interrupts a live conversation.
 		break_in_enabled: false,
 	};
 	await writeAgentExperienceConfig(config, paths);
@@ -149,8 +149,9 @@ export async function setAgentExperienceConsolidationEnabled(consolidationEnable
 		...DEFAULT_AGENT_EXPERIENCE_CONFIG,
 		...current.config,
 		consolidation_enabled: consolidationEnabled,
-		// Timer/model automation remains a separate future gate.
-		timer_enabled: false,
+		// Schedule lifecycle is managed explicitly by setup. This setter does not
+		// silently mutate an installed timer flag.
+		timer_enabled: current.config.timer_enabled,
 		break_in_enabled: false,
 	};
 	await writeAgentExperienceConfig(config, paths);
@@ -164,8 +165,8 @@ export async function setAgentExperienceConsolidationModel(model: string, paths 
 		...current.config,
 		consolidation_model: model,
 		consolidation_enabled: true,
-		// Choosing a model enables manual learning only. Timer/break-in remain separate gates.
-		timer_enabled: false,
+		// Auth is validated by setup before a scheduled model change is accepted.
+		timer_enabled: current.config.timer_enabled,
 		break_in_enabled: false,
 	};
 	await writeAgentExperienceConfig(config, paths);
@@ -186,8 +187,8 @@ export async function setAgentExperienceTimerEnabled(timerEnabled: boolean, path
 	const config = {
 		...DEFAULT_AGENT_EXPERIENCE_CONFIG,
 		...current.config,
-		// Enabling package-owned timers is not supported yet; fail closed to disabled.
-		timer_enabled: timerEnabled ? false : false,
+		timer_enabled: timerEnabled,
+		// Scheduled Analyze only creates review suggestions and never interrupts Pi.
 		break_in_enabled: false,
 	};
 	await writeAgentExperienceConfig(config, paths);

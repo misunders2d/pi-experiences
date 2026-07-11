@@ -182,9 +182,9 @@ You can also ask Pi to show habit suggestions or possible duplicates, discuss nu
 8. Optionally prepare **Prevent duplicate habits**.
 9. Optionally enable **Use approved habits before replies**.
 
-The setup panel remains the complete fallback/control panel. It also contains duplicate resolution, 7/14/30-day source-example retention, current settings, plain-language help, all-off, and the Phase 2/off schedule explanation.
+The setup panel remains the complete fallback/control panel. It also contains duplicate resolution, 7/14/30-day source-example retention, current settings, plain-language help, all-off, and explicit local schedule management.
 
-Analyze runs as a bounded nonblocking job. Suggestions remain inert until approval.
+Analyze runs as a bounded nonblocking job. Suggestions remain inert until approval. On Linux with a systemd user manager, setup can optionally install a package-owned daily Analyze timer after showing the exact paths/model and receiving a separate confirmation. The default is still off.
 
 ## Review and activation
 
@@ -286,7 +286,7 @@ This section is intentionally collapsed. Preserve both this technical contract a
 - Every new or materially reworded habit requires explicit human approval.
 - Exact normalized evidence may update support for an unchanged approved identity without rewriting it.
 - Strong exact contradictory evidence may suppress one uniquely matched old habit, but replacement wording remains a proposal.
-- Never auto-approve, auto-merge, auto-activate replacement wording, modify law, or install/enable timers.
+- Never auto-approve, auto-merge, auto-activate replacement wording, modify law, or install/enable timers without the human selecting and confirming the exact setup action.
 - Direct instructions and configured law override habits.
 - Selector candidates are active, fresh, same-user approved habits only.
 - Never inject from candidate, disabled, dormant, suppressed, archived, evidence, quarantine, report, or observation rows.
@@ -428,7 +428,19 @@ Default `instant` mode is local lexical/no-network matching. It scores meaningfu
 
 Optional advanced smart matching is separately configured and fails closed on unavailable authentication, timeout, or malformed output. Selector hit logs never persist raw prompts, sessions, or injected guidance; `prompt_hash` is deliberately `omitted`. Selector logs describe the bounded selection attempt; the response-adjacent durable marker is authoritative proof that guidance reached that response. The marker contains no prompt and stores selected approved wording only.
 
-Timers remain Phase 2/off. The package does not install or enable bundled timer templates.
+### Optional local scheduled Analyze
+
+The package never installs a timer during npm/Pi installation. From `/experience setup`, a human may explicitly install and enable a **local systemd user timer** with these fixed semantics:
+
+- daily at **03:30 in the computer's system-local timezone**;
+- `Persistent=true`, so a sleeping/offline laptop catches up once after returning;
+- no model authentication or model call when no unread saved examples exist;
+- the same bounded observation validation, Analyze lock, consolidation lock, watermark, suggestion, duplicate, and law gates as manual Analyze;
+- suggestions only—never automatic approval, merge, activation, law mutation, or conversation interruption;
+- a bounded private sanitized receipt queue, summarized once in the next eligible Pi TUI session;
+- no Hub, remote scheduler, desktop notification, postinstall hook, or package-update activation.
+
+Setup can inspect, repair/rewrite, disable, or remove the package-owned user units. Because the rendered service pins absolute Node and package CLI paths, rerun setup after a Node/package-path change if status reports that the schedule needs repair. For local diagnostics, use `journalctl --user -u pi-experiences-agent-experience-analyze.service`; journal output contains only sanitized status codes.
 
 ### Law-check caveat
 

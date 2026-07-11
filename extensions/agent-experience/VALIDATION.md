@@ -26,9 +26,10 @@ npm audit --omit=dev
 13. two-connection semantic activation and atomic scan adversarial checks;
 14. token-lock stale/dead/malformed/ownership recovery;
 15. conversational draft/confirm, direct declaration, numbered review, privacy, stale-state, and no-orphan semantic failure;
-16. source/import bundling and generated CLI drift.
+16. source/import bundling and generated CLI drift;
+17. scheduled Analyze no-work/model-call gating, outer/inner lock discipline, sanitized bounded receipts, one-time TUI delivery, fixed local systemd rendering, injected systemctl lifecycle, and config-state preservation.
 
-The suite must leave timers off and perform no hosted embedding request or model download.
+The suite must perform no real systemd mutation, hosted embedding request, model download, or live scheduled model call. Phase 17 uses fake systemctl/model adapters and temporary unit/state roots.
 
 ## Real pinned local-model integration
 
@@ -118,7 +119,7 @@ Launch the real Pi TUI in a disposable Pi config/package root that references th
 - duplicate-prevention explanation and cancel-safe progress surface;
 - source-retention 7/14/30 choices;
 - approved-habit reminder explanation;
-- schedule Phase 2/off;
+- schedule explanation plus explicit install/enable, repair, disable, and remove flows;
 - current settings;
 - help;
 - all-off/Done.
@@ -153,7 +154,7 @@ Release evidence must include:
 - cross-batch learning from compact structured context;
 - 7/14/30-day journaled rotation/retention;
 - exact embedding payload privacy probes;
-- full disabled/all-off/no-timer/no-law-write regressions;
+- full disabled/all-off/no-implicit-timer/no-law-write regressions;
 - direct declaration creates no row before later-turn confirmation, bypasses repetition only, and rechecks law/conflict/semantic gates;
 - semantic-unavailable declaration creates no candidate/relation; clean activation and duplicate-block routing are atomic;
 - conversational review exposes numbered sanitized wording only, revalidates hidden snapshots, and rejects stale or same-turn mutation;

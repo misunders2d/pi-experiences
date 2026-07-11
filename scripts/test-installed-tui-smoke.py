@@ -51,8 +51,8 @@ try:
     down(fd,7); mark=len(raw); enter(fd); wait(fd,r'30 days',start=mark); down(fd,1); mark=len(raw); enter(fd); wait(fd,r'deleted after 14 days',start=mark); drain(fd,.5)
     # Reminder enable reaches explicit safety-file gate; cancel it.
     down(fd,8); mark=len(raw); enter(fd); wait(fd,r'Create default safety file',start=mark); escape(fd); drain(fd,.5)
-    # Scheduling remains an explanation/off path.
-    down(fd,9); mark=len(raw); enter(fd); wait(fd,r'Explain automatic schedule',start=mark); mark=len(raw); enter(fd); wait(fd,r'Phase 2',start=mark); drain(fd,.5)
+    # Scheduling defaults off; the first action remains explanation-only.
+    down(fd,9); mark=len(raw); enter(fd); wait(fd,r'Explain automatic schedule',start=mark); mark=len(raw); enter(fd); wait(fd,r'optional local systemd user timer',start=mark); drain(fd,.5)
     # Status and help focused panels.
     down(fd,10); mark=len(raw); enter(fd); wait(fd,r'Agent Experience current settings',start=mark); escape(fd); drain(fd,.5)
     down(fd,11); mark=len(raw); enter(fd); wait(fd,r'Agent Experience setup help',start=mark); escape(fd); drain(fd,.5)

@@ -7,6 +7,10 @@ import { getAgentExperiencePaths, readAgentExperienceConfig } from '../extension
 import { initExperienceStorage } from '../extensions/agent-experience/src/storage/sqlite.ts';
 import { readValidatedObservationGeneration } from '../extensions/agent-experience/src/consolidate/observations.ts';
 import { runConsolidationOnce } from '../extensions/agent-experience/src/consolidate/runner.ts';
+import { createStandaloneConsolidationModelAdapter } from '../extensions/agent-experience/src/consolidate/model-adapter.ts';
+import { runScheduledAnalyzeCore, safeScheduledAnalyzeErrorCode } from '../extensions/agent-experience/src/schedule/runner.ts';
+import { writeScheduledAnalyzeReceipt } from '../extensions/agent-experience/src/schedule/receipts.ts';
+import { normalizeUserId } from '../extensions/agent-experience/src/storage/private-root.ts';
 
 function argValue(args, name) {
   const index = args.indexOf(name);
@@ -15,9 +19,9 @@ function argValue(args, name) {
 
 function usage() {
   return [
-    'Usage: experience-consolidate status|now [--dry-run] [--fixture-output FILE] [--root DIR] [--user USER] [--generation active]',
-    'Advanced maintainer/test CLI. Normal users should use only /experience setup.',
-    'The setup menu contains model selection, Analyze saved examples now, review, and approved-habit controls. This CLI is advanced maintainer/test plumbing and never installs/enables timers.',
+    'Usage: experience-consolidate status|now|scheduled [--dry-run] [--fixture-output FILE] [--root DIR] [--user USER] [--generation active]',
+    'Advanced runtime/maintainer CLI. Normal users should use only /experience setup.',
+    'The setup menu contains model selection, Analyze saved examples now, review, approved-habit controls, and explicit local schedule management.',
     '--dry-run produces reviewable output and must not advance watermarks or mutate ledger state.',
     'Without a fixture/model adapter, the CLI fails closed rather than guessing model output.',
   ].join('\n');
@@ -31,10 +35,55 @@ async function main() {
   if (rootOverride) process.env.AX_STATE_ROOT = resolve(rootOverride);
   const paths = getAgentExperiencePaths();
   const { config, exists, path } = await readAgentExperienceConfig(paths);
-  const userId = argValue(args, '--user') || process.env.AX_USER_ID || 'owner';
+  const userId = normalizeUserId(argValue(args, '--user') || process.env.AX_USER_ID || 'owner');
   if (command === 'status') {
     console.log(JSON.stringify({ ok: true, command: 'status', root: paths.root, config_path: path, config_exists: exists, consolidation_enabled: config.consolidation_enabled, timer_enabled: config.timer_enabled, break_in_enabled: config.break_in_enabled }, null, 2));
     return;
+  }
+  if (command === 'scheduled') {
+    const gatesOpen = exists && config.enabled && config.consolidation_enabled && config.timer_enabled;
+    if (!gatesOpen) {
+      await writeScheduledAnalyzeReceipt(paths.root, { user_id: userId, status: 'disabled', severity: 'info', safe_code: 'config_gate_denied' });
+      console.log('scheduled_analyze status=disabled code=config_gate_denied');
+      return;
+    }
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(new Error('scheduled_model_call_timeout')), 130_000);
+    timeout.unref?.();
+    try {
+      const result = await runScheduledAnalyzeCore({
+        root: paths.root,
+        userId,
+        config,
+        signal: controller.signal,
+        adapterFactory: () => createStandaloneConsolidationModelAdapter({ signal: controller.signal }),
+      });
+      if (result.status === 'ok') {
+        await writeScheduledAnalyzeReceipt(paths.root, { user_id: userId, status: 'ok', severity: 'info', checked: result.checked, total_unread: result.total_unread, new_suggestions: result.new_suggestions, has_more: result.has_more });
+        console.log('scheduled_analyze status=ok');
+      } else if (result.status === 'no_work') {
+        await writeScheduledAnalyzeReceipt(paths.root, { user_id: userId, status: 'no_work', severity: 'info', total_unread: 0 });
+        console.log('scheduled_analyze status=no_work');
+      } else {
+        await writeScheduledAnalyzeReceipt(paths.root, { user_id: userId, status: 'locked', severity: 'info', safe_code: 'consolidation_locked' });
+        console.log('scheduled_analyze status=locked');
+      }
+      return;
+    } catch (error) {
+      const safeCode = safeScheduledAnalyzeErrorCode(error);
+      try {
+        await writeScheduledAnalyzeReceipt(paths.root, { user_id: userId, status: 'failed', severity: 'warn', safe_code: safeCode });
+      } catch {
+        console.error('scheduled_analyze status=failed code=receipt_write_failed');
+        process.exitCode = 1;
+        return;
+      }
+      console.error(`scheduled_analyze status=failed code=${safeCode}`);
+      process.exitCode = 1;
+      return;
+    } finally {
+      clearTimeout(timeout);
+    }
   }
   if (command !== 'now') throw new Error(usage());
   if (!config.enabled) throw new Error('learning_disabled: enable saving examples from /experience setup before using this advanced CLI');
@@ -58,6 +107,7 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error(String(error?.message || error));
+  if (process.argv[2] === 'scheduled') console.error('scheduled_analyze status=failed code=startup_failed');
+  else console.error(String(error?.message || error));
   process.exitCode = 1;
 });

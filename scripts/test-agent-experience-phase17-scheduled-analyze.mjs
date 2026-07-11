@@ -1,0 +1,158 @@
+#!/usr/bin/env node
+import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import agentExperienceExtension from '../extensions/agent-experience/index.ts';
+import { DEFAULT_AGENT_EXPERIENCE_CONFIG } from '../extensions/agent-experience/src/config.ts';
+import { setAgentExperienceConsolidationModel, setAgentExperienceTimerEnabled } from '../extensions/agent-experience/src/paths.ts';
+import { consumeScheduledAnalyzeReceipts, readScheduledAnalyzeReceipts, SCHEDULED_ANALYZE_RECEIPT_LIMIT, writeScheduledAnalyzeReceipt } from '../extensions/agent-experience/src/schedule/receipts.ts';
+import { runScheduledAnalyzeCore } from '../extensions/agent-experience/src/schedule/runner.ts';
+import { installScheduledAnalyzeSystemd, renderScheduledAnalyzeUnits, SCHEDULED_ANALYZE_ON_CALENDAR, SCHEDULED_ANALYZE_SERVICE, SCHEDULED_ANALYZE_TIMER } from '../extensions/agent-experience/src/schedule/systemd.ts';
+import { acquireOwnedLock } from '../extensions/agent-experience/src/storage/locks.ts';
+import { appendObservation } from '../extensions/agent-experience/src/storage/observations.ts';
+
+const temp = await mkdtemp(join(tmpdir(), 'pi-experiences-phase17-'));
+try {
+  const stateRoot = join(temp, 'state');
+  const paths = { root: stateRoot, configPath: join(stateRoot, 'agent-experience.toml') };
+  const cliPath = resolve('dist/experience-consolidate.mjs');
+  const unitContext = { nodePath: process.execPath, cliPath, paths, userId: 'owner', piAgentDir: join(temp, 'pi-agent') };
+  const rendered = renderScheduledAnalyzeUnits(unitContext);
+  assert.match(rendered.timer, new RegExp(`OnCalendar=${SCHEDULED_ANALYZE_ON_CALENDAR.replace(/[*]/g, '\\*')}`));
+  assert.match(rendered.timer, /Persistent=true/);
+  assert.doesNotMatch(rendered.timer, /RandomizedDelaySec/);
+  assert.match(rendered.timer, new RegExp(`Unit=${SCHEDULED_ANALYZE_SERVICE}`));
+  assert.match(rendered.service, new RegExp(`ConditionPathExists="${paths.configPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`));
+  assert.match(rendered.service, / scheduled --root /);
+  assert.match(rendered.service, /SyslogIdentifier=pi-experiences-analyze/);
+  assert.doesNotMatch(rendered.service, /\/usr\/bin\/env|exit 1/);
+
+  const unitDir = join(temp, 'units');
+  await mkdir(join(temp, 'pi-agent'), { recursive: true });
+  const calls = [];
+  const executor = async (command, args) => {
+    calls.push([command, ...args]);
+    return { stdout: '' };
+  };
+  await installScheduledAnalyzeSystemd(paths, 'owner', { executor, unitDir, nodePath: process.execPath, cliPath, piAgentDir: join(temp, 'pi-agent') });
+  assert.equal(existsSync(join(unitDir, SCHEDULED_ANALYZE_SERVICE)), true);
+  assert.equal(existsSync(join(unitDir, SCHEDULED_ANALYZE_TIMER)), true);
+  assert.deepEqual(calls.filter((call) => call[0] === 'systemctl').slice(-2), [
+    ['systemctl', '--user', 'daemon-reload'],
+    ['systemctl', '--user', 'enable', '--now', SCHEDULED_ANALYZE_TIMER],
+  ]);
+
+  const failedDir = join(temp, 'failed-units');
+  await assert.rejects(() => installScheduledAnalyzeSystemd(paths, 'owner', { executor: async () => { throw new Error('offline'); }, unitDir: failedDir, nodePath: process.execPath, cliPath }), /systemd_unavailable/);
+  assert.equal(existsSync(failedDir), false, 'failed preflight writes no units');
+
+  const failedEnableDir = join(temp, 'failed-enable-units');
+  const failedEnableExecutor = async (command, args) => {
+    if (command === 'systemctl' && args.includes('is-enabled')) throw new Error('not enabled');
+    if (command === 'systemctl' && args.includes('enable')) throw new Error('enable failed');
+    return { stdout: '' };
+  };
+  await assert.rejects(() => installScheduledAnalyzeSystemd(paths, 'owner', { executor: failedEnableExecutor, unitDir: failedEnableDir, nodePath: process.execPath, cliPath, piAgentDir: join(temp, 'pi-agent') }), /systemd_enable_failed/);
+  assert.equal(existsSync(join(failedEnableDir, SCHEDULED_ANALYZE_SERVICE)), false, 'failed first enable removes newly rendered service');
+  assert.equal(existsSync(join(failedEnableDir, SCHEDULED_ANALYZE_TIMER)), false, 'failed first enable removes newly rendered timer');
+
+  let configured = await setAgentExperienceTimerEnabled(true, paths);
+  assert.equal(configured.config.timer_enabled, true);
+  configured = await setAgentExperienceConsolidationModel('openai-codex/gpt-5.5', paths);
+  assert.equal(configured.config.timer_enabled, true, 'model changes preserve explicit schedule state');
+  assert.equal(configured.config.break_in_enabled, false, 'schedule never enables break-in');
+
+  const noWorkRoot = join(temp, 'no-work');
+  let adapterCreated = false;
+  const noWork = await runScheduledAnalyzeCore({ root: noWorkRoot, userId: 'owner', config: DEFAULT_AGENT_EXPERIENCE_CONFIG, adapterFactory: () => { adapterCreated = true; throw new Error('must not run'); } });
+  assert.equal(noWork.status, 'no_work');
+  assert.equal(adapterCreated, false, 'no unread work means no model adapter/auth/model call');
+
+  const runRoot = join(temp, 'scheduled-run');
+  await appendObservation(runRoot, {
+    userId: 'owner',
+    origin: { source: 'test' },
+    payload: { kind: 'conversation_pair_v1', user_text_redacted: 'Prefer concise release summaries', assistant_text_redacted: 'Understood' },
+    id: 'scheduled-1',
+    createdAt: '2026-07-10T08:00:00.000Z',
+  });
+  let generateCalls = 0;
+  const result = await runScheduledAnalyzeCore({
+    root: runRoot,
+    userId: 'owner',
+    config: { ...DEFAULT_AGENT_EXPERIENCE_CONFIG, enabled: true, consolidation_enabled: true, timer_enabled: true, consolidation_model: 'test/model' },
+    adapterFactory: () => ({
+      async generate(input) {
+        generateCalls += 1;
+        return {
+          schema_version: 1,
+          user_id: input.userId,
+          file_generation: input.expected.file_generation,
+          batch_id: 'scheduled-test',
+          model: input.model,
+          created_at: '2026-07-11T03:30:00.000Z',
+          observations_read: { seq_start: input.expected.seq_start, seq_end: input.expected.seq_end, checksum: input.expected.read_checksum },
+          proposals: [],
+        };
+      },
+    }),
+    now: () => '2026-07-11T03:30:00.000Z',
+  });
+  assert.equal(result.status, 'ok');
+  assert.equal(generateCalls, 1);
+  assert.equal(result.checked, 1);
+  assert.equal(result.new_suggestions, 0);
+
+  const lockedRoot = join(temp, 'locked');
+  const held = await acquireOwnedLock(lockedRoot, 'analyze', { waitMs: 0 });
+  try {
+    const locked = await runScheduledAnalyzeCore({ root: lockedRoot, userId: 'owner', config: DEFAULT_AGENT_EXPERIENCE_CONFIG, adapterFactory: () => { throw new Error('must not run'); } });
+    assert.equal(locked.status, 'locked');
+  } finally {
+    await held.release();
+  }
+
+  const receiptRoot = join(temp, 'receipts');
+  for (let index = 0; index < SCHEDULED_ANALYZE_RECEIPT_LIMIT + 5; index += 1) {
+    await writeScheduledAnalyzeReceipt(receiptRoot, { user_id: 'owner', status: index % 3 ? 'no_work' : 'ok', severity: 'info', checked: index, new_suggestions: 0 });
+  }
+  let pending = await readScheduledAnalyzeReceipts(receiptRoot);
+  assert.equal(pending.receipts.length, SCHEDULED_ANALYZE_RECEIPT_LIMIT, 'receipt queue remains bounded');
+  assert.equal(pending.receipts.some((receipt) => receipt.queue_overflowed), true);
+  const serialized = JSON.stringify(pending.receipts);
+  assert.doesNotMatch(serialized, /prompt|api.?key|credential|header|stack|checksum|source_ref|private@example/i);
+
+  let notified = 0;
+  await assert.rejects(() => consumeScheduledAnalyzeReceipts(receiptRoot, 'owner', () => { notified += 1; throw new Error('renderer unavailable'); }), /renderer unavailable/);
+  assert.equal((await readScheduledAnalyzeReceipts(receiptRoot)).receipts.length, SCHEDULED_ANALYZE_RECEIPT_LIMIT, 'notify failure retains receipts');
+  const consumed = await consumeScheduledAnalyzeReceipts(receiptRoot, 'owner', (message) => {
+    notified += 1;
+    assert.match(message, /Scheduled Agent Experience Analyze update/);
+    assert.match(message, /Nothing was approved automatically|no unread saved examples/);
+  });
+  assert.equal(consumed.deleted, SCHEDULED_ANALYZE_RECEIPT_LIMIT);
+  assert.equal((await readScheduledAnalyzeReceipts(receiptRoot)).receipts.length, 0, 'successful visible notify consumes receipts once');
+  assert.equal(notified, 2);
+
+  process.env.AX_STATE_ROOT = receiptRoot;
+  await writeScheduledAnalyzeReceipt(receiptRoot, { user_id: 'owner', status: 'ok', severity: 'info', checked: 1, new_suggestions: 0 });
+  const handlers = new Map();
+  agentExperienceExtension({ registerCommand() {}, registerTool() {}, on(event, handler) { handlers.set(event, handler); } });
+  let lifecycleNotes = 0;
+  const lifecycleCtx = { mode: 'tui', ui: { notify() { lifecycleNotes += 1; } } };
+  await handlers.get('session_start')({ reason: 'reload' }, lifecycleCtx);
+  await handlers.get('session_start')({ reason: 'fork' }, lifecycleCtx);
+  await handlers.get('session_start')({ reason: 'startup' }, { ...lifecycleCtx, mode: 'json' });
+  assert.equal(lifecycleNotes, 0, 'reload, fork, and non-TUI starts do not consume receipts');
+  assert.equal((await readScheduledAnalyzeReceipts(receiptRoot)).receipts.length, 1);
+  await handlers.get('session_start')({ reason: 'startup' }, lifecycleCtx);
+  assert.equal(lifecycleNotes, 1);
+  assert.equal((await readScheduledAnalyzeReceipts(receiptRoot)).receipts.length, 0, 'eligible TUI startup consumes after notify');
+  delete process.env.AX_STATE_ROOT;
+
+  console.log('agent-experience phase17 scheduled Analyze checks passed');
+} finally {
+  await rm(temp, { recursive: true, force: true });
+}

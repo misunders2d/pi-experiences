@@ -150,7 +150,7 @@ try {
   await commands.get('experience').handler('status', { cwd: process.cwd(), ui: { notify(message) { notes.push(message); } } });
   assert.match(notes.at(-1), /Experience: OFF/);
   assert.match(notes.at(-1), /Analyze saved examples now: available when you choose it in setup/);
-  assert.match(notes.at(-1), /Automatic schedule: Phase 2 \/ OFF/);
+  assert.match(notes.at(-1), /Automatic schedule: OFF/);
   await commands.get('experience').handler('help', { cwd: process.cwd(), ui: { notify(message) { notes.push(message); } } });
   assert.match(notes.at(-1), /Discuss a pattern naturally/);
   assert.match(notes.at(-1), /\/experience setup as the complete control panel/);
@@ -235,10 +235,12 @@ try {
   const service = await readFile('extensions/agent-experience/units/experience-consolidate.service', 'utf8');
   const timer = await readFile('extensions/agent-experience/units/experience-consolidate.timer', 'utf8');
   assert.match(service, /Type=oneshot/);
-  assert.match(timer, /OnCalendar=daily/);
+  assert.match(service, / scheduled --root /);
+  assert.doesNotMatch(service, /exit 1|\/usr\/bin\/env/);
+  assert.match(timer, /OnCalendar=\*-\*-\* 03:30:00/);
   assert.match(timer, /Persistent=true/);
-  assert.match(timer, /ConditionACPower/);
-  assert.equal(existsSync(join(temp, '.config/systemd/user/experience-consolidate.timer')), false, 'tests/package must not install systemd timer');
+  assert.doesNotMatch(timer, /RandomizedDelaySec|ConditionACPower/);
+  assert.equal(existsSync(join(temp, '.config/systemd/user/pi-experiences-agent-experience-analyze.timer')), false, 'tests/package must not install systemd timer');
 } finally {
   try { storage.db.close(); } catch {}
   await rm(temp, { recursive: true, force: true });

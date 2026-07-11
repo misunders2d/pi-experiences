@@ -751,8 +751,77 @@ async function readCurrentObservationManifest(root) {
   const privateRoot = await ensurePrivateRoot(root);
   return withOwnedLock(privateRoot, LOCK_NAME, () => loadStateLocked(privateRoot), { waitMs: 1e4 });
 }
+async function readValidatedObservationRange(root, input) {
+  const privateRoot = await ensurePrivateRoot(root);
+  const userId = normalizeUserId(input.userId);
+  const afterSeq = Math.max(0, Math.trunc(input.afterSeq || 0));
+  const maxRecords = Math.max(1, Math.min(500, Math.trunc(input.maxRecords || DEFAULT_RANGE_RECORDS)));
+  const maxBytes = Math.max(MAX_RECORD_BYTES + 1, Math.min(2e6, Math.trunc(input.maxBytes || DEFAULT_RANGE_BYTES)));
+  return withOwnedLock(privateRoot, LOCK_NAME, async () => {
+    const manifest = await loadStateLocked(privateRoot);
+    if (afterSeq > manifest.last_seq) throw new Error("Observation read watermark is beyond current generation");
+    if (afterSeq > 0) {
+      const previous = await readRecordAt(privateRoot, manifest, afterSeq);
+      if (previous.user_id !== userId || previous.checksum !== input.afterChecksum) throw new Error("Observation read watermark checksum mismatch");
+    } else if (input.afterChecksum) throw new Error("Observation read watermark checksum without sequence");
+    if (afterSeq === manifest.last_seq) return { manifest, records: [], has_more: false, total_unread: 0, bytes_read: 0 };
+    const startOffset = afterSeq === 0 ? 0 : await readOffset(resolvePrivatePath(privateRoot, OBSERVATIONS_INDEX), afterSeq);
+    const desiredCount = Math.min(maxRecords, manifest.last_seq - afterSeq);
+    const indexHandle = await open3(resolvePrivatePath(privateRoot, OBSERVATIONS_INDEX), constants2.O_RDONLY);
+    const offsetsBuffer = Buffer.alloc(desiredCount * INDEX_ENTRY_BYTES);
+    try {
+      const { bytesRead } = await indexHandle.read(offsetsBuffer, 0, offsetsBuffer.length, afterSeq * INDEX_ENTRY_BYTES);
+      ioDiagnostics.bounded_bytes_read += bytesRead;
+      if (bytesRead !== offsetsBuffer.length) throw new Error("Observation range index is truncated");
+    } finally {
+      await indexHandle.close();
+    }
+    let count = 0;
+    let endOffset = startOffset;
+    for (let index = 0; index < desiredCount; index += 1) {
+      const candidate = Number(offsetsBuffer.readBigUInt64BE(index * INDEX_ENTRY_BYTES));
+      if (!Number.isSafeInteger(candidate) || candidate <= endOffset) throw new Error("Invalid observation range index offset");
+      if (candidate - startOffset > maxBytes && count > 0) break;
+      if (candidate - startOffset > maxBytes) throw new Error("Single observation exceeds Analyze byte bound");
+      endOffset = candidate;
+      count += 1;
+    }
+    const length = endOffset - startOffset;
+    const jsonHandle = await open3(resolvePrivatePath(privateRoot, OBSERVATIONS_FILE), constants2.O_RDONLY);
+    const bytes = Buffer.alloc(length);
+    try {
+      const { bytesRead } = await jsonHandle.read(bytes, 0, length, startOffset);
+      ioDiagnostics.bounded_bytes_read += bytesRead;
+      if (bytesRead !== length) throw new Error("Observation range JSONL is truncated");
+    } finally {
+      await jsonHandle.close();
+    }
+    const records = [];
+    let previousRef = afterSeq === 0 ? null : `${afterSeq}:${input.afterChecksum}`;
+    for (const line of bytes.toString("utf8").split("\n")) {
+      if (!line) continue;
+      let parsed;
+      try {
+        parsed = JSON.parse(line);
+      } catch {
+        throw new Error("Invalid observation range JSON");
+      }
+      const record = validateRecord(parsed, { expectedSeq: afterSeq + records.length + 1, expectedPrev: previousRef, userId });
+      records.push({ ...record, file_generation: manifest.file_generation });
+      previousRef = pairRef(record);
+    }
+    if (records.length !== count) throw new Error("Observation range record count mismatch");
+    return { manifest, records, has_more: afterSeq + count < manifest.last_seq, total_unread: manifest.last_seq - afterSeq, bytes_read: length };
+  }, { waitMs: 1e4 });
+}
 function rotationChecksum(base) {
   return checksumJson({ kind: "agent_experience_observation_rotation_v1", ...base });
+}
+function withRotationChecksum(base) {
+  return { ...base, checksum: rotationChecksum(base) };
+}
+async function writeRotationJournal(root, journal) {
+  await writeAtomicJson(root, resolvePrivatePath(root, ROTATION_JOURNAL), journal);
 }
 async function readRotationJournal(root) {
   const path = resolvePrivatePath(root, ROTATION_JOURNAL);
@@ -799,7 +868,73 @@ async function recoverInterruptedRotationLocked(root) {
   await writeAtomicJson(root, resolvePrivatePath(root, ARCHIVE_ROOT, journal.old_generation, "archive.json"), archiveMeta(journal));
   await rm3(resolvePrivatePath(root, ROTATION_JOURNAL), { force: true });
 }
-var OBSERVATIONS_FILE, OBSERVATIONS_INDEX, OBSERVATIONS_TAIL, ROTATION_JOURNAL, ARCHIVE_ROOT, LOCK_NAME, MAX_RECORD_BYTES, INDEX_ENTRY_BYTES, ALLOWED_RETENTION_DAYS, ioDiagnostics;
+async function rotateObservationGenerationIfFullyRead(root, input) {
+  const privateRoot = await ensurePrivateRoot(root);
+  const userId = normalizeUserId(input.userId);
+  const retentionDays = Math.trunc(input.retentionDays ?? 7);
+  if (!ALLOWED_RETENTION_DAYS.has(retentionDays)) throw new Error("Observation retention must be 7, 14, or 30 days");
+  return withOwnedLock(privateRoot, LOCK_NAME, async () => {
+    const manifest = await loadStateLocked(privateRoot);
+    if (manifest.file_generation !== input.fileGeneration || manifest.last_seq !== input.seq || manifest.last_checksum !== input.checksum) return { rotated: false, reason: "new_observations_or_generation_changed", manifest };
+    if (manifest.last_seq < 1) return { rotated: false, reason: "empty", manifest };
+    const last = await readRecordAt(privateRoot, manifest, manifest.last_seq);
+    if (last.user_id !== userId) throw new Error("Observation rotation user mismatch");
+    const rotatedAt = input.now || (/* @__PURE__ */ new Date()).toISOString();
+    const newGeneration = `g-${rotatedAt.replace(/[^0-9]/g, "").slice(0, 17)}-${randomUUID2().slice(0, 12)}`;
+    const archiveRoot = resolvePrivatePath(privateRoot, ARCHIVE_ROOT);
+    await mkdir5(archiveRoot, { recursive: true, mode: PRIVATE_DIR_MODE });
+    const archiveDir = resolvePrivatePath(privateRoot, ARCHIVE_ROOT, manifest.file_generation);
+    if (await pathType(archiveDir)) throw new Error("Observation archive generation already exists");
+    await mkdir5(archiveDir, { mode: PRIVATE_DIR_MODE });
+    let journal = withRotationChecksum({ schema_version: 1, phase: "prepared", old_generation: manifest.file_generation, new_generation: newGeneration, rotated_at: rotatedAt, retention_days: retentionDays });
+    await writeRotationJournal(privateRoot, journal);
+    if (input._testFailurePhase === "prepared") throw new Error("Injected observation rotation failure after prepared");
+    for (const name of [OBSERVATIONS_FILE, OBSERVATIONS_INDEX, OBSERVATIONS_TAIL]) await rename3(resolvePrivatePath(privateRoot, name), resolvePrivatePath(privateRoot, ARCHIVE_ROOT, manifest.file_generation, name));
+    {
+      const { checksum: _checksum, ...base } = journal;
+      journal = withRotationChecksum({ ...base, phase: "moved" });
+    }
+    await writeRotationJournal(privateRoot, journal);
+    if (input._testFailurePhase === "moved") throw new Error("Injected observation rotation failure after moved");
+    await createEmptyGeneration(privateRoot, newGeneration, rotatedAt);
+    await writeAtomicJson(privateRoot, resolvePrivatePath(privateRoot, ARCHIVE_ROOT, manifest.file_generation, "archive.json"), archiveMeta(journal));
+    {
+      const { checksum: _checksum, ...base } = journal;
+      journal = withRotationChecksum({ ...base, phase: "committed" });
+    }
+    await writeRotationJournal(privateRoot, journal);
+    if (input._testFailurePhase === "committed") throw new Error("Injected observation rotation failure after committed");
+    await rm3(resolvePrivatePath(privateRoot, ROTATION_JOURNAL), { force: true });
+    return { rotated: true, old_generation: manifest.file_generation, new_generation: newGeneration };
+  }, { waitMs: 1e4 });
+}
+async function purgeExpiredObservationArchives(root, input = {}) {
+  const privateRoot = await ensurePrivateRoot(root);
+  const now = Date.parse(input.now || (/* @__PURE__ */ new Date()).toISOString());
+  if (!Number.isFinite(now)) throw new Error("Invalid observation retention time");
+  return withOwnedLock(privateRoot, LOCK_NAME, async () => {
+    await recoverInterruptedRotationLocked(privateRoot);
+    const archiveRoot = resolvePrivatePath(privateRoot, ARCHIVE_ROOT);
+    const entries = await readdir2(archiveRoot).catch((error) => error?.code === "ENOENT" ? [] : Promise.reject(error));
+    const deleted = [];
+    for (const entry of entries.sort()) {
+      assertGeneration(entry);
+      const dir = resolvePrivatePath(privateRoot, ARCHIVE_ROOT, entry);
+      if (await pathType(dir) !== "directory") throw new Error("Observation archive entry is not a private directory");
+      const metaPath = resolvePrivatePath(privateRoot, ARCHIVE_ROOT, entry, "archive.json");
+      if (await pathType(metaPath) !== "file") throw new Error("Observation archive metadata missing");
+      const meta = JSON.parse(await readFile4(metaPath, "utf8"));
+      const { checksum, ...base } = meta;
+      if (checksum !== checksumJson({ kind: "agent_experience_observation_archive_v1", ...base }) || meta.file_generation !== entry) throw new Error("Observation archive metadata checksum mismatch");
+      if (Date.parse(meta.expires_at) <= now) {
+        await rm3(dir, { recursive: true, force: true });
+        deleted.push(entry);
+      }
+    }
+    return { deleted };
+  }, { waitMs: 1e4 });
+}
+var OBSERVATIONS_FILE, OBSERVATIONS_INDEX, OBSERVATIONS_TAIL, ROTATION_JOURNAL, ARCHIVE_ROOT, LOCK_NAME, MAX_RECORD_BYTES, DEFAULT_RANGE_RECORDS, DEFAULT_RANGE_BYTES, INDEX_ENTRY_BYTES, ALLOWED_RETENTION_DAYS, ioDiagnostics;
 var init_observations = __esm({
   "extensions/agent-experience/src/storage/observations.ts"() {
     init_private_root();
@@ -813,6 +948,8 @@ var init_observations = __esm({
     ARCHIVE_ROOT = "observation-archive";
     LOCK_NAME = "observations";
     MAX_RECORD_BYTES = 64 * 1024;
+    DEFAULT_RANGE_RECORDS = 200;
+    DEFAULT_RANGE_BYTES = 8e4;
     INDEX_ENTRY_BYTES = 8;
     ALLOWED_RETENTION_DAYS = /* @__PURE__ */ new Set([7, 14, 30]);
     ioDiagnostics = { full_scans: 0, bounded_bytes_read: 0 };
@@ -820,8 +957,8 @@ var init_observations = __esm({
 });
 
 // bin/experience-consolidate.mjs
-import { existsSync as existsSync2 } from "node:fs";
-import { readFile as readFile7 } from "node:fs/promises";
+import { existsSync as existsSync3 } from "node:fs";
+import { readFile as readFile9 } from "node:fs/promises";
 import { dirname as dirname3, resolve as resolve3 } from "node:path";
 init_paths();
 
@@ -2136,6 +2273,37 @@ function getKeptSeparateDuplicate(db, input) {
   }
   return void 0;
 }
+function updateCandidateReviewStatus(db, input) {
+  const userId = normalizeUserId(input.userId);
+  const before = db.prepare("SELECT * FROM habits WHERE user_id = ? AND id = ? AND status = 'candidate'").get(userId, input.habitId);
+  if (!before) return { updated: false, before: null, after: null };
+  let existingData = {};
+  try {
+    existingData = JSON.parse(before.data_json || "{}");
+  } catch {
+  }
+  if (input.expectedReviewStatus !== void 0 && existingData.review_status !== input.expectedReviewStatus) return { updated: false, before, after: before };
+  if (existingData.review_status === input.nextReviewStatus) return { updated: false, before, after: before };
+  const data = { ...existingData, record_kind: before.record_kind, schema_version: before.schema_version, status: before.status, habit_id: before.habit_id, condition: before.condition, behavior: before.behavior, polarity: before.polarity, confidence_bp: before.confidence_bp, activation: before.activation, staleness: before.staleness, active: false, injectable: false, review_status: input.nextReviewStatus, ...typeof input.data === "object" && input.data && !Array.isArray(input.data) ? input.data : {} };
+  const row = buildTypedStorageRow("habits", { id: before.id, userId, data, createdAt: before.created_at, updatedAt: input.now });
+  const result = db.prepare("UPDATE habits SET record_kind=?, schema_version=?, status=?, habit_id=?, condition=?, behavior=?, polarity=?, confidence_bp=?, activation=?, staleness=?, data_json=?, checksum=?, updated_at=? WHERE user_id=? AND id=? AND status='candidate' AND checksum=?").run(row.record_kind, row.schema_version, row.status, row.habit_id, row.condition, row.behavior, row.polarity, row.confidence_bp, row.activation, row.staleness, row.data_json, row.checksum, row.updated_at, userId, before.id, before.checksum);
+  if (result.changes !== 1) throw new Error("Candidate duplicate-route update failed");
+  const after = db.prepare("SELECT * FROM habits WHERE user_id = ? AND id = ?").get(userId, before.id);
+  return { updated: true, before, after };
+}
+function markCandidateDuplicateResolution(db, input) {
+  const userId = normalizeUserId(input.userId);
+  const before = db.prepare("SELECT data_json FROM habits WHERE user_id = ? AND id = ? AND status = 'candidate'").get(userId, input.habitId);
+  if (!before) return { updated: false, before: null, after: null };
+  let existingData = {};
+  try {
+    existingData = JSON.parse(before.data_json || "{}");
+  } catch {
+  }
+  const existingSemantic = existingData.semantic_duplicate && typeof existingData.semantic_duplicate === "object" ? existingData.semantic_duplicate : {};
+  const previousReviewStatus = existingData.review_status === "duplicate_resolution" ? String(existingSemantic.previous_review_status || "candidate") : String(existingData.review_status || "candidate");
+  return updateCandidateReviewStatus(db, { userId, habitId: input.habitId, expectedReviewStatus: void 0, nextReviewStatus: "duplicate_resolution", data: { semantic_duplicate: { ...existingSemantic, ...typeof input.data === "object" && input.data && !Array.isArray(input.data) ? input.data : {}, previous_review_status: previousReviewStatus, duplicate_relation_id: input.relationId, routed_at: input.now } }, now: input.now });
+}
 function insertHabitDuplicateAudit(db, input) {
   const userId = normalizeUserId(input.userId);
   const before_json = boundedJson(input.before ?? null);
@@ -2155,6 +2323,9 @@ function insertHabitDuplicateAudit(db, input) {
 
 // extensions/agent-experience/src/semantic/service.ts
 var SEMANTIC_COMPARISON_STATUSES = ["active", "disabled"];
+var MAX_ACTIVATION_REPREPARES = 2;
+var SemanticSnapshotChanged = class extends Error {
+};
 function sanitizePolicy(policy) {
   const rawReview = policy?.reviewThresholdBp === void 0 ? LOCAL_EMBEDDING_REVIEW_THRESHOLD_BP : Math.trunc(Number(policy.reviewThresholdBp));
   const reviewThresholdBp = Number.isFinite(rawReview) ? Math.max(0, Math.min(1e4, rawReview)) : LOCAL_EMBEDDING_REVIEW_THRESHOLD_BP;
@@ -2170,11 +2341,27 @@ function sanitizePolicy(policy) {
     timeoutMs: Math.max(1, Math.min(3e5, Math.trunc(Number(policy?.timeoutMs ?? LOCAL_EMBEDDING_TIMEOUT_MS)))) || LOCAL_EMBEDDING_TIMEOUT_MS
   };
 }
+function policySummary(policy) {
+  return {
+    enabled: policy.enabled,
+    provider: policy.provider,
+    model: policy.model,
+    dimensions: policy.dimensions,
+    reviewThresholdBp: policy.reviewThresholdBp,
+    strongThresholdBp: policy.strongThresholdBp,
+    scoringMethod: SEMANTIC_DUPLICATE_METHOD_VERSION,
+    conditionInputVersion: SEMANTIC_CONDITION_EMBEDDING_INPUT_VERSION,
+    behaviorInputVersion: SEMANTIC_BEHAVIOR_EMBEDDING_INPUT_VERSION
+  };
+}
 function assertProviderMatches(policy, provider) {
   if (provider.provider !== policy.provider || provider.model !== policy.model || provider.dimensions !== policy.dimensions) throw new Error("Semantic embedding runtime does not match the fixed local policy");
 }
 function throwIfAborted(signal) {
   if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : new Error("semantic_operation_cancelled");
+}
+function rowSnapshot(rows) {
+  return JSON.stringify(rows.map((row) => [row.id, row.status, row.checksum, row.polarity]));
 }
 function comparisonRows(db, input) {
   return selectSemanticHabitRows(db, { userId: input.userId, statuses: input.statuses || SEMANTIC_COMPARISON_STATUSES }).filter((row) => row.id !== input.target.id).filter((row) => row.status !== "archived" && row.status !== "suppressed_by_law").filter((row) => row.polarity === input.target.polarity).filter((row) => !(row.status === "candidate" && input.target.status === "candidate")).filter((row) => !getKeptSeparateDuplicate(db, { userId: input.userId, habitId: input.target.id, otherHabitId: row.id, provider: input.policy.provider, model: input.policy.model, dimensions: input.policy.dimensions }));
@@ -2257,6 +2444,105 @@ function computeMatches(input) {
     if (score.strength !== "none") matches.push({ habit: row, similarityBp: score.similarityBp, conditionSimilarityBp: score.conditionSimilarityBp, behaviorSimilarityBp: score.behaviorSimilarityBp, strength: score.strength });
   }
   return matches.sort((left, right) => right.similarityBp - left.similarityBp || left.habit.id.localeCompare(right.habit.id));
+}
+function matchData(match) {
+  return { similarity_bp: match.similarityBp, condition_similarity_bp: match.conditionSimilarityBp, behavior_similarity_bp: match.behaviorSimilarityBp, strength: match.strength, scoring_method: SEMANTIC_DUPLICATE_METHOD_VERSION };
+}
+function writeActivationBlocks(db, input) {
+  for (const match of input.matches) {
+    const canonical = chooseCanonicalHabit(input.target, match.habit);
+    const duplicate = canonical.id === input.target.id ? match.habit : input.target;
+    const relation = upsertHabitDuplicate(db, { userId: input.userId, habitId: input.target.id, otherHabitId: match.habit.id, canonicalHabitId: canonical.id, duplicateHabitId: duplicate.id, similarityBp: match.similarityBp, thresholdBp: input.policy.reviewThresholdBp, provider: input.policy.provider, model: input.policy.model, dimensions: input.policy.dimensions, decision: "pending", data: { action: "activation_block", target_kind: input.targetKind, ...matchData(match), policy: policySummary(input.policy) }, now: input.now });
+    if (input.target.status === "candidate") markCandidateDuplicateResolution(db, { userId: input.userId, habitId: input.target.id, relationId: relation.id, data: { action: "activation_block", matched_habit_id: match.habit.id, canonical_habit_id: canonical.id, ...matchData(match) }, now: input.now });
+    insertHabitDuplicateAudit(db, { userId: input.userId, duplicateId: relation.id, targetKind: input.targetKind, targetId: input.target.id, action: "semantic_activation_block", before: null, after: relation, data: { matched_habit_id: match.habit.id, ...matchData(match), policy: policySummary(input.policy) }, now: input.now });
+  }
+}
+function unavailableDecision(policy, error) {
+  const detail = error === void 0 ? void 0 : String(error?.message || error).slice(0, 300);
+  return { pass: false, reason: "semantic_unavailable", matches: [], policy: policySummary(policy), ...detail ? { error: detail } : {} };
+}
+function auditUnavailable(db, input) {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const target = getSemanticHabitRow(db, { userId: input.userId, habitId: input.targetHabitId });
+    if (!target || target.status !== input.expectedStatus || target.checksum !== input.expectedChecksum) throw new Error("Stale habit state");
+    const semantic = unavailableDecision(input.policy, input.reason);
+    insertHabitDuplicateAudit(db, { userId: input.userId, targetKind: input.targetKind, targetId: input.targetHabitId, action: "semantic_gate_unavailable", data: { policy: policySummary(input.policy), reason: input.reason.slice(0, 300) }, now: input.now });
+    const result = input.onBlocked?.(target, semantic);
+    db.exec("COMMIT");
+    return { semantic, result, target: getSemanticHabitRow(db, { userId: input.userId, habitId: input.targetHabitId }) };
+  } catch (error) {
+    try {
+      db.exec("ROLLBACK");
+    } catch {
+    }
+    throw error;
+  }
+}
+async function runAtomicSemanticActivation(db, input) {
+  const policy = sanitizePolicy(input.policy);
+  if (!policy.enabled) {
+    const semantic = { pass: true, reason: "disabled", matches: [], policy: policySummary(policy) };
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      const target = getSemanticHabitRow(db, { userId: input.userId, habitId: input.targetHabitId });
+      if (!target || target.status !== input.expectedStatus || target.checksum !== input.expectedChecksum) throw new Error("Stale habit state");
+      const result = input.transition(target, semantic);
+      db.exec("COMMIT");
+      return { semantic, transitioned: true, result, target };
+    } catch (error) {
+      try {
+        db.exec("ROLLBACK");
+      } catch {
+      }
+      throw error;
+    }
+  }
+  if (!input.provider) {
+    const blocked = auditUnavailable(db, { ...input, policy, reason: "local_embedding_runtime_missing" });
+    return { ...blocked, transitioned: false };
+  }
+  for (let attempt = 0; attempt < MAX_ACTIVATION_REPREPARES; attempt += 1) {
+    throwIfAborted(input.signal);
+    const target = getSemanticHabitRow(db, { userId: input.userId, habitId: input.targetHabitId });
+    if (!target || target.status !== input.expectedStatus || target.checksum !== input.expectedChecksum) throw new Error("Stale habit state");
+    const comparators = comparisonRows(db, { userId: input.userId, target, policy });
+    let prepared;
+    try {
+      prepared = await prepareHabitEmbeddings(db, { userId: input.userId, habits: [target, ...comparators], policy, provider: input.provider, signal: input.signal, batchSize: LOCAL_EMBEDDING_MAX_BATCH });
+    } catch (error) {
+      const blocked = auditUnavailable(db, { ...input, policy, reason: String(error?.message || error) });
+      return { ...blocked, transitioned: false };
+    }
+    try {
+      db.exec("BEGIN IMMEDIATE");
+      const freshTarget = getSemanticHabitRow(db, { userId: input.userId, habitId: input.targetHabitId });
+      if (!freshTarget || freshTarget.status !== input.expectedStatus || freshTarget.checksum !== input.expectedChecksum) throw new Error("Stale habit state");
+      const freshComparators = comparisonRows(db, { userId: input.userId, target: freshTarget, policy });
+      if (rowSnapshot(freshComparators) !== rowSnapshot(comparators)) throw new SemanticSnapshotChanged("Semantic comparator snapshot changed");
+      for (const item of prepared.values()) persistPreparedEmbedding(db, { userId: input.userId, prepared: item, policy, now: input.now });
+      const matches = computeMatches({ target: freshTarget, comparators: freshComparators, prepared, policy });
+      const semantic = matches.length ? { pass: false, reason: "semantic_duplicate", matches, policy: policySummary(policy) } : { pass: true, reason: "pass", matches: [], policy: policySummary(policy) };
+      if (matches.length) {
+        writeActivationBlocks(db, { userId: input.userId, target: freshTarget, matches, policy, targetKind: input.targetKind, now: input.now });
+        const blockedTarget = getSemanticHabitRow(db, { userId: input.userId, habitId: input.targetHabitId });
+        const result2 = input.onBlocked?.(blockedTarget, semantic);
+        db.exec("COMMIT");
+        return { semantic, transitioned: false, result: result2, target: getSemanticHabitRow(db, { userId: input.userId, habitId: input.targetHabitId }) };
+      }
+      const result = input.transition(freshTarget, semantic);
+      db.exec("COMMIT");
+      return { semantic, transitioned: true, result, target: freshTarget };
+    } catch (error) {
+      try {
+        db.exec("ROLLBACK");
+      } catch {
+      }
+      if (error instanceof SemanticSnapshotChanged && attempt + 1 < MAX_ACTIVATION_REPREPARES) continue;
+      throw error;
+    }
+  }
+  throw new Error("Semantic state changed repeatedly; retry the action");
 }
 async function findSemanticDuplicateMatches(db, input) {
   const policy = sanitizePolicy(input.policy);
@@ -2498,6 +2784,9 @@ function getWatermarkFromTable(db, table, userId, fileGeneration) {
 function getWatermark(db, userId, fileGeneration) {
   return getWatermarkFromTable(db, "consolidation_watermarks", userId, fileGeneration);
 }
+function getProposalReadWatermark(db, userId, fileGeneration) {
+  return getWatermarkFromTable(db, "proposal_read_watermarks", normalizeUserId(userId), fileGeneration);
+}
 function upsertWatermarkTable(db, table, row) {
   const full = { ...row, row_checksum: watermarkChecksum(table, row) };
   const existing = getWatermarkFromTable(db, table, row.user_id, row.file_generation);
@@ -2571,7 +2860,7 @@ function validateSourceRefs(proposal, observationMap) {
     return observation;
   });
 }
-function proposalCandidateData(batch, proposal, sourceDates) {
+function proposalCandidateData(batch, proposal, sourceDates2) {
   return {
     schema_version: 2,
     record_kind: "candidate_habit_v1",
@@ -2589,11 +2878,11 @@ function proposalCandidateData(batch, proposal, sourceDates) {
     confidence_bp: proposal.confidence_bp,
     evidence_stage: proposal.evidence_stage || "reviewable",
     source_refs: proposal.source_refs,
-    source_dates: sourceDates,
+    source_dates: sourceDates2,
     ...proposal.correction_role ? { correction_role: proposal.correction_role, correction_group_id: proposal.correction_group_id } : {}
   };
 }
-function proposalEvidenceData(_batch, proposal, sourceDates, habitId) {
+function proposalEvidenceData(_batch, proposal, sourceDates2, habitId) {
   return {
     schema_version: 2,
     record_kind: "candidate_evidence_v1",
@@ -2606,7 +2895,7 @@ function proposalEvidenceData(_batch, proposal, sourceDates, habitId) {
     confidence_bp: proposal.confidence_bp,
     evidence_stage: proposal.evidence_stage || "reviewable",
     source_refs: proposal.source_refs,
-    source_dates: sourceDates,
+    source_dates: sourceDates2,
     ...proposal.evidence_summary === void 0 ? {} : { evidence_summary: proposal.evidence_summary },
     ...proposal.correction_role ? { correction_role: proposal.correction_role, correction_group_id: proposal.correction_group_id } : {}
   };
@@ -2674,8 +2963,8 @@ async function consolidateProposalBatch(input) {
   const staged = [];
   for (let i = 0; i < batch.proposals.length; i++) {
     const proposal = batch.proposals[i];
-    const sourceDates = sourceRecordsByProposal[i].map((record) => record.created_at);
-    let candidateData = proposalCandidateData(batch, proposal, sourceDates);
+    const sourceDates2 = sourceRecordsByProposal[i].map((record) => record.created_at);
+    let candidateData = proposalCandidateData(batch, proposal, sourceDates2);
     const candidateId = stableId2("candidate", habitIdentity(proposal, userId));
     let evidenceHabitId = candidateId;
     let duplicateMatch;
@@ -2693,9 +2982,9 @@ async function consolidateProposalBatch(input) {
         candidateData = { ...candidateData, review_status: "duplicate_resolution", active: false, injectable: false, semantic_duplicate: storedDuplicateMatch };
       }
     }
-    const evidenceData = proposalEvidenceData(batch, proposal, sourceDates, evidenceHabitId);
+    const evidenceData = proposalEvidenceData(batch, proposal, sourceDates2, evidenceHabitId);
     const evidenceId = stableId2("evidence", { schema_version: 2, user_id: userId, payload: evidenceData });
-    staged.push({ proposal, sourceDates, candidateId, evidenceId, candidateData, evidenceData, duplicateMatch });
+    staged.push({ proposal, sourceDates: sourceDates2, candidateId, evidenceId, candidateData, evidenceData, duplicateMatch });
   }
   let result;
   input.db.exec("BEGIN IMMEDIATE");
@@ -3158,16 +3447,804 @@ async function runConsolidationOnce(input) {
   }
 }
 
+// extensions/agent-experience/src/consolidate/model-adapter.ts
+import { completeSimple } from "@earendil-works/pi-ai/compat";
+import { AuthStorage, ModelRegistry } from "@earendil-works/pi-coding-agent";
+
+// extensions/agent-experience/src/consolidate/context.ts
+init_private_root();
+init_redaction();
+function parseJson(value) {
+  try {
+    return JSON.parse(String(value || "{}"));
+  } catch {
+    return {};
+  }
+}
+function normalizeText(value) {
+  return String(value ?? "").trim().replace(/\s+/g, " ").toLowerCase();
+}
+function uniqueRefs(data) {
+  const refs = Array.isArray(data?.source_refs) ? data.source_refs : [];
+  return new Set(refs.map((ref) => `${ref?.file_generation}:${ref?.seq}:${ref?.checksum}`)).size;
+}
+function sourceDates(data) {
+  const dates = Array.isArray(data?.source_dates) ? data.source_dates : [];
+  return [...new Set(dates.map((date) => String(date).slice(0, 10)).filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date)))].sort().slice(-30);
+}
+function buildCompactHabitContext(db, input) {
+  const userId = normalizeUserId(input.userId);
+  const limit = Math.max(1, Math.min(100, Math.trunc(input.limit ?? 60)));
+  const rows = db.prepare("SELECT condition, behavior, polarity, status, confidence_bp, data_json FROM habits WHERE user_id = ? AND status IN ('candidate','active','disabled','dormant','suppressed_by_law') ORDER BY updated_at DESC, id LIMIT ?").all(userId, limit);
+  return rows.map((row) => {
+    const data = parseJson(row.data_json);
+    const dates = sourceDates(data);
+    return redactJson({
+      condition: String(row.condition || "").slice(0, 1e3),
+      behavior: String(row.behavior || "").slice(0, 1e3),
+      polarity: Number(row.polarity),
+      status: String(row.status),
+      review_status: typeof data.review_status === "string" ? data.review_status : null,
+      confidence_bp: Number(row.confidence_bp),
+      unique_observations: uniqueRefs(data),
+      distinct_days: dates.length,
+      source_dates: dates
+    });
+  });
+}
+function compactContextIdentity(value) {
+  return `${normalizeText(value.condition)}
+${normalizeText(value.behavior)}
+${Number(value.polarity)}`;
+}
+
+// extensions/agent-experience/src/consolidate/prompt.ts
+var GENERALIZED_HABIT_INSTRUCTIONS = [
+  "Extract the reusable behavioral essence across repeated examples. Do not overfit to one project, package, repo, file path, version, screenshot, or proper noun.",
+  "Write condition as a general situation class, not a one-off context. Prefer 'When preparing a release' over 'When working on Agent Experience'; prefer 'When the user reports UI confusion' over a specific package name.",
+  "Write behavior as durable agent conduct that can apply to future similar work. Durable tool/task categories such as npm package releases or Pi UI debugging are allowed when the repeated behavior truly belongs to that category; one-off names such as Agent Experience, pi-experiences, specific versions, hashes, paths, or screenshot ids are not.",
+  "If examples share only a project-specific fact and no broader reusable behavior, return no proposal for that pattern."
+];
+
+// extensions/agent-experience/src/consolidate/model-adapter.ts
+init_redaction();
+function parseProviderModel(value) {
+  const slash = value.indexOf("/");
+  if (slash <= 0) return void 0;
+  const provider = value.slice(0, slash);
+  const modelId = value.slice(slash + 1);
+  if (!provider || !modelId || provider.includes("..") || modelId.includes("..") || modelId.includes("\0")) return void 0;
+  return { provider, modelId };
+}
+function truncateForModel(value, max = 900) {
+  const text = redactText(typeof value === "string" ? value : JSON.stringify(value ?? {}));
+  return text.length > max ? `${text.slice(0, max)}\u2026` : text;
+}
+function observationsForModelPrompt(observations) {
+  return observations.map((record) => {
+    const payload = record.payload_redacted;
+    return {
+      seq: record.seq,
+      checksum: record.checksum,
+      created_at: record.created_at,
+      user: truncateForModel(payload?.user_text_redacted, 900),
+      assistant: truncateForModel(payload?.assistant_text_redacted, 1200)
+    };
+  });
+}
+function extractionJson(text) {
+  const trimmed = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+  }
+  const start = trimmed.indexOf("{");
+  const end = trimmed.lastIndexOf("}");
+  if (start >= 0 && end > start) return JSON.parse(trimmed.slice(start, end + 1));
+  throw new Error("habit_learning_model_invalid_json");
+}
+function extractAssistantText(message) {
+  const parts = Array.isArray(message?.content) ? message.content : [];
+  return parts.filter((part) => part?.type === "text" && typeof part.text === "string").map((part) => part.text).join("\n").slice(0, 2e4);
+}
+function buildConsolidationSystemPrompt(fileGeneration) {
+  const outputSchema = {
+    schema_version: 1,
+    user_id: "owner",
+    file_generation: fileGeneration,
+    batch_id: "manual-id",
+    model: "provider/model",
+    created_at: "ISO",
+    observations_read: { seq_start: 1, seq_end: 3, checksum: "last-read-checksum" },
+    proposals: [{
+      proposal_id: "p1",
+      kind: "habit_candidate",
+      candidate_key: "stable-kebab-key",
+      condition: "When ...",
+      behavior: "Do ...",
+      polarity: 1,
+      confidence_bp: 8e3,
+      source_refs: [{ file_generation: fileGeneration, seq: 1, checksum: "..." }],
+      evidence_summary: "short redacted summary",
+      ambiguous: false
+    }]
+  };
+  return [
+    "You are Agent Experience habit learning.",
+    "Return JSON only. No prose. No markdown unless JSON object only.",
+    "Infer durable user preferences/corrections from redacted user/assistant examples.",
+    "Only propose habits supported by the provided examples. Do not invent facts.",
+    "Do not include secrets, emails, phone numbers, file paths, tokens, raw prompts, or private identifiers.",
+    "Prefer 1-6 concise candidate habits. Return zero proposals if evidence is weak.",
+    "Only propose repeated patterns: use compact existing habit context plus the new unread examples. Cite source_refs only from the new examples provided in this request.",
+    "A repeated habit needs at least 3 total supporting examples across at least 2 days, combining existing_habit_context counts with new source_refs. Reuse the same normalized condition/behavior/polarity wording when adding evidence to an existing identity.",
+    "Similar meanings in different wording or languages may support the same habit; cite each new matching example separately.",
+    ...GENERALIZED_HABIT_INSTRUCTIONS,
+    "Every proposal must cite source_refs using only provided seq/checksum values.",
+    "Exact output schema:",
+    JSON.stringify(outputSchema)
+  ].join("\n");
+}
+function buildConsolidationUserPrompt(input) {
+  return JSON.stringify({
+    task: "Analyze these redacted examples and produce reviewable habit suggestions.",
+    user_id: input.userId,
+    file_generation: input.expected.file_generation,
+    model: input.model,
+    created_at: (/* @__PURE__ */ new Date()).toISOString(),
+    observations_read: { seq_start: input.expected.seq_start, seq_end: input.expected.seq_end, checksum: input.expected.read_checksum },
+    existing_habit_context: input.habitContext || [],
+    observations: observationsForModelPrompt(input.observations)
+  }, null, 2);
+}
+function requireNonEmptyString(value, field) {
+  if (typeof value !== "string" || !value.trim()) throw new Error(`habit_learning_model_missing_${field}`);
+  return redactText(value.trim()).slice(0, 1e3);
+}
+function normalizeSourceRefs(rawRefs, input) {
+  if (!Array.isArray(rawRefs) || rawRefs.length === 0) throw new Error("habit_learning_model_missing_source_refs");
+  const bySeq = new Map(input.observations.map((record) => [record.seq, record]));
+  const refs = rawRefs.map((ref) => {
+    if (!Number.isInteger(ref?.seq)) throw new Error("habit_learning_model_missing_source_ref_seq");
+    const record = bySeq.get(ref.seq);
+    if (!record) throw new Error("habit_learning_model_invalid_source_ref");
+    const suppliedGeneration = typeof ref?.file_generation === "string" ? ref.file_generation : input.expected.file_generation;
+    if (suppliedGeneration !== record.file_generation) throw new Error("habit_learning_model_source_ref_generation_mismatch");
+    return { file_generation: record.file_generation, seq: record.seq, checksum: record.checksum };
+  });
+  return refs.filter((ref, index, array) => array.findIndex((candidate) => candidate.seq === ref.seq) === index);
+}
+function newEvidenceStats(refs, input) {
+  const bySeq = new Map(input.observations.map((record) => [record.seq, record]));
+  const uniqueSeqs = [...new Set(refs.map((ref) => ref.seq))];
+  const days = new Set(uniqueSeqs.map((seq) => bySeq.get(seq)?.created_at).filter(Boolean).map((iso) => new Date(String(iso)).toISOString().slice(0, 10)));
+  return { count: uniqueSeqs.length, days };
+}
+function matchingHabitContext(input, candidate) {
+  const identity = compactContextIdentity(candidate);
+  return (input.habitContext || []).find((item) => compactContextIdentity(item) === identity);
+}
+function hasEnoughRepeatedEvidence(refs, input, candidate) {
+  const fresh = newEvidenceStats(refs, input);
+  const existing = matchingHabitContext(input, candidate);
+  const days = /* @__PURE__ */ new Set([...existing?.source_dates || [], ...fresh.days]);
+  return fresh.count + Number(existing?.unique_observations || 0) >= 3 && days.size >= 2;
+}
+function normalizeConfidence(value) {
+  if (!Number.isInteger(value) || value < 0 || value > 1e4) throw new Error("habit_learning_model_invalid_confidence");
+  return value;
+}
+function normalizeConsolidationModelOutput(raw, input) {
+  const proposals = Array.isArray(raw?.proposals) ? raw.proposals.slice(0, 50).flatMap((proposal) => {
+    const source_refs = normalizeSourceRefs(proposal?.source_refs, input);
+    if (proposal?.kind === "correction_split") {
+      const old_condition = requireNonEmptyString(proposal.old_condition, "old_condition");
+      const old_behavior = requireNonEmptyString(proposal.old_behavior, "old_behavior");
+      const new_condition = requireNonEmptyString(proposal.new_condition, "new_condition");
+      const new_behavior = requireNonEmptyString(proposal.new_behavior, "new_behavior");
+      const confidence_bp = normalizeConfidence(proposal.confidence_bp);
+      const repeatedReplacement = hasEnoughRepeatedEvidence(source_refs, input, { condition: new_condition, behavior: new_behavior, polarity: 1 });
+      const oldContext = matchingHabitContext(input, { condition: old_condition, behavior: old_behavior, polarity: 1 });
+      const explicitCorrection = confidence_bp >= 8500 && source_refs.length >= 1 && oldContext?.status === "active";
+      const evidence_stage2 = repeatedReplacement || explicitCorrection ? "reviewable" : "collecting";
+      return [{
+        proposal_id: requireNonEmptyString(proposal.proposal_id, "proposal_id"),
+        kind: "correction_split",
+        candidate_key: requireNonEmptyString(proposal.candidate_key, "candidate_key"),
+        old_condition,
+        old_behavior,
+        new_condition,
+        new_behavior,
+        confidence_bp,
+        source_refs,
+        evidence_stage: evidence_stage2,
+        ...proposal.evidence_summary ? { evidence_summary: redactText(String(proposal.evidence_summary)).slice(0, 1e3) } : {},
+        ambiguous: proposal.ambiguous === true
+      }];
+    }
+    if (proposal?.kind !== "habit_candidate") throw new Error("habit_learning_model_invalid_proposal_kind");
+    const condition = requireNonEmptyString(proposal.condition, "condition");
+    const behavior = requireNonEmptyString(proposal.behavior, "behavior");
+    const polarity = proposal.polarity === -1 ? -1 : 1;
+    const evidence_stage = hasEnoughRepeatedEvidence(source_refs, input, { condition, behavior, polarity }) ? "reviewable" : "collecting";
+    return [{
+      proposal_id: requireNonEmptyString(proposal.proposal_id, "proposal_id"),
+      kind: "habit_candidate",
+      candidate_key: requireNonEmptyString(proposal.candidate_key, "candidate_key"),
+      condition,
+      behavior,
+      polarity,
+      confidence_bp: normalizeConfidence(proposal.confidence_bp),
+      source_refs,
+      evidence_stage,
+      ...proposal.evidence_summary ? { evidence_summary: redactText(String(proposal.evidence_summary)).slice(0, 1e3) } : {},
+      ambiguous: proposal.ambiguous === true
+    }];
+  }) : [];
+  return {
+    schema_version: 1,
+    user_id: input.userId,
+    file_generation: input.expected.file_generation,
+    batch_id: String(raw?.batch_id || `manual-${Date.now()}`),
+    model: input.model,
+    created_at: (/* @__PURE__ */ new Date()).toISOString(),
+    observations_read: { seq_start: input.expected.seq_start, seq_end: input.expected.seq_end, checksum: input.expected.read_checksum },
+    proposals
+  };
+}
+function createPiConsolidationModelAdapter(ctx, purpose = "agent-experience-manual-habit-learning") {
+  return {
+    async generate(input) {
+      const parsed = parseProviderModel(input.model);
+      if (!parsed) throw new Error("habit_learning_model_invalid");
+      const model = ctx.modelRegistry?.find?.(parsed.provider, parsed.modelId);
+      if (!model) throw new Error("habit_learning_model_unavailable");
+      const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+      if (!auth.ok || !auth.apiKey) throw new Error("habit_learning_model_auth_unavailable");
+      const response = await completeSimple(model, {
+        systemPrompt: buildConsolidationSystemPrompt(input.expected.file_generation),
+        messages: [{ role: "user", content: buildConsolidationUserPrompt(input), timestamp: Date.now() }]
+      }, {
+        apiKey: auth.apiKey,
+        headers: auth.headers,
+        env: auth.env,
+        signal: input.signal ?? ctx.signal,
+        timeoutMs: 12e4,
+        maxRetries: 0,
+        maxRetryDelayMs: 0,
+        maxTokens: 4096,
+        metadata: { purpose }
+      });
+      if (response?.stopReason === "length") throw new Error("habit_learning_model_truncated_response");
+      const text = extractAssistantText(response);
+      if (!text.trim()) throw new Error("habit_learning_model_empty_response");
+      return normalizeConsolidationModelOutput(extractionJson(text), input);
+    }
+  };
+}
+function createStandaloneConsolidationModelAdapter(options = {}) {
+  const authStorage = AuthStorage.create();
+  const modelRegistry = ModelRegistry.create(authStorage);
+  return createPiConsolidationModelAdapter({ modelRegistry, signal: options.signal }, "agent-experience-scheduled-habit-learning");
+}
+
+// extensions/agent-experience/src/review.ts
+init_checksum();
+init_private_root();
+init_redaction();
+import { lstat as lstat9, readFile as readFile7, writeFile } from "node:fs/promises";
+import { existsSync as existsSync2, lstatSync, readFileSync } from "node:fs";
+import { isAbsolute as isAbsolute2, join as join2 } from "node:path";
+var LAW_CHECKER_VERSION = "agent_experience_law_check_v1";
+function normalizeText2(value) {
+  return String(value ?? "").trim().replace(/\s+/g, " ").toLowerCase();
+}
+function parseJson2(text) {
+  try {
+    return JSON.parse(String(text || "{}"));
+  } catch {
+    return {};
+  }
+}
+function uniqueRefs2(data) {
+  const refs = Array.isArray(data?.source_refs) ? data.source_refs : [];
+  return [...new Set(refs.map((ref) => canonicalJson({ file_generation: ref.file_generation, seq: ref.seq, checksum: ref.checksum })).filter(Boolean))];
+}
+function uniqueDates(data) {
+  const dates = Array.isArray(data?.source_dates) ? data.source_dates : [];
+  return [...new Set(dates.map((date) => new Date(String(date)).toISOString().slice(0, 10)).filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date)))];
+}
+function activationEligibilityFromHabit(row) {
+  const data = parseJson2(row.data_json);
+  const refs = uniqueRefs2(data);
+  const dates = uniqueDates(data);
+  return { eligible: refs.length >= 3 && dates.length >= 2, unique_observations: refs.length, distinct_days: dates.length, dates };
+}
+function resolveConfiguredLawPath(root, lawPath = "law.md") {
+  const configured = lawPath.trim() || "law.md";
+  if (configured.includes("/") || configured.includes("\\") || configured === "." || configured === "..") throw new Error("Agent Experience safety file path must stay inside private state");
+  return resolvePrivatePath(root, configured);
+}
+async function readConfiguredLawSnapshot(root, config) {
+  const file = resolveConfiguredLawPath(root, config.law_path);
+  if (!existsSync2(file)) throw new Error(`Agent Experience law file missing: ${file}`);
+  const info = await lstat9(file);
+  if (!info.isFile() || info.isSymbolicLink()) throw new Error("Agent Experience safety file is not a regular private file");
+  if (info.size > 1e6) throw new Error("Agent Experience safety file exceeds the 1 MB limit");
+  const text = await readFile7(file, "utf8");
+  const checksum = sha256Hex(text);
+  const files = [{ path: file, checksum, required: true }];
+  return { version: LAW_CHECKER_VERSION, hash: checksumJson({ version: LAW_CHECKER_VERSION, files }), files, text: `FILE: ${file}
+${text}` };
+}
+function revalidateLawSnapshotSync(snapshot) {
+  const absoluteFiles = snapshot.files.filter((file) => isAbsolute2(file.path));
+  if (!absoluteFiles.length) return snapshot;
+  const files = [];
+  const parts = [];
+  for (const file of snapshot.files) {
+    if (!isAbsolute2(file.path)) throw new Error("Agent Experience safety snapshot contains an invalid path");
+    const info = lstatSync(file.path);
+    if (!info.isFile() || info.isSymbolicLink() || info.size > 1e6) throw new Error("Agent Experience safety file changed or is unsafe");
+    const text = readFileSync(file.path, "utf8");
+    const checksum = sha256Hex(text);
+    if (checksum !== file.checksum) throw new Error("Agent Experience safety file changed; retry the action");
+    files.push({ ...file, checksum });
+    parts.push(`FILE: ${file.path}
+${text}`);
+  }
+  const hash = checksumJson({ version: LAW_CHECKER_VERSION, files });
+  if (hash !== snapshot.hash) throw new Error("Agent Experience safety snapshot changed; retry the action");
+  return { version: LAW_CHECKER_VERSION, hash, files, text: parts.join("\n\n") };
+}
+function checkHabitLaw(input) {
+  if (input.law.version !== LAW_CHECKER_VERSION) throw new Error("Unsupported law checker version");
+  if (!input.law.files.some((file) => file.required)) throw new Error("Required law file missing");
+  const text = normalizeText2(`${input.condition || ""} ${input.behavior || ""}`);
+  const blocked = [
+    /ignore .*safety/,
+    /bypass .*safety/,
+    /disable .*safety/,
+    /reveal .*secret/,
+    /store .*secret/,
+    /skip .*redaction/,
+    /bypass .*approval/,
+    /write .*agents\.md/,
+    /write .*claude\.md/,
+    /write .*law/,
+    /enable .*timer.*without .*approval/,
+    /enable .*live.*without .*approval/,
+    /inject .*report/,
+    /inject .*quarantine/,
+    /inject .*pending[- ]review/
+  ];
+  const reasons = blocked.filter((rule) => rule.test(text)).map((rule) => String(rule));
+  return { pass: reasons.length === 0, reasons, law_hash: input.law.hash, version: input.law.version };
+}
+var OPPOSITES = [
+  [/\bdo\b/, /\bdo not\b/],
+  [/\buse\b/, /\bdo not use\b/],
+  [/\binclude\b/, /\bdo not include\b/],
+  [/\bask\b/, /\bdo not ask\b/],
+  [/\balways\b/, /\bnever\b/],
+  [/\bprefer\b/, /\bavoid\b/],
+  [/\bverbose\b/, /\bconcise\b/],
+  [/\blong\b/, /\bshort\b/]
+];
+function hasOpposition(a, b) {
+  for (const [left, right] of OPPOSITES) {
+    if (left.test(a) && right.test(b) || right.test(a) && left.test(b)) return true;
+  }
+  return false;
+}
+function checkHabitConflict(db, input) {
+  const userId = normalizeUserId(input.userId);
+  const condition = normalizeText2(input.condition);
+  const behavior = normalizeText2(input.behavior);
+  const rows = db.prepare("SELECT id, status, condition, behavior, polarity FROM habits WHERE user_id = ? AND id <> ? AND status IN ('candidate','active','disabled','suppressed_by_law','dormant')").all(userId, input.habitId);
+  const conflicts = rows.map((row) => {
+    const rowCondition = normalizeText2(row.condition);
+    const rowBehavior = normalizeText2(row.behavior);
+    if (rowCondition !== condition) return null;
+    if (rowBehavior === behavior) {
+      return Number(row.polarity) === -Number(input.polarity) ? { row, reason: "opposite_polarity" } : null;
+    }
+    return { row, reason: hasOpposition(rowBehavior, behavior) ? "opposed_behavior" : "same_condition_divergent_behavior" };
+  }).filter(Boolean);
+  return { pass: conflicts.length === 0, conflicts: conflicts.map((conflict) => ({ id: conflict.row.id, status: conflict.row.status, reason: conflict.reason })) };
+}
+
+// extensions/agent-experience/src/selector.ts
+init_checksum();
+init_private_root();
+init_redaction();
+function parseJson3(text) {
+  try {
+    return JSON.parse(String(text || "{}"));
+  } catch {
+    return {};
+  }
+}
+function stableId4(prefix, value) {
+  return `${prefix}-${sha256Hex(canonicalJson(value)).slice(0, 40)}`;
+}
+function boundedJson2(value, max = 12e3) {
+  const text = canonicalJson(redactJson(value ?? {}));
+  if (text.length > max) throw new Error("Selector payload too large");
+  if (containsUnredactedSensitiveText(text)) throw new Error("Selector payload contains unredacted sensitive text");
+  return text;
+}
+function normalizedApprovalIdentity(row) {
+  return { candidate_id: row.id, condition: String(row.condition ?? "").trim().replace(/\s+/g, " ").toLowerCase(), behavior: String(row.behavior ?? "").trim().replace(/\s+/g, " ").toLowerCase(), polarity: Number(row.polarity) };
+}
+function insertPromotionAudit(db, input) {
+  const beforeJson = boundedJson2(input.before);
+  const afterJson = boundedJson2(input.after);
+  const dataJson = boundedJson2(input.data);
+  const base = { user_id: input.userId, target_kind: "habit", target_id: input.rowId, action: input.action, before_json: beforeJson, after_json: afterJson, data_json: dataJson, created_at: input.now };
+  const checksum = checksumJson({ table: "experience_review_audit", row: base });
+  const id = stableId4("review-audit", { ...base, checksum });
+  db.prepare("INSERT OR IGNORE INTO experience_review_audit (id, user_id, target_kind, target_id, action, before_json, after_json, data_json, checksum, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(id, input.userId, "habit", input.rowId, input.action, beforeJson, afterJson, dataJson, checksum, input.now);
+  return id;
+}
+function updatePromotedHabit(db, input) {
+  const updated = buildTypedStorageRow("habits", { id: input.before.id, userId: input.userId, data: { ...input.data, status: input.status }, createdAt: input.before.created_at, updatedAt: input.now });
+  const changes = db.prepare("UPDATE habits SET record_kind=?, schema_version=?, status=?, habit_id=?, condition=?, behavior=?, polarity=?, confidence_bp=?, activation=?, staleness=?, data_json=?, checksum=?, updated_at=? WHERE user_id=? AND id=? AND status=? AND checksum=?").run(updated.record_kind, updated.schema_version, updated.status, updated.habit_id, updated.condition, updated.behavior, updated.polarity, updated.confidence_bp, updated.activation, updated.staleness, updated.data_json, updated.checksum, updated.updated_at, input.userId, input.before.id, input.before.status, input.before.checksum).changes;
+  if (changes !== 1) throw new Error("Approved habit recheck raced; retry");
+  return db.prepare("SELECT * FROM habits WHERE user_id = ? AND id = ?").get(input.userId, input.before.id);
+}
+async function promoteApprovedPendingCandidates(db, input) {
+  if (!input.semantic?.policy) throw new Error("Background promotion requires an explicit semantic dedupe policy");
+  const userId = normalizeUserId(input.userId);
+  const waitingStatuses = /* @__PURE__ */ new Set(["approved_pending_eligibility", "approved_pending_conflict", "approved_pending_law_blocked", "kept_separate"]);
+  const testIds = input.candidateIdsForTest ? new Set(input.candidateIdsForTest) : void 0;
+  const rows = db.prepare("SELECT * FROM habits WHERE user_id = ? AND status IN ('candidate','suppressed_by_law') ORDER BY id").all(userId).filter((row) => waitingStatuses.has(parseJson3(row.data_json).review_status)).filter((row) => !testIds || testIds.has(row.id));
+  const promoted = [];
+  const blocked = [];
+  for (const initial of rows) {
+    const initialData = parseJson3(initial.data_json);
+    const currentIdentity = normalizedApprovalIdentity(initial);
+    const approvedIdentity = initialData.approved_identity ? { candidate_id: initialData.approved_identity.candidate_id, condition: initialData.approved_identity.condition, behavior: initialData.approved_identity.behavior, polarity: Number(initialData.approved_identity.polarity) } : currentIdentity;
+    if (canonicalJson(approvedIdentity) !== canonicalJson(currentIdentity)) {
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        const before = db.prepare("SELECT * FROM habits WHERE user_id = ? AND id = ?").get(userId, initial.id);
+        if (!before || before.checksum !== initial.checksum) throw new Error("Approved habit identity changed concurrently");
+        const after = updatePromotedHabit(db, { userId, before, status: "candidate", now: input.now, data: { ...parseJson3(before.data_json), review_status: "candidate_reapproval_required", active: false, injectable: false, approved_identity: null, approval_invalidated: { reason: "material_identity_change", at: input.now } } });
+        insertPromotionAudit(db, { userId, rowId: before.id, action: "promotion_requires_reapproval", before, after, data: { approved_identity: approvedIdentity, current_identity: currentIdentity }, now: input.now });
+        db.exec("COMMIT");
+        blocked.push({ id: initial.id, reason: "identity_changed" });
+        continue;
+      } catch (error) {
+        try {
+          db.exec("ROLLBACK");
+        } catch {
+        }
+        throw error;
+      }
+    }
+    const outcome = await runAtomicSemanticActivation(db, {
+      userId,
+      targetHabitId: initial.id,
+      expectedStatus: initial.status,
+      expectedChecksum: initial.checksum,
+      policy: input.semantic.policy,
+      provider: input.semantic.provider,
+      now: input.now,
+      signal: input.semantic.signal,
+      targetKind: "promote_pending_candidate",
+      transition: (target, semantic) => {
+        const before = db.prepare("SELECT * FROM habits WHERE user_id = ? AND id = ?").get(userId, target.id);
+        const data = parseJson3(before.data_json);
+        const identity = data.approved_identity ? { candidate_id: data.approved_identity.candidate_id, condition: data.approved_identity.condition, behavior: data.approved_identity.behavior, polarity: Number(data.approved_identity.polarity) } : normalizedApprovalIdentity(before);
+        if (canonicalJson(identity) !== canonicalJson(normalizedApprovalIdentity(before))) throw new Error("Approved habit wording changed; explicit reapproval required");
+        const eligibility = activationEligibilityFromHabit(before);
+        const lawSnapshot = revalidateLawSnapshotSync(input.law);
+        const law = checkHabitLaw({ condition: before.condition, behavior: before.behavior, law: lawSnapshot });
+        const conflict = checkHabitConflict(db, { userId, habitId: before.id, condition: before.condition, behavior: before.behavior, polarity: Number(before.polarity) });
+        const baseData = { ...data, condition: before.condition, behavior: before.behavior, polarity: before.polarity, confidence_bp: before.confidence_bp, record_kind: before.record_kind, schema_version: before.schema_version, approved_identity: { ...identity, approved_at: data.approved_identity?.approved_at || input.now }, law_hash: lawSnapshot.hash, promotion_decision: { eligibility, law, conflict, semantic }, active: false, injectable: false };
+        if (!eligibility.eligible || !law.pass || !conflict.pass) {
+          const reason = !eligibility.eligible ? "evidence" : !law.pass ? "law" : "conflict";
+          const status = reason === "law" ? "suppressed_by_law" : "candidate";
+          const reviewStatus = reason === "law" ? "approved_pending_law_blocked" : reason === "conflict" ? "approved_pending_conflict" : "approved_pending_eligibility";
+          const after2 = updatePromotedHabit(db, { userId, before, status, now: input.now, data: { ...baseData, review_status: reviewStatus, approved_pending_reason: reason } });
+          const auditId2 = insertPromotionAudit(db, { userId, rowId: before.id, action: "promotion_blocked", before, after: after2, data: { eligibility, law, conflict, semantic, reason }, now: input.now });
+          return { promoted: false, id: before.id, reason, audit_id: auditId2 };
+        }
+        const after = updatePromotedHabit(db, { userId, before, status: "active", now: input.now, data: { ...baseData, review_status: "promoted_active", active: true, promoted_at: input.now } });
+        const auditId = insertPromotionAudit(db, { userId, rowId: before.id, action: "promote_approved_candidate", before, after, data: { eligibility, law, conflict, semantic, approved_identity: identity }, now: input.now });
+        return { promoted: true, id: before.id, audit_id: auditId };
+      },
+      onBlocked: (target, semantic) => {
+        const before = db.prepare("SELECT * FROM habits WHERE user_id = ? AND id = ?").get(userId, target.id);
+        const duplicate = semantic.reason === "semantic_duplicate";
+        const data = parseJson3(before.data_json);
+        const after = updatePromotedHabit(db, { userId, before, status: before.status, now: input.now, data: { ...data, review_status: duplicate ? "duplicate_resolution" : "approved_pending_eligibility", active: false, injectable: false, approved_identity: data.approved_identity || { ...normalizedApprovalIdentity(before), approved_at: input.now }, approved_pending_reason: semantic.reason, promotion_decision: { semantic } } });
+        const reason = duplicate ? "semantic_duplicate" : "semantic_unavailable";
+        const auditId = insertPromotionAudit(db, { userId, rowId: before.id, action: "promotion_semantic_blocked", before, after, data: { semantic, reason }, now: input.now });
+        return { promoted: false, id: before.id, reason, audit_id: auditId };
+      }
+    });
+    if (outcome.result?.promoted) promoted.push(initial.id);
+    else blocked.push({ id: initial.id, reason: outcome.result?.reason || outcome.semantic.reason });
+  }
+  return { user_id: userId, checked: rows.length, promoted, blocked };
+}
+
+// extensions/agent-experience/src/schedule/runner.ts
+init_locks();
+init_private_root();
+init_observations();
+async function acquireAnalyzeLock(root) {
+  try {
+    return await acquireOwnedLock(root, "analyze", { waitMs: 0, staleMs: 2 * 60 * 6e4 });
+  } catch (error) {
+    if (/Could not acquire/.test(String(error?.message || error))) return void 0;
+    throw error;
+  }
+}
+async function runScheduledAnalyzeCore(input) {
+  const userId = normalizeUserId(input.userId);
+  const now = input.now || (() => (/* @__PURE__ */ new Date()).toISOString());
+  const lock = await acquireAnalyzeLock(input.root);
+  if (!lock) return { status: "locked" };
+  let storage;
+  try {
+    let generation;
+    let watermark = null;
+    let habitContext = [];
+    try {
+      storage = await initExperienceStorage(input.root, { allowInit: true, userId });
+      generation = (await readCurrentObservationManifest(input.root)).file_generation;
+      watermark = getProposalReadWatermark(storage.db, userId, generation);
+      habitContext = buildCompactHabitContext(storage.db, { userId, limit: 60 });
+    } finally {
+      storage?.db.close();
+      storage = void 0;
+    }
+    const range = await readValidatedObservationRange(input.root, {
+      userId,
+      afterSeq: watermark?.seq || 0,
+      afterChecksum: watermark?.checksum || null,
+      maxRecords: input.config.analyze_batch_max_records,
+      maxBytes: input.config.analyze_batch_max_bytes
+    });
+    if (range.manifest.file_generation !== generation) throw new Error("scheduled_observation_generation_changed");
+    if (!range.records.length) {
+      return { status: "no_work", total_unread: 0, reason: range.manifest.last_seq > 0 ? "already_analyzed" : "no_saved_examples" };
+    }
+    const adapter = await input.adapterFactory();
+    const expected = expectedRangeFromObservations(range.records, userId);
+    const output = await adapter.generate({
+      model: input.config.consolidation_model,
+      userId,
+      observations: range.records,
+      habitContext,
+      expected,
+      signal: input.signal
+    });
+    storage = await initExperienceStorage(input.root, { allowInit: true, userId });
+    const result = await runConsolidationOnce({
+      root: input.root,
+      db: storage.db,
+      userId: storage.userId,
+      observations: range.records,
+      modelOutput: output,
+      model: input.config.consolidation_model,
+      config: input.config,
+      dryRun: false,
+      breakIn: false,
+      now: now()
+    });
+    if (!result.ok) throw new Error(`scheduled_model_output_invalid:${String(result.reason || "invalid")}`);
+    let promoted = 0;
+    let promotionBlocked = 0;
+    let promotionProvider;
+    try {
+      const policy = semanticPolicyFromConfig(input.config);
+      promotionProvider = createEmbeddingAdapterFromConfig(input.config, input.root);
+      const promotion = await promoteApprovedPendingCandidates(storage.db, {
+        userId,
+        law: await readConfiguredLawSnapshot(input.root, input.config),
+        now: now(),
+        semantic: { policy, provider: promotionProvider, signal: input.signal }
+      });
+      promoted = promotion.promoted.length;
+      promotionBlocked = promotion.blocked.length;
+    } catch {
+    } finally {
+      await promotionProvider?.close?.().catch(() => void 0);
+    }
+    let retentionRotated = false;
+    if (!range.has_more) {
+      try {
+        const last = range.records.at(-1);
+        const rotation = await rotateObservationGenerationIfFullyRead(input.root, {
+          userId,
+          fileGeneration: last.file_generation,
+          seq: last.seq,
+          checksum: last.checksum,
+          retentionDays: input.config.observation_retention_days
+        });
+        retentionRotated = rotation.rotated;
+        await purgeExpiredObservationArchives(input.root);
+      } catch {
+      }
+    }
+    const inserted = result.result?.inserted || {};
+    return {
+      status: "ok",
+      checked: range.records.length,
+      total_unread: range.total_unread,
+      new_suggestions: Number(inserted.candidates || 0) + Number(inserted.pending_review || 0),
+      model_proposals: Number(result.diff?.proposal_count || 0),
+      has_more: range.has_more,
+      promoted,
+      promotion_blocked: promotionBlocked,
+      retention_rotated: retentionRotated
+    };
+  } finally {
+    storage?.db.close();
+    await lock.release();
+  }
+}
+function safeScheduledAnalyzeErrorCode(error) {
+  const raw = String(error?.message || error);
+  if (/auth|api.?key|credential/i.test(raw)) return "model_auth_unavailable";
+  if (/model_(?:unavailable|not_found)|model is not available/i.test(raw)) return "model_not_found";
+  if (/model_output|invalid_json|truncated|schema|proposal|source_ref/i.test(raw)) return "model_output_invalid";
+  if (/\bacquir|\bowned\b|\block\b.*(?:timeout|stale|fail|error|active|ownership|changed)/i.test(raw)) return "lock_io_error";
+  if (/sqlite|storage|observation|manifest|watermark|ledger|file|directory/i.test(raw)) return "storage_io_error";
+  return "model_call_failed";
+}
+
+// extensions/agent-experience/src/schedule/receipts.ts
+import { randomUUID as randomUUID5 } from "node:crypto";
+import { chmod as chmod4, lstat as lstat10, mkdir as mkdir7, open as open4, readdir as readdir4, readFile as readFile8, rename as rename5, rm as rm5 } from "node:fs/promises";
+import { constants as constants3 } from "node:fs";
+init_checksum();
+init_locks();
+init_private_root();
+var MAX_PENDING_RECEIPTS = 20;
+var RECEIPT_FILE_RE = /^\d{17}-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.json$/i;
+var SAFE_CODES = /* @__PURE__ */ new Set([
+  "config_gate_denied",
+  "consolidation_locked",
+  "lock_io_error",
+  "model_auth_unavailable",
+  "model_not_found",
+  "model_call_failed",
+  "model_output_invalid",
+  "storage_io_error",
+  "receipt_queue_overflow"
+]);
+function pendingDir(root) {
+  return resolvePrivatePath(root, "receipts", "scheduled-analyze", "pending");
+}
+function receiptFileName(receipt) {
+  const stamp = receipt.created_at.replace(/[^0-9]/g, "").slice(0, 17) || String(Date.now()).padStart(17, "0");
+  return `${stamp}-${receipt.id}.json`;
+}
+function boundedCount(value) {
+  if (!Number.isInteger(value) || Number(value) < 0) return void 0;
+  return Math.min(Number(value), 1e9);
+}
+function validateReceipt(value) {
+  const raw = value;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("scheduled_receipt_invalid");
+  if (raw.schema_version !== 1 || raw.kind !== "scheduled_analyze") throw new Error("scheduled_receipt_invalid");
+  if (typeof raw.id !== "string" || !/^[0-9a-f-]{36}$/i.test(raw.id)) throw new Error("scheduled_receipt_invalid");
+  if (typeof raw.user_id !== "string" || !raw.user_id || raw.user_id.length > 200) throw new Error("scheduled_receipt_invalid");
+  if (typeof raw.created_at !== "string" || !Number.isFinite(Date.parse(raw.created_at))) throw new Error("scheduled_receipt_invalid");
+  if (!["ok", "failed", "no_work", "locked", "disabled"].includes(raw.status)) throw new Error("scheduled_receipt_invalid");
+  if (!["info", "warn"].includes(raw.severity)) throw new Error("scheduled_receipt_invalid");
+  if (raw.safe_code !== void 0 && (typeof raw.safe_code !== "string" || !SAFE_CODES.has(raw.safe_code))) throw new Error("scheduled_receipt_invalid");
+  const receipt = {
+    schema_version: 1,
+    id: raw.id,
+    kind: "scheduled_analyze",
+    user_id: raw.user_id,
+    created_at: new Date(raw.created_at).toISOString(),
+    status: raw.status,
+    severity: raw.severity
+  };
+  for (const [source, target] of [["checked", "checked"], ["total_unread", "total_unread"], ["new_suggestions", "new_suggestions"]]) {
+    const count = boundedCount(raw[source]);
+    if (count !== void 0) receipt[target] = count;
+  }
+  if (typeof raw.has_more === "boolean") receipt.has_more = raw.has_more;
+  if (raw.safe_code) receipt.safe_code = raw.safe_code;
+  if (raw.queue_overflowed === true) receipt.queue_overflowed = true;
+  return receipt;
+}
+async function listReceiptFiles(root) {
+  const dir = pendingDir(root);
+  try {
+    const info = await lstat10(dir);
+    if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("scheduled_receipt_directory_invalid");
+    return (await readdir4(dir)).filter((name) => RECEIPT_FILE_RE.test(name)).sort();
+  } catch (error) {
+    if (error?.code === "ENOENT") return [];
+    throw error;
+  }
+}
+async function fsyncDirectory(path) {
+  let handle;
+  try {
+    handle = await open4(path, constants3.O_RDONLY);
+    await handle.sync();
+  } catch {
+  } finally {
+    await handle?.close().catch(() => void 0);
+  }
+}
+async function makeRoom(root) {
+  const dir = pendingDir(root);
+  const files = await listReceiptFiles(root);
+  if (files.length < MAX_PENDING_RECEIPTS) return false;
+  const ranked = [];
+  for (const file of files) {
+    let rank = 2;
+    try {
+      const receipt = validateReceipt(JSON.parse(await readFile8(resolvePrivatePath(dir, file), "utf8")));
+      if (receipt.status === "ok" || receipt.status === "no_work") rank = 0;
+      else if (receipt.status === "locked" || receipt.status === "disabled") rank = 1;
+    } catch {
+      rank = 3;
+    }
+    ranked.push({ file, rank });
+  }
+  ranked.sort((a, b) => a.rank - b.rank || a.file.localeCompare(b.file));
+  const removeCount = files.length - MAX_PENDING_RECEIPTS + 1;
+  const removable = ranked.filter((entry) => entry.rank < 3).slice(0, removeCount);
+  if (removable.length < removeCount) throw new Error("scheduled_receipt_queue_blocked_by_unreadable_state");
+  for (const entry of removable) await rm5(resolvePrivatePath(dir, entry.file), { force: true });
+  return removeCount > 0;
+}
+async function writeScheduledAnalyzeReceipt(root, input) {
+  await ensurePrivateRoot(root);
+  return withOwnedLock(root, "scheduled-receipts", async () => {
+    const dir = pendingDir(root);
+    await mkdir7(dir, { recursive: true, mode: 448 });
+    await chmod4(dir, 448);
+    const overflowed = await makeRoom(root);
+    const receipt = validateReceipt({
+      schema_version: 1,
+      id: randomUUID5(),
+      kind: "scheduled_analyze",
+      created_at: input.created_at || (/* @__PURE__ */ new Date()).toISOString(),
+      ...input,
+      ...overflowed ? { queue_overflowed: true } : {}
+    });
+    const file = receiptFileName(receipt);
+    const target = resolvePrivatePath(dir, file);
+    const temp = resolvePrivatePath(dir, `.tmp-${receipt.id}`);
+    const nofollow = typeof constants3.O_NOFOLLOW === "number" ? constants3.O_NOFOLLOW : 0;
+    const handle = await open4(temp, constants3.O_CREAT | constants3.O_EXCL | constants3.O_WRONLY | nofollow, 384);
+    try {
+      await handle.writeFile(canonicalJson(receipt), "utf8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await rename5(temp, target);
+    await chmod4(target, 384);
+    await fsyncDirectory(dir);
+    return receipt;
+  }, { waitMs: 2e3 });
+}
+
 // bin/experience-consolidate.mjs
+init_private_root();
 function argValue(args, name) {
   const index = args.indexOf(name);
   return index >= 0 ? args[index + 1] : void 0;
 }
 function usage() {
   return [
-    "Usage: experience-consolidate status|now [--dry-run] [--fixture-output FILE] [--root DIR] [--user USER] [--generation active]",
-    "Advanced maintainer/test CLI. Normal users should use only /experience setup.",
-    "The setup menu contains model selection, Analyze saved examples now, review, and approved-habit controls. This CLI is advanced maintainer/test plumbing and never installs/enables timers.",
+    "Usage: experience-consolidate status|now|scheduled [--dry-run] [--fixture-output FILE] [--root DIR] [--user USER] [--generation active]",
+    "Advanced runtime/maintainer CLI. Normal users should use only /experience setup.",
+    "The setup menu contains model selection, Analyze saved examples now, review, approved-habit controls, and explicit local schedule management.",
     "--dry-run produces reviewable output and must not advance watermarks or mutate ledger state.",
     "Without a fixture/model adapter, the CLI fails closed rather than guessing model output."
   ].join("\n");
@@ -3183,10 +4260,55 @@ async function main() {
   if (rootOverride) process.env.AX_STATE_ROOT = resolve3(rootOverride);
   const paths = getAgentExperiencePaths();
   const { config, exists: exists2, path } = await readAgentExperienceConfig(paths);
-  const userId = argValue(args, "--user") || process.env.AX_USER_ID || "owner";
+  const userId = normalizeUserId(argValue(args, "--user") || process.env.AX_USER_ID || "owner");
   if (command === "status") {
     console.log(JSON.stringify({ ok: true, command: "status", root: paths.root, config_path: path, config_exists: exists2, consolidation_enabled: config.consolidation_enabled, timer_enabled: config.timer_enabled, break_in_enabled: config.break_in_enabled }, null, 2));
     return;
+  }
+  if (command === "scheduled") {
+    const gatesOpen = exists2 && config.enabled && config.consolidation_enabled && config.timer_enabled;
+    if (!gatesOpen) {
+      await writeScheduledAnalyzeReceipt(paths.root, { user_id: userId, status: "disabled", severity: "info", safe_code: "config_gate_denied" });
+      console.log("scheduled_analyze status=disabled code=config_gate_denied");
+      return;
+    }
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(new Error("scheduled_model_call_timeout")), 13e4);
+    timeout.unref?.();
+    try {
+      const result = await runScheduledAnalyzeCore({
+        root: paths.root,
+        userId,
+        config,
+        signal: controller.signal,
+        adapterFactory: () => createStandaloneConsolidationModelAdapter({ signal: controller.signal })
+      });
+      if (result.status === "ok") {
+        await writeScheduledAnalyzeReceipt(paths.root, { user_id: userId, status: "ok", severity: "info", checked: result.checked, total_unread: result.total_unread, new_suggestions: result.new_suggestions, has_more: result.has_more });
+        console.log("scheduled_analyze status=ok");
+      } else if (result.status === "no_work") {
+        await writeScheduledAnalyzeReceipt(paths.root, { user_id: userId, status: "no_work", severity: "info", total_unread: 0 });
+        console.log("scheduled_analyze status=no_work");
+      } else {
+        await writeScheduledAnalyzeReceipt(paths.root, { user_id: userId, status: "locked", severity: "info", safe_code: "consolidation_locked" });
+        console.log("scheduled_analyze status=locked");
+      }
+      return;
+    } catch (error) {
+      const safeCode = safeScheduledAnalyzeErrorCode(error);
+      try {
+        await writeScheduledAnalyzeReceipt(paths.root, { user_id: userId, status: "failed", severity: "warn", safe_code: safeCode });
+      } catch {
+        console.error("scheduled_analyze status=failed code=receipt_write_failed");
+        process.exitCode = 1;
+        return;
+      }
+      console.error(`scheduled_analyze status=failed code=${safeCode}`);
+      process.exitCode = 1;
+      return;
+    } finally {
+      clearTimeout(timeout);
+    }
   }
   if (command !== "now") throw new Error(usage());
   if (!config.enabled) throw new Error("learning_disabled: enable saving examples from /experience setup before using this advanced CLI");
@@ -3196,11 +4318,11 @@ async function main() {
   const generation = argValue(args, "--generation") || "active";
   const dryRun = args.includes("--dry-run");
   const ledgerPath = resolve3(paths.root, "ledger.sqlite");
-  if (dryRun && !existsSync2(ledgerPath)) throw new Error("dry_run_requires_existing_ledger");
+  if (dryRun && !existsSync3(ledgerPath)) throw new Error("dry_run_requires_existing_ledger");
   const storage = await initExperienceStorage(paths.root, { allowInit: true, userId });
   try {
     const observations = await readValidatedObservationGeneration(paths.root, { file_generation: generation, path: "observations.jsonl" }, userId);
-    const output = JSON.parse(await readFile7(resolve3(fixturePath), "utf8"));
+    const output = JSON.parse(await readFile9(resolve3(fixturePath), "utf8"));
     const result = await runConsolidationOnce({ root: paths.root, db: storage.db, userId: storage.userId, observations, modelOutput: output, model: config.consolidation_model, config, dryRun, breakIn: config.break_in_enabled, now: (/* @__PURE__ */ new Date()).toISOString() });
     console.log(JSON.stringify(result, null, 2));
     if (!result.ok) process.exitCode = 2;
@@ -3209,6 +4331,7 @@ async function main() {
   }
 }
 main().catch((error) => {
-  console.error(String(error?.message || error));
+  if (process.argv[2] === "scheduled") console.error("scheduled_analyze status=failed code=startup_failed");
+  else console.error(String(error?.message || error));
   process.exitCode = 1;
 });
