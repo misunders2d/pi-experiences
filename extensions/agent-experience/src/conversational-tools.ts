@@ -6,6 +6,7 @@ import { initExperienceStorage, openExistingExperienceStorage } from "./storage/
 import { redactText } from "./storage/redaction.ts";
 import { semanticPolicyFromConfig, createEmbeddingAdapterFromConfig } from "./semantic/config.ts";
 import { listHabitDuplicates } from "./semantic/storage.ts";
+import { prepareActiveSelectorVectorsAfterChange } from "./selector-maintenance.ts";
 import {
 	acceptCandidateHabit,
 	acceptPendingReview,
@@ -80,14 +81,18 @@ async function requireEnabled(): Promise<{ root: string; config: Awaited<ReturnT
 	return { root: paths.root, config };
 }
 
-async function semanticRuntime(config: Awaited<ReturnType<typeof readAgentExperienceConfig>>["config"]) {
+async function semanticRuntime(config: Awaited<ReturnType<typeof readAgentExperienceConfig>>["config"], root: string) {
 	const policy = semanticPolicyFromConfig(config);
 	if (!policy.enabled) return { policy, provider: undefined };
 	try {
-		return { policy, provider: await createEmbeddingAdapterFromConfig(config) };
+		return { policy, provider: await createEmbeddingAdapterFromConfig(config, root) };
 	} catch {
 		return { policy, provider: undefined };
 	}
+}
+
+async function maintainSelectorAfterChange(db: any, enabled: { root: string; config: Awaited<ReturnType<typeof readAgentExperienceConfig>>["config"] }, userId: string, signal?: AbortSignal) {
+	return prepareActiveSelectorVectorsAfterChange(db, { root: enabled.root, userId, config: enabled.config, now: new Date().toISOString(), signal });
 }
 
 function declarationResult(value: any): SanitizedDeclarationResult {
@@ -232,15 +237,17 @@ export function registerAgentExperienceConversationalTools(pi: ExtensionAPI): vo
 				const enabled = await requireEnabled();
 				if (!enabled) throw new Error("disabled");
 				const law = await readConfiguredLawSnapshot(enabled.root, enabled.config);
-				const runtime = await semanticRuntime(enabled.config);
+				const runtime = await semanticRuntime(enabled.config, enabled.root);
 				try {
 					const storage = await initExperienceStorage(enabled.root, { allowInit: true, userId: key.userId });
 					try {
 						const saved = await declareUserHabit(storage.db, { userId: storage.userId, declarationId: draft.declarationId, condition: draft.condition, behavior: draft.behavior, polarity: draft.polarity, law, now: new Date().toISOString(), semantic: { ...runtime, signal } });
 						const sanitized = declarationResult(saved);
-						if (sanitized.outcome === "not_saved") state.failConfirmation(key, draft.declarationId);
-						else state.completeConfirmation(key, draft.declarationId, sanitized);
-						return result(sanitized.message, { outcome: sanitized.outcome });
+						const selectorMaintenance = saved?.activated ? await maintainSelectorAfterChange(storage.db, enabled, storage.userId, signal) : { ready: true };
+						const finalResult = selectorMaintenance.ready ? sanitized : { ...sanitized, message: `${sanitized.message} Approved-habit reminders will fail closed until their local vectors are repaired from /experience setup.` };
+						if (finalResult.outcome === "not_saved") state.failConfirmation(key, draft.declarationId);
+						else state.completeConfirmation(key, draft.declarationId, finalResult);
+						return result(finalResult.message, { outcome: finalResult.outcome });
 					} finally {
 						storage.db.close();
 					}
@@ -312,11 +319,14 @@ export function registerAgentExperienceConversationalTools(pi: ExtensionAPI): vo
 						if (mapping.type === "candidate") {
 							if (params.action === "approve") {
 								const law = await readConfiguredLawSnapshot(enabled.root, enabled.config);
-								runtime = await semanticRuntime(enabled.config);
+								runtime = await semanticRuntime(enabled.config, enabled.root);
 								const accepted = await acceptCandidateHabit(storage.db, { userId: storage.userId, habitId: mapping.id, checksum: mapping.checksum, law, now: new Date().toISOString(), semantic: { ...runtime, signal } });
+								const selectorMaintenance = accepted?.activated ? await maintainSelectorAfterChange(storage.db, enabled, storage.userId, signal) : { ready: true };
 								state.completeReviewAction(key);
 								if (accepted?.semantic?.reason === "semantic_duplicate") return result("Suggestion approved, but it remains inactive until its possible duplicate is resolved. Nothing was merged automatically.", { outcome: "duplicate_review" });
-								if (accepted?.activated) return result("Suggestion approved and active.", { outcome: "approved_active" });
+								if (accepted?.activated) return selectorMaintenance.ready
+									? result("Suggestion approved and active.", { outcome: "approved_active" })
+									: result("Suggestion approved and active. Approved-habit reminders will fail closed until local vectors are repaired from /experience setup.", { outcome: "approved_active" });
 								return result("Suggestion approved but still inactive while its remaining checks are unresolved.", { outcome: "approved_pending" });
 							}
 							rejectCandidateHabit(storage.db, { userId: storage.userId, habitId: mapping.id, checksum: mapping.checksum, now: new Date().toISOString() });
@@ -341,6 +351,7 @@ export function registerAgentExperienceConversationalTools(pi: ExtensionAPI): vo
 					const action = params.action as HabitDuplicateResolutionAction;
 					const law = action === "supersede" ? await readConfiguredLawSnapshot(enabled.root, enabled.config) : undefined;
 					resolveHabitDuplicate(storage.db, { userId: storage.userId, duplicateId: relation.id, checksum: relation.checksum, action, reason: safeText(params.reason || "user confirmed conversational review", 300), expectedHabitChecksums: expected, ...(law ? { law } : {}), now: new Date().toISOString() });
+					await maintainSelectorAfterChange(storage.db, enabled, storage.userId, signal);
 					state.completeReviewAction(key);
 					const messages: Record<HabitDuplicateResolutionAction, string> = {
 						keep_separate: "Kept both habits separate.",

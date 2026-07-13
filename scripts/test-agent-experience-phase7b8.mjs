@@ -17,7 +17,9 @@ import { observationChecksumForTest, observationPairRefForTest } from '../extens
 import { validateObservationRecords } from '../extensions/agent-experience/src/consolidate/observations.ts';
 import { acquireConsolidationLock, runConsolidationOnce } from '../extensions/agent-experience/src/consolidate/runner.ts';
 import { lawSnapshotForTest } from '../extensions/agent-experience/src/review.ts';
-import { lexicalOverlapScore, runSelectorRuntime } from '../extensions/agent-experience/src/selector.ts';
+import { filterEligibleSelectorCandidates, runSelectorRuntime, selectActiveSelectorSnapshot } from '../extensions/agent-experience/src/selector.ts';
+import { prepareSelectorConditionVectors } from '../extensions/agent-experience/src/selector-vector.ts';
+import { LOCAL_EMBEDDING_DIMENSIONS, LOCAL_EMBEDDING_MODEL, LOCAL_EMBEDDING_PROVIDER } from '../extensions/agent-experience/src/semantic/local-model-manifest.ts';
 
 const execFileAsync = promisify(execFile);
 
@@ -110,7 +112,9 @@ min_overlap_score = 2
 assert.equal(parsed.selector_mode, 'instant', 'env mode wins over section/dotted/flat/default');
 assert.equal(parsed.selector_model, 'zai/glm-5.2', 'section selector model wins over flat key');
 assert.equal(parsed.selector_timeout_ms, 4500, 'env timeout wins over section timeout');
-assert.equal(parsed.selector_min_overlap_score, 2);
+assert.equal(parsed.selector_min_overlap_score, 2, 'legacy lexical key remains readable but is ignored by runtime');
+const rewrittenConfig = formatAgentExperienceConfig(parsed);
+assert.doesNotMatch(rewrittenConfig, /^(?:selector_mode|selector_min_overlap_score)\s*=/m, 'config rewrite must remove obsolete lexical controls');
 
 const temp = await mkdtemp(join(tmpdir(), 'agent-experience-phase7b8-'));
 process.env.AX_STATE_ROOT = join(temp, 'state');
@@ -122,26 +126,38 @@ try {
   insertStorageRecord(storage.db, 'habits', { id: 'active-good', userId: 'owner', data: habitData({ law_hash: law.hash }), now: '2026-07-08T00:00:00.000Z' });
   insertStorageRecord(storage.db, 'habits', { id: 'active-zero-overlap', userId: 'owner', data: habitData({ condition: 'completely different topic', behavior: 'never match', law_hash: law.hash, confidence_bp: 10000, activation: 99 }), now: '2026-07-08T00:01:00.000Z' });
   insertStorageRecord(storage.db, 'habits', { id: 'candidate-hidden', userId: 'owner', data: habitData({ status: 'candidate', condition: 'phase seven selector', behavior: 'must not inject', law_hash: law.hash }), now: '2026-07-08T00:02:00.000Z' });
-  assert.equal(lexicalOverlapScore('phase seven selector questions', { id: 'x', user_id: 'owner', condition: 'phase seven selector', behavior: 'questions', polarity: 1, confidence_bp: 9000, activation: 1, staleness: 0, checksum: 'x' }), 3, 'behavior tokens must not create selector applicability');
+  const unit = (index) => { const vector = new Float32Array(LOCAL_EMBEDDING_DIMENSIONS); vector[index] = 1; return vector; };
+  const vectorGood = unit(0);
+  const vectorOther = unit(1);
+  const vectorUnrelated = unit(2);
+  const embeddingAdapter = {
+    id: `${LOCAL_EMBEDDING_PROVIDER}:${LOCAL_EMBEDDING_MODEL}:${LOCAL_EMBEDDING_DIMENSIONS}`,
+    provider: LOCAL_EMBEDDING_PROVIDER,
+    model: LOCAL_EMBEDDING_MODEL,
+    dimensions: LOCAL_EMBEDDING_DIMENSIONS,
+    async embed(texts) { return texts.map((text) => /phase seven selector/i.test(String(text)) ? vectorGood : /completely different/i.test(String(text)) ? vectorOther : vectorUnrelated); },
+  };
+  const eligible = filterEligibleSelectorCandidates(selectActiveSelectorSnapshot(storage.db, { userId: 'owner' }), { minConfidenceBp: 7500, stalenessMax: 0.8 });
+  await prepareSelectorConditionVectors(storage.db, { userId: 'owner', candidates: eligible, embeddingAdapter, now: '2026-07-08T01:30:00.000Z' });
   let adapterCalls = 0;
-  const instantConfig = { ...DEFAULT_AGENT_EXPERIENCE_CONFIG, enabled: true, selector_enabled: true, selector_mode: 'instant', selector_min_confidence_bp: 7500, selector_min_overlap_score: 2, selector_staleness_max: 0.8 };
-  const instant = await runSelectorRuntime(storage.db, { userId: 'owner', prompt: 'phase seven selector questions', config: instantConfig, law, now: '2026-07-08T02:00:00.000Z', adapter: { async select() { adapterCalls += 1; throw new Error('instant must not call model'); } } });
-  assert.equal(instant.injected, true);
-  assert.equal(instant.mode, 'instant');
-  assert.equal(adapterCalls, 0);
-  assert.equal(JSON.stringify(storage.db.prepare('SELECT data_json FROM selector_hit_log').all()).includes('lexical'), true);
-  const silent = await runSelectorRuntime(storage.db, { userId: 'owner', prompt: 'unrelated words only', config: instantConfig, law, now: '2026-07-08T02:01:00.000Z', adapter: { async select() { adapterCalls += 1; } } });
-  assert.equal(silent.injected, false, 'min overlap preserves silence-default');
-  assert.equal(adapterCalls, 0);
-  assert.equal(storage.db.prepare("SELECT COUNT(*) AS count FROM selector_hit_log WHERE user_id = ? AND action = 'inject' AND selected = 1").get('owner').count, 1);
-  const smart = await runSelectorRuntime(storage.db, { userId: 'owner', prompt: 'phase seven selector questions', config: { ...instantConfig, selector_mode: 'smart', selector_model: 'zai/glm-5.2' }, law, now: '2026-07-08T02:03:00.000Z', adapter: { async select({ model }) { adapterCalls += 1; assert.equal(model, 'zai/glm-5.2'); return { schema_version: 1, selected: [{ id: 'active-good', confidence_bp: 9000 }] }; } } });
-  assert.equal(smart.injected, true);
-  assert.equal(smart.mode, 'smart');
+  const legacyModeConfig = { ...DEFAULT_AGENT_EXPERIENCE_CONFIG, enabled: true, selector_enabled: true, selector_mode: 'instant', selector_min_confidence_bp: 7500, selector_min_overlap_score: 2, selector_staleness_max: 0.8 };
+  const judged = await runSelectorRuntime(storage.db, { userId: 'owner', prompt: 'phase seven selector questions', config: legacyModeConfig, law, now: '2026-07-08T02:00:00.000Z', embeddingAdapter, adapter: { async select({ candidateIds }) { adapterCalls += 1; return { schema_version: 2, judgments: candidateIds.map((id) => id === 'active-good' ? { id, applicable: true, confidence_bp: 9000, reason: 'current_applicability' } : { id, applicable: false, confidence_bp: 9000, reason: 'not_currently_relevant' }) }; } } });
+  assert.equal(judged.injected, true);
+  assert.equal(judged.mode, 'vector_judge', 'legacy instant mode must not restore lexical-only selection');
+  assert.equal(adapterCalls, 1, 'mandatory judge runs after vectors even when legacy config says instant');
+  assert.equal(JSON.stringify(storage.db.prepare('SELECT data_json FROM selector_hit_log').all()).includes('lexical'), false);
+  const silent = await runSelectorRuntime(storage.db, { userId: 'owner', prompt: 'unrelated words only', config: legacyModeConfig, law, now: '2026-07-08T02:01:00.000Z', embeddingAdapter, adapter: { async select() { adapterCalls += 1; throw new Error('below-floor request must not call judge'); } } });
+  assert.equal(silent.injected, false, 'vector floor preserves silence-default');
+  assert.equal(silent.reason, 'no_vector_candidates');
   assert.equal(adapterCalls, 1);
+  assert.equal(storage.db.prepare("SELECT COUNT(*) AS count FROM selector_hit_log WHERE user_id = ? AND action = 'inject' AND selected = 1").get('owner').count, 1);
+  const configuredModel = await runSelectorRuntime(storage.db, { userId: 'owner', prompt: 'phase seven selector questions', config: { ...legacyModeConfig, selector_mode: 'smart', selector_model: 'zai/glm-5.2' }, law, now: '2026-07-08T02:03:00.000Z', embeddingAdapter, adapter: { async select({ model, candidateIds }) { adapterCalls += 1; assert.equal(model, 'zai/glm-5.2'); return { schema_version: 2, judgments: candidateIds.map((id) => id === 'active-good' ? { id, applicable: true, confidence_bp: 9000, reason: 'current_applicability' } : { id, applicable: false, confidence_bp: 9000, reason: 'not_currently_relevant' }) }; } } });
+  assert.equal(configuredModel.injected, true);
+  assert.equal(configuredModel.mode, 'vector_judge');
+  assert.equal(adapterCalls, 2);
 
   const metrics = collectAgentExperienceMetrics(storage.db, { userId: 'owner' });
-  assert.equal(metrics.selector_hits_by_mode.instant.inject >= 1, true);
-  assert.equal(metrics.selector_hits_by_mode.smart.inject >= 1, true);
+  assert.equal(metrics.selector_hits_by_mode.vector_judge.inject >= 2, true);
   assert.equal(metrics.skip_timeout_no_injection_counts, 'unavailable_without_aggregate_metrics_table');
   assert.equal(canonicalJson(metrics).includes('phase seven selector questions'), false);
 
@@ -163,7 +179,7 @@ try {
   assert.match(notes.at(-1), /\/experience setup as the complete control panel/);
   assert.doesNotMatch(notes.at(-1), /setup model|setup analyze-now|setup review|setup use-habits/);
   await commands.get('experience').handler('selector calibrate', { cwd: process.cwd(), ui: { notify(message) { notes.push(message); } } });
-  assert.match(notes.at(-1), /Manual weekly calibration/);
+  assert.match(notes.at(-1), /Manual calibration/);
   assert.match(notes.at(-1), /No recurring reminder is enabled/);
 
   const r1 = makeObservation({ seq: 1, safe: 'prefers exact evidence gates' });

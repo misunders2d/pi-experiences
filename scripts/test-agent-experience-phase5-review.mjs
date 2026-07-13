@@ -100,7 +100,7 @@ try {
   assert.match(notes.at(-1).message, /experience-consolidate/);
   await commands.get('experience').handler('help selector', { cwd: process.cwd(), ui: { notify(message, level) { notes.push({ message, level }); } } });
   assert.match(notes.at(-1).message, /Agent Experience selector/);
-  assert.match(notes.at(-1).message, /instant mode by default/);
+  assert.match(notes.at(-1).message, /local condition vectors|no lexical-only or vector-only/i);
   await commands.get('experience').handler('help troubleshoot', { cwd: process.cwd(), ui: { notify(message, level) { notes.push({ message, level }); } } });
   assert.match(notes.at(-1).message, /Agent Experience troubleshooting/);
   assert.match(notes.at(-1).message, /observations\.jsonl/);

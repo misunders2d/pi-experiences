@@ -7,6 +7,7 @@ import { readConfiguredLawSnapshot } from "../review.ts";
 import { createEmbeddingAdapterFromConfig, semanticPolicyFromConfig } from "../semantic/config.ts";
 import type { EmbeddingAdapter } from "../semantic/types.ts";
 import { promoteApprovedPendingCandidates } from "../selector.ts";
+import { prepareActiveSelectorVectorsAfterChange } from "../selector-maintenance.ts";
 import { acquireOwnedLock } from "../storage/locks.ts";
 import { normalizeUserId } from "../storage/private-root.ts";
 import { purgeExpiredObservationArchives, readCurrentObservationManifest, readValidatedObservationRange, rotateObservationGenerationIfFullyRead } from "../storage/observations.ts";
@@ -105,6 +106,7 @@ export async function runScheduledAnalyzeCore(input: {
 			});
 			promoted = promotion.promoted.length;
 			promotionBlocked = promotion.blocked.length;
+			if (promoted) await prepareActiveSelectorVectorsAfterChange(storage.db, { root: input.root, userId, config: input.config, now: now(), signal: input.signal });
 		} catch {
 			// Suggestions are already atomically committed. Promotion recheck is best-effort
 			// and never weakens pending/approval gates.

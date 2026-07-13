@@ -43,8 +43,10 @@ import {
 } from "./src/review.ts";
 import { semanticPolicyFromConfig, createEmbeddingAdapterFromConfig } from "./src/semantic/config.ts";
 import { ensureLocalEmbeddingAssets, getLocalEmbeddingAssetStatus, removeLocalEmbeddingAssets } from "./src/semantic/local-model.ts";
+import { createLocalEmbeddingAdapter, type LocalEmbeddingAdapter } from "./src/semantic/local-adapter.ts";
 import { scanAndBackfillSemanticDuplicates } from "./src/semantic/service.ts";
 import { listHabitDuplicates } from "./src/semantic/storage.ts";
+import type { EmbeddingAdapter } from "./src/semantic/types.ts";
 import { acquireOwnedLock } from "./src/storage/locks.ts";
 import { normalizeUserId, openSensitiveFileForWrite, resolvePrivatePath } from "./src/storage/private-root.ts";
 import { purgeExpiredObservationArchives, readCurrentObservationManifest, readValidatedObservationRange, rotateObservationGenerationIfFullyRead } from "./src/storage/observations.ts";
@@ -52,8 +54,10 @@ import { redactText } from "./src/storage/redaction.ts";
 import { classifyCaptureInput, type CaptureKey } from "./src/capture/origin.ts";
 import { CapturePairBuffer, buildPairPayload, type CompletedPair, type CloseReason } from "./src/capture/buffer.ts";
 import { extractSingleFinalAssistantText } from "./src/capture/extract.ts";
-import { promoteApprovedPendingCandidates, runSelectorRuntime, type SelectorModelAdapter } from "./src/selector.ts";
+import { filterEligibleSelectorCandidates, promoteApprovedPendingCandidates, runSelectorRuntime, selectActiveSelectorSnapshot, type SelectorModelAdapter } from "./src/selector.ts";
 import { createPiSelectorModelAdapter } from "./src/selector-model.ts";
+import { prepareSelectorConditionVectors } from "./src/selector-vector.ts";
+import { prepareActiveSelectorVectorsAfterChange } from "./src/selector-maintenance.ts";
 import { collectAgentExperienceMetrics, formatAgentExperienceMetrics } from "./src/metrics.ts";
 import type { AgentExperienceConfig } from "./src/config.ts";
 import type { ValidatedObservationRecord } from "./src/consolidate/observations.ts";
@@ -71,6 +75,9 @@ import { disableScheduledAnalyzeSystemd, inspectScheduledAnalyzeSystemd, install
 
 const captureBuffer = new CapturePairBuffer();
 let selectorModelAdapter: SelectorModelAdapter | undefined;
+let selectorEmbeddingAdapterOverride: EmbeddingAdapter | undefined;
+let selectorLocalEmbeddingAdapter: LocalEmbeddingAdapter | undefined;
+let selectorLocalEmbeddingRoot: string | undefined;
 const selectorDiagnosticsShown = new Set<string>();
 const captureDiagnosticsShown = new Set<string>();
 
@@ -647,6 +654,10 @@ export function __setAgentExperienceSelectorAdapterForTest(adapter: SelectorMode
 	selectorModelAdapter = adapter;
 }
 
+export function __setAgentExperienceSelectorEmbeddingAdapterForTest(adapter: EmbeddingAdapter | undefined) {
+	selectorEmbeddingAdapterOverride = adapter;
+}
+
 export function __setAgentExperienceConsolidationAdapterForTest(adapter: ConsolidationModelAdapter | undefined) {
 	consolidationModelAdapter = adapter;
 }
@@ -937,7 +948,7 @@ async function buildStatusText(): Promise<{ text: string; enabled: boolean }> {
 		`Analyze saved examples now: ${config.consolidation_enabled ? "available from setup" : "available when you choose it in setup"}`,
 		`Review suggested habits: ${summary.error ? `ledger unreadable (${summary.error})` : summary.ledger ? `${plural(reviewCount, "suggestion")} waiting, ${plural(summary.active, "approved habit")}${summary.approvedWaiting ? `, ${plural(summary.approvedWaiting, "approved habit")} waiting for activation` : ""}` : "no review list yet"}`,
 		`Prevent duplicate habits: ${duplicateStatus}`,
-		`Use approved habits before replies: ${selectorActive ? (config.selector_mode === "instant" ? "ON (local/no-network)" : `ON (${config.selector_mode})`) : config.selector_enabled ? "configured ON, inactive because Experience is OFF" : "OFF"}`,
+		`Use approved habits before replies: ${selectorActive ? `ON (private local vectors + bounded ${config.selector_model} applicability judge)` : config.selector_enabled ? "configured ON, inactive because Experience is OFF" : "OFF"}`,
 		`Automatic schedule: ${scheduleStatus}`,
 		`Break-in review prompts: ${config.break_in_enabled ? "ON (private TUI review-only)" : "OFF"}`,
 		`Next: ${nextStep}`,
@@ -1005,9 +1016,7 @@ function setupHelpMessage(config: { enabled: boolean; capture_enabled: boolean; 
 		"Save chat examples locally: turn this on first to start saving examples. It stores redacted completed user/assistant pairs under ~/.agents/experience. It does not store raw full prompts or injected text.",
 		"Choose model for habit learning: opens a model picker inside setup. You do not type a model command.",
 		"Analyze saved examples now: runs from this setup menu, reads saved redacted examples, calls the chosen model once, and creates suggested habits for review.",
-		config.selector_mode === "instant"
-			? "Use approved habits before replies: lets Pi add only human-approved habits as reminders before future replies. Current mode is local/no-network."
-			: "Use approved habits before replies: lets Pi add only human-approved habits as reminders before future replies. Optional advanced matching remains separately controlled and fail-closed.",
+		`Use approved habits before replies: compares each request privately against local approved-condition vectors, then asks ${config.selector_model} one bounded current-applicability question. Missing vectors, auth, timeouts, ambiguity, or malformed output produce no guidance.`,
 		"Automatic schedule: optional Linux systemd user timer at 03:30 system-local time with persistent catch-up. Setup shows exact paths and requires confirmation before install/enable; scheduled runs create suggestions only.",
 		"Break-in review prompts: explicit opt-in. After Analyze creates suggestions and Pi is safely idle, one private TUI prompt offers Review now, Later, or Turn break-in off. It makes no extra model call and never approves or applies anything.",
 		"Review suggested habits: opens the list of proposed habits for you to approve or reject. Nothing is auto-approved.",
@@ -1158,9 +1167,11 @@ async function handleSetupSelector(ctx: ExtensionCommandContext) {
 	if (!choice || choice === "Back/cancel (no changes)") return notify(ctx, "Approved-habit reminder setup cancelled. No config changed.", "info");
 	if (choice === "Explain approved-habit reminders (no changes)") {
 		return notify(ctx, [
-			"Approved-habit reminders means Pi can add only human-approved habits as reminders before a reply.",
+			"Approved-habit reminders can add only human-approved habits before a reply.",
+			"Every eligible request is embedded privately on this computer and compared only with approved habit conditions.",
+			"Retrieved conditions then receive one bounded configured-model applicability check. Habit behaviors, vector scores, and unretrieved habits are not sent to that check.",
+			"Missing local vectors, model auth, timeout, cancellation, malformed output, low confidence, or ambiguity produce no guidance.",
 			"It never uses unreviewed suggestions and never approves habits by itself.",
-			"Default mode uses private local matching. Optional advanced matching remains separately controlled and fail-closed.",
 		].join("\n"), "info");
 	}
 	if (choice === "Use approved habits before replies") return handleSetupUseHabitsToggle(ctx, true);
@@ -1430,8 +1441,10 @@ async function runAnalyzeNowJob(ctx: ExtensionCommandContext, preflight: { lock:
 			const policy = semanticPolicyFromConfig(config);
 			promotionProvider = createEmbeddingAdapterFromConfig(config, paths.root);
 			const promotion = await promoteApprovedPendingCandidates(storage.db, { userId, law: await readConfiguredLawForRoot(paths.root), now: new Date().toISOString(), semantic: { policy, provider: promotionProvider, signal: (ctx as any).signal } });
-			if (promotion.promoted.length) promotionNote = `${plural(promotion.promoted.length, "previously approved habit")} became active after receiving enough evidence.`;
-			else if (promotion.blocked.length) promotionNote = `${plural(promotion.blocked.length, "previously approved habit")} remains safely waiting; review its reason in setup.`;
+			if (promotion.promoted.length) {
+				const selector = await maintainSelectorVectorsAfterActiveChange(storage, (ctx as any).signal);
+				promotionNote = `${plural(promotion.promoted.length, "previously approved habit")} became active after receiving enough evidence.${selector.ready ? "" : " Approved-habit reminders will fail closed until local vectors are repaired from setup."}`;
+			} else if (promotion.blocked.length) promotionNote = `${plural(promotion.blocked.length, "previously approved habit")} remains safely waiting; review its reason in setup.`;
 		} catch (error: any) {
 			promotionNote = `Previously approved waiting habits need a later recheck. ${redactText(String(error?.message || error)).slice(0, 180)}`;
 		} finally {
@@ -1849,7 +1862,9 @@ async function handleDuplicateResolutionSetup(ctx: ExtensionCommandContext) {
 					const current = listHabitDuplicates(storage.db, { userId: storage.userId, decision: "pending" }).find((row: any) => row.id === item.id);
 					if (!current || current.checksum !== item.checksum) throw new Error("Duplicate item changed; refresh required");
 					const expectedHabitChecksums = Object.fromEntries([selected.plan.survivor, selected.plan.other].map((habit: any) => [String(habit.id), String(habit.checksum)]));
-					return resolveHabitDuplicate(storage.db, { userId: storage.userId, duplicateId: item.id, checksum: item.checksum, action: selected.action, reason, expectedHabitChecksums, ...(selected.action === "supersede" ? { law: await readConfiguredLawForRoot(storage.root) } : {}), now: new Date().toISOString() });
+					const resolved = resolveHabitDuplicate(storage.db, { userId: storage.userId, duplicateId: item.id, checksum: item.checksum, action: selected.action, reason, expectedHabitChecksums, ...(selected.action === "supersede" ? { law: await readConfiguredLawForRoot(storage.root) } : {}), now: new Date().toISOString() });
+					await maintainSelectorVectorsAfterActiveChange(storage, (ctx as any).signal);
+					return resolved;
 				});
 				notify(ctx, `Duplicate resolved. ${selected.resultMessage}`, "info");
 			} catch (error) {
@@ -1865,13 +1880,18 @@ async function recheckApprovedWaitingHabits(ctx: ExtensionCommandContext) {
 	let runtime: any;
 	try {
 		runtime = await semanticRuntimeForConfig();
-		const result = await withReviewStorage(async (storage) => promoteApprovedPendingCandidates(storage.db, { userId: storage.userId, law: await readConfiguredLawForRoot(storage.root), now: new Date().toISOString(), semantic: runtime }));
+		const result = await withReviewStorage(async (storage) => {
+			const promoted = await promoteApprovedPendingCandidates(storage.db, { userId: storage.userId, law: await readConfiguredLawForRoot(storage.root), now: new Date().toISOString(), semantic: runtime });
+			const selector = promoted.promoted.length ? await maintainSelectorVectorsAfterActiveChange(storage, (ctx as any).signal) : { ready: true };
+			return { ...promoted, selector_ready: selector.ready };
+		});
 		const remaining = await withExistingReviewStorage(async (storage) => listApprovedPendingHabitsForSetup(storage.db, { userId: storage.userId }));
 		const reasons = [...new Set(remaining.map((row: any) => row.waiting_reason === "law" ? "current safety instructions" : row.waiting_reason === "conflict" ? "a conflicting habit" : row.waiting_reason === "semantic_unavailable" ? "local duplicate checking" : "more repeated evidence"))];
 		notify(ctx, [
 			`${plural(result.promoted.length, "approved habit")} became active.`,
 			`${plural(remaining.length, "approved habit")} still waiting${reasons.length ? ` for ${reasons.join(", ")}` : ""}.`,
 			remaining.length ? "No new approval is required unless its wording changes." : "All approved waiting habits are resolved.",
+			result.selector_ready === false ? "Approved-habit reminders will fail closed until local vectors are repaired from setup." : "",
 		].join("\n"), remaining.length ? "warn" : "info");
 	} catch (error: any) {
 		notify(ctx, `Approved habits were left unchanged. ${formatReviewReadError(error)}`, "warn");
@@ -1917,9 +1937,12 @@ async function handleApprovedHabitsSetup(ctx: ExtensionCommandContext) {
 				if (current.checksum !== refreshed.checksum || current.status !== refreshed.status) throw new Error("Approved habit changed; refresh required");
 				if (action === "Disable habit") return disableHabit(storage.db, { userId: storage.userId, habitId: refreshed.id, checksum: refreshed.checksum, now });
 				if (action === "Archive/hide habit") return archiveHideHabit(storage.db, { userId: storage.userId, habitId: refreshed.id, checksum: refreshed.checksum, now });
-				return enableHabit(storage.db, { userId: storage.userId, habitId: refreshed.id, checksum: refreshed.checksum, law: await readConfiguredLawForRoot(storage.root), now, semantic: await semanticRuntimeForConfig() });
+				const enabled = await enableHabit(storage.db, { userId: storage.userId, habitId: refreshed.id, checksum: refreshed.checksum, law: await readConfiguredLawForRoot(storage.root), now, semantic: await semanticRuntimeForConfig() });
+				const selector = enabled?.enabled ? await maintainSelectorVectorsAfterActiveChange(storage, (ctx as any).signal) : { ready: true };
+				return { ...enabled, selector_ready: selector.ready };
 			});
-			notify(ctx, formatSetupHabitActionForHuman(action, result), result?.enabled === false ? "warn" : "info");
+			const selectorNote = result?.selector_ready === false ? "\nApproved-habit reminders will fail closed until local vectors are repaired from /experience setup." : "";
+			notify(ctx, `${formatSetupHabitActionForHuman(action, result)}${selectorNote}`, result?.enabled === false || result?.selector_ready === false ? "warn" : "info");
 		} catch (error: any) {
 			const raw = String(error?.message || error);
 			notify(ctx, `Approved-habit action failed safely: ${redactText(raw).slice(0, 500)}`, "warn");
@@ -1953,15 +1976,17 @@ async function handleReviewSetup(ctx: ExtensionContext) {
 			const result = await withReviewStorage(async (storage) => {
 				const shown = showPendingReviewItem(storage.db, { userId: storage.userId, id: item.id });
 				if (shown.item.type === "candidate") {
-					return action === "Approve"
-						? acceptCandidateHabit(storage.db, { userId: storage.userId, habitId: item.id, checksum: item.checksum, law: await readConfiguredLawForRoot(storage.root), now, semantic: await semanticRuntimeForConfig() })
-						: rejectCandidateHabit(storage.db, { userId: storage.userId, habitId: item.id, checksum: item.checksum, now });
+					if (action !== "Approve") return rejectCandidateHabit(storage.db, { userId: storage.userId, habitId: item.id, checksum: item.checksum, now });
+					const accepted = await acceptCandidateHabit(storage.db, { userId: storage.userId, habitId: item.id, checksum: item.checksum, law: await readConfiguredLawForRoot(storage.root), now, semantic: await semanticRuntimeForConfig() });
+					const selector = accepted?.activated ? await maintainSelectorVectorsAfterActiveChange(storage, (ctx as any).signal) : { ready: true };
+					return { ...accepted, selector_ready: selector.ready };
 				}
 				return action === "Approve"
 					? acceptPendingReview(storage.db, { userId: storage.userId, id: item.id, checksum: item.checksum, now })
 					: rejectPendingReview(storage.db, { userId: storage.userId, id: item.id, checksum: item.checksum, now });
 			});
-			notify(ctx, formatReviewActionForHuman(action, result), "info");
+			const selectorNote = result?.selector_ready === false ? "\nApproved-habit reminders will fail closed until local vectors are repaired from /experience setup." : "";
+			notify(ctx, `${formatReviewActionForHuman(action, result)}${selectorNote}`, result?.selector_ready === false ? "warn" : "info");
 		} catch (error: any) {
 			const raw = String(error?.message || error);
 			notify(ctx, `Review action failed safely: ${redactText(raw).slice(0, 500)}`, "warn");
@@ -2014,9 +2039,74 @@ async function ensureLawFileForSetup(ctx: ExtensionContext): Promise<boolean> {
 	}
 }
 
+async function prepareAndEnableSelector(ctx: ExtensionCommandContext): Promise<void> {
+	const paths = getAgentExperiencePaths();
+	if (!(await ensureLawFileForSetup(ctx))) return;
+	const { config } = await readAgentExperienceConfig(paths);
+	const auth = await configuredModelAuthenticated(ctx, config.selector_model);
+	if (!auth.ok) {
+		notify(ctx, `Approved-habit reminders remain OFF because the bounded applicability model is not ready. Detail: ${auth.reason}`, "warn");
+		return;
+	}
+	const choice = await chooseSetup(ctx, "Prepare approved-habit reminders", [
+		"Prepare private local vectors and enable reminders",
+		"Back/cancel (no changes)",
+	], false);
+	if (choice !== "Prepare private local vectors and enable reminders") {
+		notify(ctx, "Approved-habit reminders remain OFF. No local files were downloaded and no setting changed.", "info");
+		return;
+	}
+	const operation = await runSetupProgress(ctx, "Preparing approved-habit reminders", async (signal, update) => {
+		let embedding: EmbeddingAdapter | undefined;
+		const ownsEmbedding = !selectorEmbeddingAdapterOverride;
+		try {
+			if (selectorEmbeddingAdapterOverride) {
+				update({ label: "Using injected selector-vector test runtime" });
+				embedding = selectorEmbeddingAdapterOverride;
+			} else {
+				await ensureLocalEmbeddingAssets(paths.root, { signal, onProgress: (progress) => {
+					const labels = { checking: "Checking private local vector files", downloading: "Downloading private local vector files", verifying: "Verifying private local vector files", ready: "Private local vector files ready", removing: "Removing incomplete local files" } as const;
+					update({ label: labels[progress.phase], completed: progress.downloaded_bytes, total: progress.total_bytes, unit: "bytes" });
+				} });
+				embedding = createLocalEmbeddingAdapter(paths.root, { idleMs: 300_000 });
+			}
+			if (!(await fileExists(resolvePrivatePath(paths.root, "ledger.sqlite")))) return { prepared: 0, cached: 0, total: 0 };
+			return withExistingReviewStorage(async (storage) => {
+				const active = selectActiveSelectorSnapshot(storage.db, { userId: storage.userId });
+				const eligible = filterEligibleSelectorCandidates(active, { minConfidenceBp: config.selector_min_confidence_bp, stalenessMax: config.selector_staleness_max });
+				return prepareSelectorConditionVectors(storage.db, {
+					userId: storage.userId,
+					candidates: eligible,
+					embeddingAdapter: embedding!,
+					now: new Date().toISOString(),
+					signal,
+					onProgress: (progress) => update({ label: "Preparing approved habit conditions", completed: progress.completed, total: progress.total, unit: "items" }),
+				});
+			});
+		} finally {
+			if (ownsEmbedding) await (embedding as LocalEmbeddingAdapter | undefined)?.close().catch(() => undefined);
+		}
+	});
+	if (!operation.ok) {
+		await setAgentExperienceSelectorEnabled(false, paths).catch(() => undefined);
+		notify(ctx, operation.cancelled
+			? "Approved-habit reminder setup cancelled safely. Reminders remain OFF."
+			: `Approved-habit reminders remain OFF because preparation failed safely: ${redactText(String((operation.error as any)?.message || operation.error)).slice(0, 300)}`, operation.cancelled ? "info" : "warn");
+		return;
+	}
+	const { path } = await setAgentExperienceSelectorEnabled(true, paths);
+	notify(ctx, [
+		"Use approved habits before replies: ON",
+		`Config file: ${path}`,
+		`Prepared ${plural(operation.value.total, "approved habit condition")} for private local vector retrieval.`,
+		`Each eligible request now uses local vectors first, then one bounded ${config.selector_model} applicability call. Failures produce no guidance.`,
+		"Unreviewed suggestions are never used and habits are never approved automatically.",
+	].join("\n"), "warn");
+}
+
 async function handleSetupUseHabitsToggle(ctx: ExtensionCommandContext, enable: boolean) {
-	if (enable && !(await ensureLawFileForSetup(ctx))) return;
-	return handleSelector(enable ? "on" : "off", ctx);
+	if (enable) return prepareAndEnableSelector(ctx);
+	return handleSelector("off", ctx);
 }
 
 async function showSetupPanel(ctx: ExtensionCommandContext): Promise<SetupAction | undefined> {
@@ -2316,6 +2406,31 @@ async function semanticRuntimeForConfig() {
 	}
 }
 
+async function closeSelectorLocalEmbeddingAdapter(): Promise<void> {
+	const current = selectorLocalEmbeddingAdapter;
+	selectorLocalEmbeddingAdapter = undefined;
+	selectorLocalEmbeddingRoot = undefined;
+	if (current) await current.close();
+}
+
+async function selectorRuntimeEmbeddingAdapter(root: string): Promise<EmbeddingAdapter> {
+	if (selectorEmbeddingAdapterOverride) return selectorEmbeddingAdapterOverride;
+	if (selectorLocalEmbeddingAdapter && selectorLocalEmbeddingRoot === root) return selectorLocalEmbeddingAdapter;
+	await closeSelectorLocalEmbeddingAdapter();
+	selectorLocalEmbeddingAdapter = createLocalEmbeddingAdapter(root, { idleMs: 300_000 });
+	selectorLocalEmbeddingRoot = root;
+	return selectorLocalEmbeddingAdapter;
+}
+
+async function maintainSelectorVectorsAfterActiveChange(storage: { db: any; root: string; userId: string }, signal?: AbortSignal) {
+	const paths = getAgentExperiencePaths();
+	const { config } = await readAgentExperienceConfig(paths);
+	if (!config.enabled || !config.selector_enabled) return { attempted: false, ready: true };
+	let embedding: EmbeddingAdapter | undefined;
+	try { embedding = await selectorRuntimeEmbeddingAdapter(storage.root); } catch {}
+	return prepareActiveSelectorVectorsAfterChange(storage.db, { root: storage.root, userId: storage.userId, config, now: new Date().toISOString(), signal, embeddingAdapter: embedding });
+}
+
 async function withReviewStorage<T>(fn: (storage: Awaited<ReturnType<typeof initExperienceStorage>>) => Promise<T> | T): Promise<T> {
 	const paths = getAgentExperiencePaths();
 	const storage = await initExperienceStorage(paths.root, { allowInit: true, userId: getConfiguredUserId() });
@@ -2379,15 +2494,17 @@ async function handleReview(args: string[], ctx: ExtensionCommandContext) {
 		const result = await withReviewStorage(async (storage) => {
 			const shown = showPendingReviewItem(storage.db, { userId: storage.userId, id });
 			if (shown.item.type === "candidate") {
-				return action === "accept"
-					? acceptCandidateHabit(storage.db, { userId: storage.userId, habitId: id, checksum, law: await readConfiguredLawForRoot(storage.root), now, semantic: await semanticRuntimeForConfig() })
-					: rejectCandidateHabit(storage.db, { userId: storage.userId, habitId: id, checksum, now });
+				if (action !== "accept") return rejectCandidateHabit(storage.db, { userId: storage.userId, habitId: id, checksum, now });
+				const accepted = await acceptCandidateHabit(storage.db, { userId: storage.userId, habitId: id, checksum, law: await readConfiguredLawForRoot(storage.root), now, semantic: await semanticRuntimeForConfig() });
+				const selector = accepted?.activated ? await maintainSelectorVectorsAfterActiveChange(storage, (ctx as any).signal) : { ready: true };
+				return { ...accepted, selector_ready: selector.ready };
 			}
 			return action === "accept"
 				? acceptPendingReview(storage.db, { userId: storage.userId, id, checksum, now })
 				: rejectPendingReview(storage.db, { userId: storage.userId, id, checksum, now });
 		});
-		return notify(ctx, formatReviewActionForHuman(action === "accept" ? "Approve" : "Reject", result), "info");
+		const selectorNote = result?.selector_ready === false ? "\nApproved-habit reminders will fail closed until local vectors are repaired from /experience setup." : "";
+		return notify(ctx, `${formatReviewActionForHuman(action === "accept" ? "Approve" : "Reject", result)}${selectorNote}`, result?.selector_ready === false ? "warn" : "info");
 	}
 	if (action === "report") {
 		return handleHabits(["report"], ctx);
@@ -2417,16 +2534,20 @@ async function handleHabit(args: string[], ctx: ExtensionCommandContext) {
 	const checksum = parseFlag(args, "--checksum");
 	const now = new Date().toISOString();
 	const result = await withReviewStorage(async (storage) => {
+		let value: any;
 		switch (action) {
 			case "explain": if (!id) throw new Error("Usage: /experience habit explain <id>"); return explainHabit(storage.db, { userId: storage.userId, habitId: id });
-			case "accept": if (!id || !checksum) throw new Error("Usage: /experience habit accept <id> --checksum <checksum>"); return acceptCandidateHabit(storage.db, { userId: storage.userId, habitId: id, checksum, law: await readConfiguredLawForRoot(storage.root), now, semantic: await semanticRuntimeForConfig() });
+			case "accept": if (!id || !checksum) throw new Error("Usage: /experience habit accept <id> --checksum <checksum>"); value = await acceptCandidateHabit(storage.db, { userId: storage.userId, habitId: id, checksum, law: await readConfiguredLawForRoot(storage.root), now, semantic: await semanticRuntimeForConfig() }); break;
 			case "reject": if (!id || !checksum) throw new Error("Usage: /experience habit reject <id> --checksum <checksum>"); return rejectCandidateHabit(storage.db, { userId: storage.userId, habitId: id, checksum, now });
 			case "disable": if (!id || !checksum) throw new Error("Usage: /experience habit disable <id> --checksum <checksum>"); return disableHabit(storage.db, { userId: storage.userId, habitId: id, checksum, now });
-			case "enable": if (!id || !checksum) throw new Error("Usage: /experience habit enable <id> --checksum <checksum>"); return enableHabit(storage.db, { userId: storage.userId, habitId: id, checksum, law: await readConfiguredLawForRoot(storage.root), now, semantic: await semanticRuntimeForConfig() });
+			case "enable": if (!id || !checksum) throw new Error("Usage: /experience habit enable <id> --checksum <checksum>"); value = await enableHabit(storage.db, { userId: storage.userId, habitId: id, checksum, law: await readConfiguredLawForRoot(storage.root), now, semantic: await semanticRuntimeForConfig() }); break;
 			default: throw new Error("Usage: /experience habit explain|accept|reject|disable|enable ...");
 		}
+		const becameActive = value?.activated === true || value?.enabled === true;
+		const selector = becameActive ? await maintainSelectorVectorsAfterActiveChange(storage, (ctx as any).signal) : { ready: true };
+		return { ...value, selector_ready: selector.ready };
 	});
-	notify(ctx, formatResult(result), "info");
+	notify(ctx, formatResult(result), result?.selector_ready === false ? "warn" : "info");
 }
 
 async function handleHabits(args: string[], ctx: ExtensionCommandContext) {
@@ -2461,25 +2582,24 @@ async function handleConsolidation(command: string | undefined, ctx: ExtensionCo
 async function handleSelector(command: string | undefined, ctx: ExtensionCommandContext) {
 	const value = (command || "").toLowerCase();
 	if (value === "calibrate") {
-		return withReviewStorage((storage) => notify(ctx, `${formatAgentExperienceMetrics(collectAgentExperienceMetrics(storage.db, { userId: storage.userId }))}\nManual weekly calibration: spot-check recent inject rows by mode, disable stale habits manually, and keep smart mode opt-in. No recurring reminder is enabled by this command.`, "info"));
+		return withReviewStorage((storage) => notify(ctx, `${formatAgentExperienceMetrics(collectAgentExperienceMetrics(storage.db, { userId: storage.userId }))}\nManual calibration: spot-check recent bounded vector+judge selections and disable stale habits manually. No recurring reminder is enabled by this command.`, "info"));
 	}
 	if (value !== "on" && value !== "off") {
 		return notify(ctx, "Usage: /experience selector on|off|calibrate", "warn");
 	}
-	const { config, path } = await setAgentExperienceSelectorEnabled(value === "on");
+	if (value === "on") return prepareAndEnableSelector(ctx);
+	const { config, path } = await setAgentExperienceSelectorEnabled(false);
+	await closeSelectorLocalEmbeddingAdapter().catch(() => undefined);
 	notify(
 		ctx,
 		[
-			`Use approved habits before replies: ${value === "on" ? "ON" : "OFF"}`,
+			"Use approved habits before replies: OFF",
 			`Config file: ${path}`,
-			"This works only when Experience is ON and approved habits exist.",
-			config.selector_mode === "instant"
-				? "Current mode: local/no-network reminders from approved habits only."
-				: "Current mode: smart reminders may call the configured model/provider with bounded redacted summaries.",
+			"Private local vector files are preserved for explicit re-enable.",
 			"It never uses unreviewed suggestions and never approves habits by itself.",
 			`Save chat examples locally: ${config.enabled && config.capture_enabled ? "ON" : "OFF"}`,
 		].join("\n"),
-		value === "on" ? "warn" : "info",
+		"info",
 	);
 }
 
@@ -2527,11 +2647,12 @@ function usage(topic = "") {
 	if (normalized === "selector") {
 		return [
 			"Agent Experience selector:",
-			"/experience selector on       # pre-injection; instant mode by default; local lexical/no-network",
+			"/experience selector on       # explicit local-vector preparation + bounded applicability judge",
 			"/experience selector off",
 			"/experience selector calibrate # manual aggregate check; no recurring reminder",
-			"Selector defaults disabled. When enabled, default mode is instant (local lexical/no-network). Smart mode is opt-in and may call the configured model/provider.",
-			"Selector only considers active same-user habits and never promotes habits.",
+			"Selector defaults disabled. Enabling prepares private local condition vectors and discloses one bounded configured-model applicability call per eligible request.",
+			"There is no lexical-only or vector-only guidance path. Missing vectors/auth, timeout, cancellation, malformed output, low confidence, or ambiguity produce no guidance.",
+			"Selector only considers active same-user law-valid habits and never promotes habits.",
 		].join("\n");
 	}
 	if (normalized === "troubleshoot") {
@@ -2556,7 +2677,7 @@ function usage(topic = "") {
 			"/experience habit accept|reject|disable|enable <id> --checksum <checksum>",
 			"/experience habits report",
 			"experience-consolidate is a maintainer/test CLI and still requires explicit fixture/model output.",
-			"Advanced smart reminders may call a configured model/provider; normal setup keeps them off.",
+			"Approved-habit reminders require private local vectors plus the bounded configured applicability judge; normal setup keeps them off.",
 		].join("\n");
 	}
 	return [
@@ -2716,8 +2837,9 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 			storage = await openExistingExperienceStorage(paths.root, { userId: getConfiguredUserId() });
 			const law = await readConfiguredLawSnapshot(storage.root, config);
 			const adapter = selectorModelAdapter ?? createPiSelectorModelAdapter(ctx);
+			const embeddingAdapter = await selectorRuntimeEmbeddingAdapter(storage.root);
 			const now = new Date().toISOString();
-			const result = await runSelectorRuntime(storage.db, { userId: storage.userId, prompt, config, law, now, adapter });
+			const result = await runSelectorRuntime(storage.db, { userId: storage.userId, prompt, config, law, now, adapter, embeddingAdapter, signal: ctx.signal });
 			if (!result.injected || !result.message) return;
 			try {
 				pendingSteeringRuns.set(steeringScope, {
@@ -2902,6 +3024,7 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 	pi.on("session_shutdown", async (_event, ctx) => {
 		const steeringScope = steeringScopeFromContext(ctx);
 		if (steeringScope) pendingSteeringRuns.delete(steeringScope);
+		await closeSelectorLocalEmbeddingAdapter().catch(() => undefined);
 		const breakScope = breakInScopeFromContext(ctx);
 		if (breakScope) {
 			const key = breakInScopeKey(breakScope);

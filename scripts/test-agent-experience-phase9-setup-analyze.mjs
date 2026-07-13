@@ -4,13 +4,14 @@ import { existsSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import agentExperienceExtension, { __buildAgentExperienceConsolidationSystemPromptForTest, __formatAgentExperienceAnalyzeFailureForTest, __getAgentExperienceDetailPanelOptionsForTest, __normalizeAgentExperienceConsolidationModelOutputForTest, __setAgentExperienceConsolidationAdapterForTest } from '../extensions/agent-experience/index.ts';
-import { getAgentExperiencePaths, readAgentExperienceConfig, setAgentExperienceCaptureActive, setAgentExperienceConsolidationEnabled, setAgentExperienceConsolidationModel } from '../extensions/agent-experience/src/paths.ts';
+import agentExperienceExtension, { __buildAgentExperienceConsolidationSystemPromptForTest, __formatAgentExperienceAnalyzeFailureForTest, __getAgentExperienceDetailPanelOptionsForTest, __normalizeAgentExperienceConsolidationModelOutputForTest, __setAgentExperienceConsolidationAdapterForTest, __setAgentExperienceSelectorAdapterForTest, __setAgentExperienceSelectorEmbeddingAdapterForTest } from '../extensions/agent-experience/index.ts';
+import { getAgentExperiencePaths, readAgentExperienceConfig, setAgentExperienceCaptureActive, setAgentExperienceConsolidationEnabled, setAgentExperienceConsolidationModel, writeAgentExperienceConfig } from '../extensions/agent-experience/src/paths.ts';
 import { canonicalJson } from '../extensions/agent-experience/src/storage/checksum.ts';
 import { ensurePrivateRoot, resolvePrivatePath } from '../extensions/agent-experience/src/storage/private-root.ts';
 import { observationChecksumForTest, observationPairRefForTest } from '../extensions/agent-experience/src/storage/observations.ts';
 import { initExperienceStorage, insertStorageRecord } from '../extensions/agent-experience/src/storage/sqlite.ts';
 import { listHabitDuplicates, upsertHabitDuplicate } from '../extensions/agent-experience/src/semantic/storage.ts';
+import { LOCAL_EMBEDDING_DIMENSIONS, LOCAL_EMBEDDING_MODEL, LOCAL_EMBEDDING_PROVIDER } from '../extensions/agent-experience/src/semantic/local-model-manifest.ts';
 
 function makeObservation({ seq, previous = null, createdAt, user, assistant }) {
   const base = {
@@ -125,6 +126,26 @@ const ctx = {
     notify(message, level) { notes.push({ message, level }); },
   },
 };
+
+const selectorVector = new Float32Array(LOCAL_EMBEDDING_DIMENSIONS);
+selectorVector[0] = 1;
+const selectorEmbedding = {
+  id: `${LOCAL_EMBEDDING_PROVIDER}:${LOCAL_EMBEDDING_MODEL}:${LOCAL_EMBEDDING_DIMENSIONS}`,
+  provider: LOCAL_EMBEDDING_PROVIDER,
+  model: LOCAL_EMBEDDING_MODEL,
+  dimensions: LOCAL_EMBEDDING_DIMENSIONS,
+  async embed(texts, { signal } = {}) {
+    if (signal?.aborted) throw signal.reason || new Error('aborted');
+    return texts.map(() => selectorVector);
+  },
+};
+__setAgentExperienceSelectorEmbeddingAdapterForTest(selectorEmbedding);
+__setAgentExperienceSelectorAdapterForTest({
+  async select({ candidateIds, signal }) {
+    assert.ok(signal instanceof AbortSignal);
+    return { schema_version: 2, judgments: candidateIds.map((id) => ({ id, applicable: true, confidence_bp: 9500, reason: 'current_applicability' })) };
+  },
+});
 
 setupChoices = ['[ ] Save chat examples locally', 'Choose model for habit learning (openai-codex/gpt-5.5)', 'Done'];
 await commands.get('experience').handler('setup', ctx);
@@ -338,10 +359,19 @@ assert.ok(notes.some((note) => /Approved suggestion/.test(note.message || '')), 
 assert.ok(!notes.some((note) => /Suggested habit\n|Suggested habits waiting for review|When:/.test(note.message || '')), 'review details must not be dumped into chat history notifications');
 assert.equal(existsSync(resolvePrivatePath(paths.root, 'law.md')), true, 'first-run approval must create missing safety file inside setup');
 
+configResult = await readAgentExperienceConfig(paths);
+await writeAgentExperienceConfig({ ...configResult.config, selector_model: 'openai-codex/gpt-5.5' }, paths);
+authHeadersAvailable = false;
 setupChoices = ['[ ] Use approved habits before replies', 'Done'];
 await commands.get('experience').handler('setup', ctx);
 configResult = await readAgentExperienceConfig(paths);
+assert.equal(configResult.config.selector_enabled, false, 'missing judge auth must keep reminders off before local asset preparation');
+authHeadersAvailable = true;
+setupChoices = ['[ ] Use approved habits before replies', 'Prepare private local vectors and enable reminders', 'Done'];
+await commands.get('experience').handler('setup', ctx);
+configResult = await readAgentExperienceConfig(paths);
 assert.equal(configResult.config.selector_enabled, true);
+assert.ok(notes.some((note) => /local vectors first|bounded openai-codex\/gpt-5\.5 applicability call/i.test(note.message || '')), 'enable flow must disclose mandatory local vectors plus one bounded judge call');
 
 notes.length = 0;
 let statusPanelSeen = false;
@@ -674,5 +704,7 @@ assert.equal(configResult.config.capture_enabled, false, 'custom setup off actio
 assert.equal(configResult.config.selector_enabled, false, 'custom setup off action must turn approved-habit reminders off');
 
 __setAgentExperienceConsolidationAdapterForTest(undefined);
+__setAgentExperienceSelectorAdapterForTest(undefined);
+__setAgentExperienceSelectorEmbeddingAdapterForTest(undefined);
 await rm(temp, { recursive: true, force: true });
 console.log('agent-experience phase9 setup analyze checks passed');

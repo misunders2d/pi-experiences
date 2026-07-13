@@ -115,7 +115,9 @@ Shared locks carry random token, PID, hostname, and creation time. Live locks bl
 
 ## Selector/reminders and visible steering provenance
 
-Approved-habit reminders are off by default. There is no daily quota: every genuinely matching eligible message may receive guidance. Default instant mode is lexical, local, and no-network. It matches meaningful condition tokens only, ignores behavior text/common stopwords, and keeps only the strongest overlap tier; genuinely tied habits may all apply. Only active same-user approved habits are candidates.
+Approved-habit reminders are off by default. There is no daily quota: every genuinely applicable eligible message may receive guidance. Enabling explicitly prepares private local multilingual vectors for eligible approved habit conditions and discloses one bounded configured-model applicability call per request. Package installation/update never downloads assets or enables reminders.
+
+Every enabled attempt embeds the request locally and ephemerally, validates the complete eligible condition-vector cache, and retrieves a bounded condition-only set. The judge receives only a bounded redacted request summary plus retrieved IDs/conditions; behavior, similarity, confidence/staleness, unretrieved habits, source evidence, and audit data are excluded. It must reject mere mention, quotation, negation, generic shared wording, hypothetical/future intent, low confidence, and ambiguity. There is no lexical-only or vector-only injection path. Missing/corrupt vectors/assets, auth, timeout, cancellation, malformed/partial output, or state drift produces no guidance.
 
 A habit may steer one specific TUI response only when Pi can append response-adjacent provenance after the triggering user message and before provider context is returned:
 
@@ -125,7 +127,7 @@ A habit may steer one specific TUI response only when Pi can append response-adj
 
 Each selected condition gets an exact collapsed line; expanded rendering shows every selected approved `When:` / `Do:` pair. No marker means that response received no habit guidance. The entry is durable local session provenance and does not participate in LLM context. A separate non-persisted hidden guidance message enters only that response's provider context and is repeated across its tool loop without adding markers. The entry stores no raw prompt, internal ID, checksum, confidence, provider/model, source ref, raw example, path, or audit payload. New user messages cannot inherit old steering. Non-TUI modes and renderer/build/append failures suppress steering rather than hide it.
 
-Selector hit logs still persist no raw prompts or injected guidance; `prompt_hash` remains `omitted`. They support audit and provenance, never a quota. The response-adjacent marker is authoritative proof that guidance reached that response. The configured law file is synchronously revalidated at activation. Current law checking combines freshness/integrity with a deterministic dangerous-pattern denylist; it is not full semantic interpretation of law text.
+Selector hit logs persist no prompt text/hash derivative/vector, similarities, judge confidence/reasons, sessions, or injected guidance; `prompt_hash` remains the fixed sentinel `omitted`. They support bounded audit/provenance, never a quota. Selected rows are re-read after judgment and must retain their user, active approval, checksum, law, confidence/freshness, and condition identity. The response-adjacent marker is authoritative proof that guidance reached that response. Current law checking combines freshness/integrity with a deterministic dangerous-pattern denylist; it is not full semantic interpretation of law text.
 
 ## State layout
 

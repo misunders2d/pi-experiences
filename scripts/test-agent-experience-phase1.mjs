@@ -4,9 +4,10 @@ import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import agentExperienceExtension from '../extensions/agent-experience/index.ts';
+import agentExperienceExtension, { __setAgentExperienceSelectorEmbeddingAdapterForTest } from '../extensions/agent-experience/index.ts';
 import { formatAgentExperienceConfig, parseAgentExperienceConfig } from '../extensions/agent-experience/src/config.ts';
 import { getAgentExperiencePaths, readAgentExperienceConfig, setAgentExperienceSelectorEnabled } from '../extensions/agent-experience/src/paths.ts';
+import { LOCAL_EMBEDDING_DIMENSIONS, LOCAL_EMBEDDING_MODEL, LOCAL_EMBEDDING_PROVIDER } from '../extensions/agent-experience/src/semantic/local-model-manifest.ts';
 
 const root = await mkdtemp(join(tmpdir(), 'agent-experience-phase1-'));
 process.env.AX_STATE_ROOT = join(root, 'state');
@@ -44,8 +45,23 @@ assert.equal(existsSync(paths.root), false, 'extension load must not create stat
 
 const notes = [];
 let setupChoices = [];
+const selectorVector = new Float32Array(LOCAL_EMBEDDING_DIMENSIONS);
+selectorVector[0] = 1;
+__setAgentExperienceSelectorEmbeddingAdapterForTest({
+  id: `${LOCAL_EMBEDDING_PROVIDER}:${LOCAL_EMBEDDING_MODEL}:${LOCAL_EMBEDDING_DIMENSIONS}`,
+  provider: LOCAL_EMBEDDING_PROVIDER,
+  model: LOCAL_EMBEDDING_MODEL,
+  dimensions: LOCAL_EMBEDDING_DIMENSIONS,
+  async embed(texts) { return texts.map(() => selectorVector); },
+});
+const selectorModel = { provider: 'openai-codex', id: 'gpt-5.4-mini' };
 const ctx = {
   cwd: process.cwd(),
+  modelRegistry: {
+    find(provider, id) { return provider === selectorModel.provider && id === selectorModel.id ? selectorModel : undefined; },
+    hasConfiguredAuth() { return true; },
+    async getApiKeyAndHeaders() { return { ok: true, apiKey: 'test-not-used' }; },
+  },
   ui: {
     async select(title, options) {
       notes.push({ message: `${title}: ${options.join(' | ')}`, level: 'select', options });
@@ -222,7 +238,7 @@ await commands.get('experience').handler('setup consolidation off', ctx);
 readResult = await readAgentExperienceConfig(paths);
 assert.equal(readResult.config.consolidation_enabled, false, 'advanced/backcompat setup subcommand can disable manual consolidation flag');
 
-setupChoices = ['[ ] Use approved habits before replies', 'Create default safety file and continue', undefined];
+setupChoices = ['[ ] Use approved habits before replies', 'Create default safety file and continue', 'Prepare private local vectors and enable reminders', undefined];
 await commands.get('experience').handler('setup', ctx);
 assert.doesNotMatch(notes.at(-1).message, plainSetupLeakPattern, 'use-habits setup confirmation must not expose internal flag names');
 readResult = await readAgentExperienceConfig(paths);
@@ -249,7 +265,7 @@ setupChoices = ['Cancel'];
 await commands.get('experience').handler('setup use-habits on', ctx);
 readResult = await readAgentExperienceConfig(paths);
 assert.equal(readResult.config.selector_enabled, false, 'direct setup use-habits on must stay disabled when safety file prompt is canceled');
-setupChoices = ['Create default safety file and continue'];
+setupChoices = ['Create default safety file and continue', 'Prepare private local vectors and enable reminders'];
 await commands.get('experience').handler('setup use-habits on', ctx);
 assert.doesNotMatch(notes.at(-1).message, plainSetupLeakPattern, 'plain use-habits setup command must not expose internal flag names');
 readResult = await readAgentExperienceConfig(paths);
@@ -257,6 +273,7 @@ assert.equal(readResult.config.selector_enabled, true, 'plain setup subcommand c
 await commands.get('experience').handler('setup use-habits off', ctx);
 readResult = await readAgentExperienceConfig(paths);
 assert.equal(readResult.config.selector_enabled, false, 'plain setup subcommand can disable approved-habit reminders');
+setupChoices = ['Prepare private local vectors and enable reminders'];
 await commands.get('experience').handler('setup guidance on', ctx);
 readResult = await readAgentExperienceConfig(paths);
 assert.equal(readResult.config.selector_enabled, true, 'advanced/backcompat setup subcommand can enable guidance');
@@ -291,6 +308,7 @@ await rm(join(paths.root, 'ledger.sqlite'), { force: true });
 
 await commands.get('experience').handler('capture on', ctx);
 await commands.get('experience').handler('consolidation on', ctx);
+setupChoices = ['Prepare private local vectors and enable reminders'];
 await commands.get('experience').handler('selector on', ctx);
 readResult = await readAgentExperienceConfig(paths);
 assert.equal(readResult.config.capture_enabled, true, 'advanced capture gate can be enabled independently');
@@ -365,5 +383,6 @@ assert.equal(readResult.config.timer_enabled, false);
 
 await commands.get('experience').handler('nonsense', ctx);
 assert.match(notes.at(-1).message, /Unknown subcommand/);
+__setAgentExperienceSelectorEmbeddingAdapterForTest(undefined);
 
 console.log('agent-experience phase1 checks passed');

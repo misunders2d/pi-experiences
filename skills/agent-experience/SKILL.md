@@ -161,7 +161,9 @@ Minimized evidence, provenance, integrity checks, and review audit remain. Redac
 
 ## Approved-habit reminders and steering provenance
 
-Reminders are off by default. There is no daily quota: every genuinely matching eligible message may receive approved habit guidance. Never invent or recommend an arbitrary per-day guidance cap. Default instant mode uses local lexical/no-network matching against meaningful condition tokens only, never behavior text or common stopwords. It selects only the strongest overlap tier; several genuinely tied habits may apply. Only active same-user approved habits can be selected.
+Reminders are off by default. There is no daily quota: every genuinely applicable eligible message may receive approved habit guidance. Never invent or recommend an arbitrary per-day guidance cap. Enabling reminders explicitly prepares pinned private local vectors for eligible approved habit conditions and discloses one bounded configured-model applicability call per eligible request. Package install/update never downloads assets or enables reminders.
+
+Every enabled attempt must embed the request locally and ephemerally, validate the complete eligible condition-vector cache, retrieve a bounded condition-only candidate set, then obtain exact-coverage current-applicability judgments. Behavior text must never cause retrieval or enter the judge payload. Send only a bounded redacted request summary plus retrieved IDs/conditions; exclude scores, confidence/staleness, unretrieved habits, sources, paths, and audit data. Reject mention, quotation, negation, generic shared wording, hypothetical/future intent, low confidence, ambiguity, malformed/partial output, timeout, cancellation, missing auth/assets/vectors, or state drift. There is no lexical-only or vector-only injection fallback.
 
 Never show a generic “habits active” state and never steer invisibly. For every actual TUI injection, Pi must place response-specific provenance after the triggering user message and immediately before that response. Each collapsed line identifies one exact selected condition:
 
@@ -173,9 +175,7 @@ Expanded rendering shows every exact approved `When:` / `Do:` pair selected for 
 
 Only after marker append succeeds may a separate non-persisted guidance message enter that response's model context. Reuse it across the same tool loop without another marker; never let a new user message inherit prior steering. If the interface is not the Pi TUI, or marker registration/build/append fails, suppress habit guidance and emit only the static sanitized diagnostic. Never fall back to hidden steering or `sendMessage`.
 
-Never inject from suggestions, disabled/dormant/suppressed/archived habits, evidence, quarantine, reports, or raw observations. Selector hit logs support audit/provenance, not quotas. They do not persist raw prompt/session/injected text; `prompt_hash` remains `omitted`; the separate provenance marker stores approved wording only.
-
-Optional advanced matching is separately controlled and must fail closed.
+Never inject from suggestions, disabled/dormant/suppressed/archived habits, evidence, quarantine, reports, or raw observations. Re-read every selected row after judgment and revalidate same user, active approval, checksum, law, confidence/freshness, and condition identity. Selector hit logs support audit/provenance, not quotas. They persist no prompt text/hash derivative/vector, similarities, judge confidence/reasons, session, or injected text; `prompt_hash` remains the fixed sentinel `omitted`; the separate provenance marker stores approved wording only.
 
 ## Law
 

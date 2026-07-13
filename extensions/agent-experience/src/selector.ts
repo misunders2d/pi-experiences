@@ -6,6 +6,13 @@ import { activationEligibilityFromHabit, checkHabitConflict, checkHabitLaw, reva
 import { runAtomicSemanticActivation } from "./semantic/service.ts";
 import type { EmbeddingAdapter, SemanticDedupePolicy } from "./semantic/types.ts";
 import type { AgentExperienceConfig } from "./config.ts";
+import {
+	embedSelectorPrompt,
+	readSelectorConditionVectors,
+	retrieveSelectorCandidates,
+	selectorConditionIdentityChecksum,
+	type RetrievedSelectorCandidate,
+} from "./selector-vector.ts";
 
 export interface SelectorModelAdapter {
 	select(input: { prompt: string; candidateIds: string[]; timeoutMs: number; model: string; signal?: AbortSignal }): Promise<unknown>;
@@ -22,8 +29,22 @@ export interface SelectorCandidate {
 	staleness: number;
 	checksum: string;
 	law_hash?: string;
-	score?: number;
 }
+
+export interface SelectorJudgment {
+	id: string;
+	confidence_bp: number;
+}
+
+const SELECTOR_JUDGMENT_REASONS = new Set([
+	"current_applicability",
+	"mere_mention",
+	"quoted_text",
+	"negated",
+	"generic_wording",
+	"hypothetical_or_future",
+	"not_currently_relevant",
+]);
 
 function parseJson(text: string | null | undefined): any {
 	try {
@@ -44,44 +65,9 @@ function boundedJson(value: unknown, max = 12000): string {
 	return text;
 }
 
-function normalizeText(value: unknown): string {
-	return String(value ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().replace(/\s+/g, " ");
-}
-
-const SELECTOR_STOPWORDS = new Set([
-	"a", "an", "and", "are", "as", "ask", "asked", "asks", "at", "be", "been", "being", "but", "by",
-	"can", "could", "did", "do", "does", "for", "from", "had", "has", "have", "how", "i", "if", "in", "into",
-	"is", "it", "me", "my", "of", "on", "or", "our", "please", "reply", "request", "respond", "that", "the",
-	"their", "them", "then", "there", "these", "they", "this", "those", "to", "us", "user", "users", "was",
-	"we", "were", "what", "when", "whenever", "where", "which", "while", "who", "why", "will", "with", "would",
-	"you", "your",
-]);
-
-function tokens(value: unknown): Set<string> {
-	return new Set(normalizeText(value).split(" ").filter((token) => token.length >= 3 && !SELECTOR_STOPWORDS.has(token)).slice(0, 80));
-}
-
-export function lexicalOverlapScore(prompt: string, candidate: SelectorCandidate): number {
-	const promptTokens = tokens(prompt);
-	// Applicability comes from When/condition wording. Behavior text describes what
-	// to do after selection and must never make an otherwise unrelated habit match.
-	const conditionTokens = tokens(candidate.condition);
-	let overlap = 0;
-	for (const token of conditionTokens) if (promptTokens.has(token)) overlap += 1;
-	return overlap;
-}
-
-function overlapScore(prompt: string, candidate: SelectorCandidate): number {
-	const overlap = lexicalOverlapScore(prompt, candidate);
-	const confidence = candidate.confidence_bp / 10000;
-	const activation = Number.isFinite(candidate.activation) ? candidate.activation : 0;
-	const stalenessPenalty = Math.max(0, Math.min(1, candidate.staleness || 0));
-	return overlap * 1000 + confidence * 100 + activation * 10 - stalenessPenalty * 100;
-}
-
 function promptHash(_prompt: string): string {
-	// Do not persist hashes or derivatives of prompt text: even deterministic hashes of
-	// redacted prompts are linkable/dictionary-checkable user-content derivatives.
+	// Prompt text, hashes, vectors, similarities, and other derivatives are never
+	// persisted. This fixed sentinel is audit-compatible but not user-content-derived.
 	return "omitted";
 }
 
@@ -116,77 +102,120 @@ export function insertSelectorHitLog(db: any, input: { userId: string; habitId?:
 	return { id, checksum, ...row };
 }
 
+function selectorCandidateFromRow(row: any): SelectorCandidate {
+	const data = parseJson(row.data_json);
+	return redactJson({
+		id: row.id,
+		user_id: row.user_id,
+		condition: row.condition || "",
+		behavior: row.behavior || "",
+		polarity: Number(row.polarity),
+		confidence_bp: Number(row.confidence_bp),
+		activation: Number(row.activation),
+		staleness: Number(row.staleness),
+		checksum: row.checksum,
+		law_hash: typeof data.law_hash === "string" ? data.law_hash : undefined,
+	}) as SelectorCandidate;
+}
+
+function assertValidHabitStorageRow(row: any): void {
+	const data = parseJson(row.data_json);
+	const rebuilt = buildTypedStorageRow("habits", {
+		id: row.id,
+		userId: row.user_id,
+		data: {
+			...data,
+			record_kind: row.record_kind,
+			schema_version: Number(row.schema_version),
+			status: row.status,
+			habit_id: row.habit_id,
+			condition: row.condition,
+			behavior: row.behavior,
+			polarity: Number(row.polarity),
+			confidence_bp: Number(row.confidence_bp),
+			activation: Number(row.activation),
+			staleness: Number(row.staleness),
+		},
+		createdAt: row.created_at,
+		updatedAt: row.updated_at,
+	});
+	if (rebuilt.checksum !== row.checksum) throw new Error("selector_habit_integrity_failed");
+}
+
 export function selectActiveSelectorSnapshot(db: any, input: { userId: string }): SelectorCandidate[] {
 	const userId = normalizeUserId(input.userId);
-	return db.prepare("SELECT id, user_id, status, condition, behavior, polarity, confidence_bp, activation, staleness, checksum, data_json FROM habits WHERE user_id = ? AND status = 'active' ORDER BY id").all(userId)
+	return db.prepare("SELECT * FROM habits WHERE user_id = ? AND status = 'active' ORDER BY id").all(userId)
 		.map((row: any) => {
-			const data = parseJson(row.data_json);
-			return redactJson({ id: row.id, user_id: row.user_id, condition: row.condition || "", behavior: row.behavior || "", polarity: Number(row.polarity), confidence_bp: Number(row.confidence_bp), activation: Number(row.activation), staleness: Number(row.staleness), checksum: row.checksum, law_hash: typeof data.law_hash === "string" ? data.law_hash : undefined }) as SelectorCandidate;
+			assertValidHabitStorageRow(row);
+			return selectorCandidateFromRow(row);
 		});
 }
 
-export function preNarrowSelectorCandidates(candidates: SelectorCandidate[], input: { prompt: string; limit?: number; minConfidenceBp?: number; stalenessMax?: number }): SelectorCandidate[] {
-	const limit = Math.max(0, Math.min(20, Math.trunc(input.limit ?? 20)));
+export function filterEligibleSelectorCandidates(candidates: SelectorCandidate[], input: { minConfidenceBp?: number; stalenessMax?: number }): SelectorCandidate[] {
 	const minConfidence = Math.max(0, Math.min(10000, Math.trunc(input.minConfidenceBp ?? 0)));
 	const stalenessMax = Number.isFinite(input.stalenessMax) ? Number(input.stalenessMax) : Number.POSITIVE_INFINITY;
 	return candidates
 		.filter((candidate) => candidate.confidence_bp >= minConfidence && candidate.staleness <= stalenessMax)
-		.map((candidate) => ({ ...candidate, score: overlapScore(input.prompt, candidate) }))
-		.sort((a, b) => (b.score! - a.score!) || b.confidence_bp - a.confidence_bp || a.id.localeCompare(b.id))
-		.slice(0, limit);
+		.sort((left, right) => right.confidence_bp - left.confidence_bp || left.id.localeCompare(right.id));
 }
 
-export function selectInstantSelectorCandidates(candidates: SelectorCandidate[], input: { prompt: string; maxHabits: number; minOverlapScore: number; minConfidenceBp: number }): Array<{ id: string; confidence_bp: number }> {
-	const max = Math.max(0, Math.min(3, Math.trunc(input.maxHabits)));
-	const minOverlap = Math.max(1, Math.trunc(input.minOverlapScore));
-	const minConfidence = Math.max(0, Math.min(10000, Math.trunc(input.minConfidenceBp)));
-	const ranked = candidates
-		.map((candidate) => ({ candidate, overlap: lexicalOverlapScore(input.prompt, candidate) }))
-		.filter((item) => item.overlap >= minOverlap && item.candidate.confidence_bp >= minConfidence)
-		.sort((a, b) => (b.overlap - a.overlap) || b.candidate.confidence_bp - a.candidate.confidence_bp || b.candidate.activation - a.candidate.activation || a.candidate.id.localeCompare(b.candidate.id));
-	const highestOverlap = ranked[0]?.overlap ?? 0;
-	return ranked
-		.filter((item) => item.overlap === highestOverlap)
-		.slice(0, max)
-		.map((item) => ({ id: item.candidate.id, confidence_bp: item.candidate.confidence_bp }));
+function boundedPromptSummary(prompt: string): string {
+	const summary = redactText(prompt).trim().replace(/\s+/g, " ").slice(0, 500);
+	if (containsUnredactedSensitiveText(summary)) throw new Error("Selector prompt contains unredacted sensitive text");
+	return summary;
 }
 
 export function buildSelectorPrompt(candidates: SelectorCandidate[], input: { prompt: string; maxHabits: number }): string {
-	const safePromptSummary = normalizeText(redactText(input.prompt)).slice(0, 500);
-	const payload = redactJson({ schema_version: 1, task: "select_agent_experience_habits", max_selected: Math.max(0, Math.min(3, Math.trunc(input.maxHabits))), user_prompt_summary: safePromptSummary, candidates: candidates.map((candidate) => ({ id: candidate.id, condition: candidate.condition, behavior: candidate.behavior, confidence_bp: candidate.confidence_bp, staleness: candidate.staleness })) });
-	const text = canonicalJson(payload);
+	const payload = {
+		schema_version: 2,
+		task: "judge_current_habit_applicability",
+		max_selected: Math.max(0, Math.min(3, Math.trunc(input.maxHabits))),
+		user_request_summary: boundedPromptSummary(input.prompt),
+		candidates: candidates.map((candidate) => ({ id: candidate.id, condition: candidate.condition })),
+	};
+	const text = canonicalJson(redactJson(payload));
 	if (text.length > 12000) throw new Error("Selector prompt too large");
 	if (containsUnredactedSensitiveText(text)) throw new Error("Selector prompt contains unredacted sensitive text");
 	return text;
 }
 
-export function parseSelectorModelOutput(output: unknown, input: { candidateIds: string[]; maxSelected: number; minConfidenceBp: number }) {
+export function parseSelectorModelOutput(output: unknown, input: { candidateIds: string[]; maxSelected: number; minConfidenceBp: number }): SelectorJudgment[] {
 	if (!output || typeof output !== "object" || Array.isArray(output)) throw new Error("Invalid selector output");
 	const keys = Object.keys(output as Record<string, unknown>).sort();
-	if (keys.join(",") !== "schema_version,selected") throw new Error("Unsupported selector output keys");
-	const obj = output as { schema_version?: unknown; selected?: unknown };
-	if (obj.schema_version !== 1) throw new Error("Unsupported selector schema version");
-	if (!Array.isArray(obj.selected)) throw new Error("Invalid selector selected list");
-	const allowed = new Set(input.candidateIds);
+	if (keys.join(",") !== "judgments,schema_version") throw new Error("Unsupported selector output keys");
+	const obj = output as { schema_version?: unknown; judgments?: unknown };
+	if (obj.schema_version !== 2) throw new Error("Unsupported selector schema version");
+	if (!Array.isArray(obj.judgments)) throw new Error("Invalid selector judgment list");
+	const candidateIds = input.candidateIds.map(String);
+	const allowed = new Set(candidateIds);
+	if (allowed.size !== candidateIds.length || obj.judgments.length !== candidateIds.length) throw new Error("Incomplete selector judgment coverage");
 	const seen = new Set<string>();
-	const max = Math.max(0, Math.min(3, Math.trunc(input.maxSelected)));
-	if (obj.selected.length > max) throw new Error("Too many selector selections");
-	return obj.selected.map((item) => {
-		if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("Invalid selector selection");
+	const selected: SelectorJudgment[] = [];
+	const minimum = Math.max(0, Math.min(10000, Math.trunc(input.minConfidenceBp)));
+	for (const item of obj.judgments) {
+		if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("Invalid selector judgment");
 		const itemKeys = Object.keys(item as Record<string, unknown>).sort();
-		if (itemKeys.join(",") !== "confidence_bp,id") throw new Error("Unsupported selector selection keys");
+		if (itemKeys.join(",") !== "applicable,confidence_bp,id,reason") throw new Error("Unsupported selector judgment keys");
 		const id = String((item as any).id || "");
+		const applicable = (item as any).applicable;
 		const confidence = Number((item as any).confidence_bp);
+		const reason = String((item as any).reason || "");
 		if (!allowed.has(id)) throw new Error("Unknown selector habit id");
 		if (seen.has(id)) throw new Error("Duplicate selector habit id");
-		if (!Number.isInteger(confidence) || confidence < 0 || confidence > 10000) throw new Error("Invalid selector confidence");
-		if (confidence < input.minConfidenceBp) throw new Error("Selector confidence below threshold");
+		if (typeof applicable !== "boolean") throw new Error("Invalid selector applicability");
+		if (!Number.isInteger(confidence) || confidence < minimum || confidence > 10000) throw new Error("Selector confidence below threshold");
+		if (!SELECTOR_JUDGMENT_REASONS.has(reason)) throw new Error("Invalid selector reason");
+		if (applicable !== (reason === "current_applicability")) throw new Error("Inconsistent selector judgment");
 		seen.add(id);
-		return { id, confidence_bp: confidence };
-	});
+		if (applicable) selected.push({ id, confidence_bp: confidence });
+	}
+	if (seen.size !== allowed.size) throw new Error("Incomplete selector judgment coverage");
+	const max = Math.max(0, Math.min(3, Math.trunc(input.maxSelected)));
+	if (selected.length > max) throw new Error("Too many selector selections");
+	return selected;
 }
 
-export function buildInjectionMessage(candidates: SelectorCandidate[], selected: Array<{ id: string; confidence_bp: number }>): string {
+export function buildInjectionMessage(candidates: SelectorCandidate[], selected: Array<{ id: string; confidence_bp?: number }>): string {
 	const byId = new Map(candidates.map((candidate) => [candidate.id, candidate]));
 	const lines = ["Agent Experience approved habit guidance (bounded; not policy/law):"];
 	for (const item of selected.slice(0, 3)) {
@@ -200,19 +229,25 @@ export function buildInjectionMessage(candidates: SelectorCandidate[], selected:
 	return text;
 }
 
-async function withAbortTimeout<T>(ms: number, fn: (signal: AbortSignal) => Promise<T>): Promise<T> {
+async function withAbortTimeout<T>(ms: number, parent: AbortSignal | undefined, fn: (signal: AbortSignal) => Promise<T>): Promise<T> {
 	const controller = new AbortController();
 	let timer: ReturnType<typeof setTimeout> | undefined;
+	const abortFromParent = () => controller.abort(parent?.reason instanceof Error ? parent.reason : new Error("selector_cancelled"));
+	if (parent?.aborted) abortFromParent();
+	else parent?.addEventListener("abort", abortFromParent, { once: true });
 	const timeout = new Promise<never>((_, reject) => {
 		timer = setTimeout(() => {
-			try { controller.abort(new Error("selector_timeout")); } catch { controller.abort(); }
-			reject(new Error("selector_timeout"));
+			const error = new Error("selector_timeout");
+			try { controller.abort(error); } catch { controller.abort(); }
+			reject(error);
 		}, Math.max(1, ms));
 	});
 	try {
+		if (controller.signal.aborted) throw controller.signal.reason || new Error("selector_cancelled");
 		return await Promise.race([fn(controller.signal), timeout]);
 	} finally {
 		if (timer) clearTimeout(timer);
+		parent?.removeEventListener("abort", abortFromParent);
 	}
 }
 
@@ -220,62 +255,132 @@ function noInjection(reason: string, extra: Record<string, unknown> = {}) {
 	return { injected: false, reason, message: undefined, ...extra };
 }
 
-export async function runSelectorRuntime(db: any, input: { userId: string; prompt: string; config: AgentExperienceConfig; law: LawSnapshot; now: string; adapter?: SelectorModelAdapter }) {
+function revalidateSelectedCandidates(db: any, input: {
+	userId: string;
+	selected: SelectorJudgment[];
+	retrieved: RetrievedSelectorCandidate[];
+	lawHash: string;
+	minConfidenceBp: number;
+	stalenessMax: number;
+}): SelectorCandidate[] {
+	if (!input.selected.length) return [];
+	const userId = normalizeUserId(input.userId);
+	const expected = new Map(input.retrieved.map((item) => [item.candidate.id, item]));
+	const ids = input.selected.map((item) => item.id);
+	const placeholders = ids.map(() => "?").join(",");
+	const rows = db.prepare(`SELECT * FROM habits WHERE user_id = ? AND id IN (${placeholders}) ORDER BY id`).all(userId, ...ids);
+	if (rows.length !== ids.length) throw new Error("selector_snapshot_changed");
+	const fresh = new Map<string, SelectorCandidate>();
+	for (const row of rows) {
+		assertValidHabitStorageRow(row);
+		const prior = expected.get(row.id);
+		if (!prior || row.user_id !== userId || row.status !== "active" || row.checksum !== prior.candidate.checksum) throw new Error("selector_snapshot_changed");
+		const candidate = selectorCandidateFromRow(row);
+		if (candidate.law_hash !== input.lawHash || candidate.confidence_bp < input.minConfidenceBp || candidate.staleness > input.stalenessMax) throw new Error("selector_snapshot_changed");
+		if (selectorConditionIdentityChecksum(candidate.condition) !== prior.conditionIdentity) throw new Error("selector_snapshot_changed");
+		fresh.set(candidate.id, candidate);
+	}
+	return ids.map((id) => fresh.get(id)!).filter(Boolean);
+}
+
+export async function runSelectorRuntime(db: any, input: {
+	userId: string;
+	prompt: string;
+	config: AgentExperienceConfig;
+	law: LawSnapshot;
+	now: string;
+	adapter?: SelectorModelAdapter;
+	embeddingAdapter?: EmbeddingAdapter;
+	signal?: AbortSignal;
+}) {
 	const userId = normalizeUserId(input.userId);
 	const config = input.config;
-	const now = input.now;
 	const hash = promptHash(input.prompt);
 	if (!config.enabled || !config.selector_enabled) return noInjection("selector_disabled");
-	const allActive = selectActiveSelectorSnapshot(db, { userId });
-	const lawFresh = allActive.filter((candidate) => candidate.law_hash === input.law.hash);
-	const candidates = preNarrowSelectorCandidates(lawFresh, { prompt: input.prompt, limit: 20, minConfidenceBp: config.selector_min_confidence_bp, stalenessMax: config.selector_staleness_max });
-	if (!candidates.length) return noInjection(allActive.length ? "no_fresh_active_candidates" : "no_active_candidates");
-	const mode = config.selector_mode === "smart" ? "smart" : "instant";
+	if (!input.embeddingAdapter) return noInjection("selector_vectors_unavailable");
 	const started = Date.now();
-	let selected: Array<{ id: string; confidence_bp: number }>;
-	if (mode === "instant") {
-		selected = selectInstantSelectorCandidates(candidates, { prompt: input.prompt, maxHabits: config.selector_max_habits, minOverlapScore: config.selector_min_overlap_score, minConfidenceBp: config.selector_min_confidence_bp });
-	} else {
-		if (!input.adapter) return noInjection("selector_unavailable", { candidates });
-		let raw: unknown;
-		try {
-			raw = await withAbortTimeout(config.selector_timeout_ms, (signal) => input.adapter!.select({ prompt: buildSelectorPrompt(candidates, { prompt: input.prompt, maxHabits: config.selector_max_habits }), candidateIds: candidates.map((candidate) => candidate.id), timeoutMs: config.selector_timeout_ms, model: config.selector_model, signal }));
-		} catch (error: any) {
-			return noInjection(String(error?.message || "selector_unavailable"));
-		}
-		try {
-			selected = parseSelectorModelOutput(raw, { candidateIds: candidates.map((candidate) => candidate.id), maxSelected: config.selector_max_habits, minConfidenceBp: config.selector_min_confidence_bp });
-		} catch {
-			return noInjection("invalid_selector_output");
-		}
+	let promptVector: Float32Array;
+	try {
+		promptVector = await embedSelectorPrompt({ prompt: input.prompt, embeddingAdapter: input.embeddingAdapter, signal: input.signal });
+	} catch (error: any) {
+		return noInjection(input.signal?.aborted ? "selector_cancelled" : "selector_vectors_unavailable");
+	}
+	let law: LawSnapshot;
+	try {
+		law = revalidateLawSnapshotSync(input.law);
+	} catch {
+		return noInjection("selector_law_unavailable");
+	}
+	let allActive: SelectorCandidate[];
+	try {
+		allActive = selectActiveSelectorSnapshot(db, { userId });
+	} catch {
+		return noInjection("selector_habit_integrity_failed");
+	}
+	const lawFresh = allActive.filter((candidate) => candidate.law_hash === law.hash);
+	const eligible = filterEligibleSelectorCandidates(lawFresh, { minConfidenceBp: config.selector_min_confidence_bp, stalenessMax: config.selector_staleness_max });
+	if (!eligible.length) return noInjection(allActive.length ? "no_fresh_active_candidates" : "no_active_candidates");
+	let retrieved: RetrievedSelectorCandidate[];
+	try {
+		const conditionVectors = readSelectorConditionVectors(db, { userId, candidates: eligible, embeddingAdapter: input.embeddingAdapter });
+		retrieved = retrieveSelectorCandidates({ candidates: eligible, conditionVectors, promptVector });
+	} catch {
+		return noInjection("selector_vectors_unavailable");
+	}
+	if (!retrieved.length) return noInjection("no_vector_candidates");
+	if (!input.adapter) return noInjection("selector_unavailable");
+	const retrievedCandidates = retrieved.map((item) => item.candidate);
+	let raw: unknown;
+	try {
+		raw = await withAbortTimeout(config.selector_timeout_ms, input.signal, (signal) => input.adapter!.select({
+			prompt: buildSelectorPrompt(retrievedCandidates, { prompt: input.prompt, maxHabits: config.selector_max_habits }),
+			candidateIds: retrievedCandidates.map((candidate) => candidate.id),
+			timeoutMs: config.selector_timeout_ms,
+			model: config.selector_model,
+			signal,
+		}));
+	} catch (error: any) {
+		const reason = String(error?.message || "selector_unavailable");
+		return noInjection(/^selector_[a-z_]+$/.test(reason) ? reason : "selector_unavailable");
+	}
+	let selected: SelectorJudgment[];
+	try {
+		selected = parseSelectorModelOutput(raw, { candidateIds: retrievedCandidates.map((candidate) => candidate.id), maxSelected: config.selector_max_habits, minConfidenceBp: config.selector_min_confidence_bp });
+	} catch {
+		return noInjection("invalid_selector_output");
 	}
 	if (!selected.length) return noInjection("empty_selection");
-	const message = buildInjectionMessage(candidates, selected);
-	const modelLabel = mode === "instant" ? "lexical" : config.selector_model;
+	let selectedCandidates: SelectorCandidate[];
+	try {
+		selectedCandidates = revalidateSelectedCandidates(db, { userId, selected, retrieved, lawHash: law.hash, minConfidenceBp: config.selector_min_confidence_bp, stalenessMax: config.selector_staleness_max });
+	} catch {
+		return noInjection("selector_snapshot_changed");
+	}
+	const message = buildInjectionMessage(selectedCandidates, selected);
+	const modelLabel = config.selector_model;
 	db.exec("BEGIN IMMEDIATE");
 	try {
 		const selectedIds = new Set(selected.map((entry) => entry.id));
-		for (const item of selected) {
-			const candidate = candidates.find((entry) => entry.id === item.id);
-			insertSelectorHitLog(db, { userId, habitId: item.id, action: "inject", selected: true, reason: "selected", confidenceBp: item.confidence_bp, promptHash: hash, latencyMs: Date.now() - started, data: { selected_count: selected.length, model: modelLabel, mode, staleness: candidate?.staleness ?? 0 }, createdAt: now });
+		for (const candidate of selectedCandidates) {
+			insertSelectorHitLog(db, { userId, habitId: candidate.id, action: "inject", selected: true, reason: "selected", confidenceBp: candidate.confidence_bp, promptHash: hash, latencyMs: Date.now() - started, data: { selected_count: selected.length, model: modelLabel, mode: "vector_judge" }, createdAt: input.now });
 		}
-		for (const candidate of candidates) {
-			if (selectedIds.has(candidate.id)) continue;
-			insertSelectorHitLog(db, { userId, habitId: candidate.id, action: "skip", selected: false, reason: "not_selected", promptHash: hash, latencyMs: Date.now() - started, data: { selected_count: selected.length, model: modelLabel, mode, staleness: candidate.staleness }, createdAt: now });
+		for (const item of retrieved) {
+			if (selectedIds.has(item.candidate.id)) continue;
+			insertSelectorHitLog(db, { userId, habitId: item.candidate.id, action: "skip", selected: false, reason: "not_selected", confidenceBp: item.candidate.confidence_bp, promptHash: hash, latencyMs: Date.now() - started, data: { selected_count: selected.length, model: modelLabel, mode: "vector_judge" }, createdAt: input.now });
 		}
 		db.exec("COMMIT");
-	} catch (error) {
+	} catch {
 		try { db.exec("ROLLBACK"); } catch {}
 		return noInjection("hit_log_write_failed");
 	}
-	return { injected: true, reason: "selected", message, selected, candidates, latency_ms: Date.now() - started, mode, model: modelLabel };
+	return { injected: true, reason: "selected", message, selected, candidates: selectedCandidates, latency_ms: Date.now() - started, mode: "vector_judge", model: modelLabel };
 }
 
 export async function measureSelectorLatency(input: { adapter: SelectorModelAdapter; prompt: string; candidates: SelectorCandidate[]; iterations: number; timeoutMs: number; model: string }) {
 	const samples: number[] = [];
 	for (let index = 0; index < input.iterations; index += 1) {
 		const started = Date.now();
-		await withAbortTimeout(input.timeoutMs, (signal) => input.adapter.select({ prompt: buildSelectorPrompt(input.candidates, { prompt: input.prompt, maxHabits: 3 }), candidateIds: input.candidates.map((candidate) => candidate.id), timeoutMs: input.timeoutMs, model: input.model, signal }));
+		await withAbortTimeout(input.timeoutMs, undefined, (signal) => input.adapter.select({ prompt: buildSelectorPrompt(input.candidates, { prompt: input.prompt, maxHabits: 3 }), candidateIds: input.candidates.map((candidate) => candidate.id), timeoutMs: input.timeoutMs, model: input.model, signal }));
 		samples.push(Date.now() - started);
 	}
 	const sorted = samples.slice().sort((a, b) => a - b);

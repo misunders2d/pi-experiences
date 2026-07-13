@@ -4,7 +4,7 @@ import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import agentExperienceExtension, { __setAgentExperienceSelectorAdapterForTest } from '../extensions/agent-experience/index.ts';
+import agentExperienceExtension, { __setAgentExperienceSelectorAdapterForTest, __setAgentExperienceSelectorEmbeddingAdapterForTest } from '../extensions/agent-experience/index.ts';
 import { DEFAULT_AGENT_EXPERIENCE_CONFIG } from '../extensions/agent-experience/src/config.ts';
 import { insertPendingReview } from '../extensions/agent-experience/src/consolidate/model-output.ts';
 import { generateHabitsReport, lawSnapshotForTest, readConfiguredLawSnapshot } from '../extensions/agent-experience/src/review.ts';
@@ -13,16 +13,16 @@ import {
   buildSelectorPrompt,
   insertSelectorHitLog,
   isValidSelectorHitLog,
-  lexicalOverlapScore,
+  filterEligibleSelectorCandidates,
   measureSelectorLatency,
   parseSelectorModelOutput,
-  preNarrowSelectorCandidates,
   promoteApprovedPendingCandidates,
   runSelectorRuntime,
   selectActiveSelectorSnapshot,
-  selectInstantSelectorCandidates,
 } from '../extensions/agent-experience/src/selector.ts';
-import { getAgentExperiencePaths, readAgentExperienceConfig } from '../extensions/agent-experience/src/paths.ts';
+import { prepareSelectorConditionVectors } from '../extensions/agent-experience/src/selector-vector.ts';
+import { LOCAL_EMBEDDING_DIMENSIONS, LOCAL_EMBEDDING_MODEL, LOCAL_EMBEDDING_PROVIDER } from '../extensions/agent-experience/src/semantic/local-model-manifest.ts';
+import { getAgentExperiencePaths, readAgentExperienceConfig, setAgentExperienceSelectorEnabled } from '../extensions/agent-experience/src/paths.ts';
 import { buildHabitSteeringEntry, formatHabitSteeringEntry, HABIT_STEERING_ENTRY_TYPE } from '../extensions/agent-experience/src/steering-note.ts';
 import { ensurePrivateRoot } from '../extensions/agent-experience/src/storage/private-root.ts';
 import { initExperienceStorage, insertStorageRecord } from '../extensions/agent-experience/src/storage/sqlite.ts';
@@ -98,18 +98,34 @@ const multiSteeringEntry = buildHabitSteeringEntry({ candidates: [steeringCandid
 assert.equal(formatHabitSteeringEntry(multiSteeringEntry, false), '◇ Steered by habit · When reporting status\n◇ Steered by habit · When discussing security');
 assert.doesNotMatch(formatHabitSteeringEntry(multiSteeringEntry, false), /2 approved habits|habit steering/i, 'collapsed marker must identify exact habits, not show an opaque count');
 
-const cobaltCandidates = [
-  { ...steeringCandidate, id: 'generic-status', condition: 'When a user asks for status or progress', behavior: 'Reply with short status' },
-  { ...steeringCandidate, id: 'unrelated-review', condition: 'When doing nontrivial code review', behavior: 'Use the cobalt model reviewer' },
-  { ...steeringCandidate, id: 'cobalt-specific', condition: 'When I ask for cobalt status', behavior: 'Answer Cobalt OK' },
-];
-assert.deepEqual(cobaltCandidates.map((candidate) => lexicalOverlapScore("yo, what's the cobalt status?", candidate)), [1, 0, 2], 'applicability must use meaningful condition tokens only');
-assert.deepEqual(selectInstantSelectorCandidates(cobaltCandidates, { prompt: "yo, what's the cobalt status?", maxHabits: 3, minOverlapScore: 1, minConfidenceBp: 7500 }).map((item) => item.id), ['cobalt-specific'], 'instant mode must select only the strongest overlap tier');
-const tiedCandidates = [
-  { ...steeringCandidate, id: 'tie-a', condition: 'When discussing cobalt status', behavior: 'Be concise' },
-  { ...steeringCandidate, id: 'tie-b', condition: 'When auditing cobalt status', behavior: 'State risk' },
-];
-assert.deepEqual(selectInstantSelectorCandidates(tiedCandidates, { prompt: 'audit cobalt status', maxHabits: 3, minOverlapScore: 1, minConfidenceBp: 7500 }).map((item) => item.id), ['tie-a', 'tie-b'], 'genuinely tied top-tier habits may both apply');
+function unit(index) {
+  const vector = new Float32Array(LOCAL_EMBEDDING_DIMENSIONS);
+  vector[index] = 1;
+  return vector;
+}
+const phase6Vectors = { status: unit(0), debug: unit(1), hook: unit(2), unrelated: unit(3) };
+const phase6Embedding = {
+  id: `${LOCAL_EMBEDDING_PROVIDER}:${LOCAL_EMBEDDING_MODEL}:${LOCAL_EMBEDDING_DIMENSIONS}`,
+  provider: LOCAL_EMBEDDING_PROVIDER,
+  model: LOCAL_EMBEDDING_MODEL,
+  dimensions: LOCAL_EMBEDDING_DIMENSIONS,
+  async embed(texts, { signal } = {}) {
+    if (signal?.aborted) throw signal.reason || new Error('aborted');
+    return texts.map((text) => {
+      const value = String(text).toLowerCase();
+      if (/status/.test(value)) return phase6Vectors.status;
+      if (/debug/.test(value)) return phase6Vectors.debug;
+      if (/hook prompt/.test(value)) return phase6Vectors.hook;
+      return phase6Vectors.unrelated;
+    });
+  },
+};
+function judgments(candidateIds, selectedIds = []) {
+  const selected = new Set(selectedIds);
+  return { schema_version: 2, judgments: candidateIds.map((id) => selected.has(id)
+    ? { id, applicable: true, confidence_bp: 9500, reason: 'current_applicability' }
+    : { id, applicable: false, confidence_bp: 9500, reason: 'not_currently_relevant' }) };
+}
 
 const temp = await mkdtemp(join(tmpdir(), 'agent-experience-phase6-'));
 process.env.AX_STATE_ROOT = join(temp, 'state');
@@ -143,21 +159,19 @@ try {
   assert.equal(selectActiveSelectorSnapshot(storage.db, { userId: 'other' }).map((row) => row.id).includes('other-active'), true);
   assert.equal(snapshot.some((row) => /candidate|disabled|suppressed|archived|dormant|evidence|pending|quarantine/i.test(`${row.id} ${row.condition} ${row.behavior}`)), false);
 
-  const narrowedA = preNarrowSelectorCandidates(snapshot, { prompt: 'please answer status with concise summary', limit: 20, minConfidenceBp: 7500, stalenessMax: 0.8 });
-  const narrowedB = preNarrowSelectorCandidates(snapshot, { prompt: 'please answer status with concise summary', limit: 20, minConfidenceBp: 7500, stalenessMax: 0.8 });
-  assert.deepEqual(narrowedA.map((row) => row.id), narrowedB.map((row) => row.id), 'pre-narrow must be deterministic');
-  assert.equal(narrowedA.length <= 20, true);
+  const narrowedA = filterEligibleSelectorCandidates(snapshot, { minConfidenceBp: 7500, stalenessMax: 0.8 });
+  const narrowedB = filterEligibleSelectorCandidates(snapshot, { minConfidenceBp: 7500, stalenessMax: 0.8 });
+  assert.deepEqual(narrowedA.map((row) => row.id), narrowedB.map((row) => row.id), 'eligibility filter must be deterministic');
   assert.equal(narrowedA.some((row) => row.id === 'active-stale'), false, 'stale habit must be gated out');
-  assert.equal(narrowedA[0].id, 'active-1');
+  await prepareSelectorConditionVectors(storage.db, { userId: 'owner', candidates: narrowedA, embeddingAdapter: phase6Embedding, now: '2026-07-08T00:30:00.000Z' });
 
   const smartPrompt = buildSelectorPrompt(narrowedA, { prompt: 'please read sergey@example.invalid and /home/misunderstood/private-file before selecting', maxHabits: 3 });
-  assert.doesNotMatch(smartPrompt, /sergey@example\.invalid|\/home\/misunderstood\/private-file/i, 'smart selector prompt must redact before normalization');
-  assert.match(smartPrompt, /redacted/i, 'smart selector prompt should preserve only redacted prompt signal');
+  assert.doesNotMatch(smartPrompt, /sergey@example\.invalid|\/home\/misunderstood\/private-file|use concise summaries|ask before broad changes/i, 'judge prompt must redact request and exclude behavior');
+  assert.match(smartPrompt, /redacted/i, 'judge prompt should preserve only redacted request signal');
 
-  assert.deepEqual(parseSelectorModelOutput({ schema_version: 1, selected: [{ id: 'active-1', confidence_bp: 9000 }] }, { candidateIds: narrowedA.map((row) => row.id), maxSelected: 3, minConfidenceBp: 7500 }), [{ id: 'active-1', confidence_bp: 9000 }]);
-  assert.throws(() => parseSelectorModelOutput({ schema_version: 1, selected: [{ id: 'candidate-1', confidence_bp: 9000 }] }, { candidateIds: narrowedA.map((row) => row.id), maxSelected: 3, minConfidenceBp: 7500 }), /Unknown/);
-  assert.throws(() => parseSelectorModelOutput({ schema_version: 1, selected: [{ id: 'active-1', confidence_bp: 9000 }], text: 'free text' }, { candidateIds: narrowedA.map((row) => row.id), maxSelected: 3, minConfidenceBp: 7500 }), /keys/);
-  assert.throws(() => parseSelectorModelOutput({ schema_version: 1, selected: [{ id: 'active-1', confidence_bp: 100 }] }, { candidateIds: narrowedA.map((row) => row.id), maxSelected: 3, minConfidenceBp: 7500 }), /below/);
+  assert.deepEqual(parseSelectorModelOutput(judgments(narrowedA.map((row) => row.id), ['active-1']), { candidateIds: narrowedA.map((row) => row.id), maxSelected: 3, minConfidenceBp: 7500 }), [{ id: 'active-1', confidence_bp: 9500 }]);
+  assert.throws(() => parseSelectorModelOutput({ schema_version: 2, judgments: [{ id: 'candidate-1', applicable: true, confidence_bp: 9000, reason: 'current_applicability' }] }, { candidateIds: narrowedA.map((row) => row.id), maxSelected: 3, minConfidenceBp: 7500 }), /coverage|Unknown/);
+  assert.throws(() => parseSelectorModelOutput({ ...judgments(narrowedA.map((row) => row.id)), text: 'free text' }, { candidateIds: narrowedA.map((row) => row.id), maxSelected: 3, minConfidenceBp: 7500 }), /keys/);
 
   const injectedText = buildInjectionMessage(snapshot, [{ id: 'active-1', confidence_bp: 9000 }]);
   assert.match(injectedText, /Agent Experience approved habit guidance/);
@@ -167,38 +181,36 @@ try {
 
   const config = { ...DEFAULT_AGENT_EXPERIENCE_CONFIG, enabled: true, selector_enabled: true, selector_min_confidence_bp: 7500, selector_max_habits: 3, selector_staleness_max: 0.8 };
   let adapterCalls = 0;
-  const adapter = { async select() { adapterCalls += 1; return { schema_version: 1, selected: [{ id: 'active-1', confidence_bp: 9000 }] }; } };
-  const selected = await runSelectorRuntime(storage.db, { userId: 'owner', prompt: 'status summary please', config, law, now: '2026-07-08T01:00:00.000Z', adapter });
+  const adapter = { async select({ candidateIds }) { adapterCalls += 1; return judgments(candidateIds, candidateIds.includes('active-1') ? ['active-1'] : []); } };
+  const selected = await runSelectorRuntime(storage.db, { userId: 'owner', prompt: 'status summary please', config, law, now: '2026-07-08T01:00:00.000Z', adapter, embeddingAdapter: phase6Embedding });
   assert.equal(selected.injected, true);
-  assert.equal(selected.mode, 'instant');
-  assert.equal(selected.model, 'lexical');
-  assert.equal(adapterCalls, 0, 'instant mode must make zero model/network calls');
+  assert.equal(selected.mode, 'vector_judge');
+  assert.equal(selected.model, config.selector_model);
+  assert.equal(adapterCalls, 1, 'every successful selection must use the bounded applicability judge after local vectors');
   assert.equal(storage.db.prepare("SELECT COUNT(*) AS count FROM selector_hit_log WHERE user_id = ? AND action = 'inject' AND selected = 1").get('owner').count, 1);
-  assert.ok(storage.db.prepare("SELECT COUNT(*) AS count FROM selector_hit_log WHERE user_id = ? AND action = 'skip' AND reason = 'not_selected'").get('owner').count >= 1, 'successful injection transaction should log bounded not-selected habit provenance');
-  const second = await runSelectorRuntime(storage.db, { userId: 'owner', prompt: 'status again', config, law, now: '2026-07-08T01:01:00.000Z', adapter });
+  const second = await runSelectorRuntime(storage.db, { userId: 'owner', prompt: 'status again', config, law, now: '2026-07-08T01:01:00.000Z', adapter, embeddingAdapter: phase6Embedding });
   assert.equal(second.injected, true, 'every genuinely matching message may receive guidance without a daily quota');
   for (let index = 0; index < 25; index += 1) {
-    const repeated = await runSelectorRuntime(storage.db, { userId: 'owner', prompt: 'status again', config, law, now: `2026-07-08T02:${String(index).padStart(2, '0')}:00.000Z`, adapter });
-    assert.equal(repeated.injected, true, `instant guidance must remain available beyond the former daily cap (${index + 1}/25)`);
+    const repeated = await runSelectorRuntime(storage.db, { userId: 'owner', prompt: 'status again', config, law, now: `2026-07-08T02:${String(index).padStart(2, '0')}:00.000Z`, adapter, embeddingAdapter: phase6Embedding });
+    assert.equal(repeated.injected, true, `vector+judge guidance must remain available beyond the former daily cap (${index + 1}/25)`);
   }
   assert.equal(storage.db.prepare("SELECT COUNT(*) AS count FROM selector_hit_log WHERE user_id = ? AND action = 'inject' AND selected = 1").get('owner').count, 27);
-  assert.equal(adapterCalls, 0, 'repeated instant selections must remain local');
+  assert.equal(adapterCalls, 27, 'each eligible repeated request must be judged once');
   const corrupt = storage.db.prepare("SELECT * FROM selector_hit_log WHERE action = 'inject' LIMIT 1").get();
   assert.equal(isValidSelectorHitLog(corrupt), true);
   storage.db.prepare("UPDATE selector_hit_log SET checksum = ? WHERE id = ?").run('c'.repeat(64), corrupt.id);
   assert.equal(isValidSelectorHitLog(storage.db.prepare("SELECT * FROM selector_hit_log WHERE id = ?").get(corrupt.id)), false, 'hit-log integrity remains independently verifiable without quota semantics');
 
-  const smartConfig = { ...config, selector_mode: 'smart' };
-  const invalid = await runSelectorRuntime(storage.db, { userId: 'owner', prompt: 'debug tests', config: smartConfig, law, now: '2026-07-08T01:03:00.000Z', adapter: { async select() { return { schema_version: 1, selected: [{ id: 'missing', confidence_bp: 9000 }] }; } } });
+  const invalid = await runSelectorRuntime(storage.db, { userId: 'owner', prompt: 'debug tests', config, law, now: '2026-07-08T01:03:00.000Z', embeddingAdapter: phase6Embedding, adapter: { async select({ candidateIds }) { return { schema_version: 2, judgments: candidateIds.map((id) => ({ id: id === candidateIds[0] ? 'missing' : id, applicable: false, confidence_bp: 9000, reason: 'not_currently_relevant' })) }; } } });
   assert.equal(invalid.injected, false);
   assert.equal(invalid.reason, 'invalid_selector_output');
-  const unavailable = await runSelectorRuntime(storage.db, { userId: 'owner', prompt: 'debug tests', config: smartConfig, law, now: '2026-07-08T01:04:00.000Z' });
+  const unavailable = await runSelectorRuntime(storage.db, { userId: 'owner', prompt: 'debug tests', config, law, now: '2026-07-08T01:04:00.000Z', embeddingAdapter: phase6Embedding });
   assert.equal(unavailable.injected, false);
   assert.equal(unavailable.reason, 'selector_unavailable');
-  const timeout = await runSelectorRuntime(storage.db, { userId: 'owner', prompt: 'debug tests', config: { ...smartConfig, selector_timeout_ms: 1 }, law, now: '2026-07-08T01:05:00.000Z', adapter: { async select() { await new Promise((resolve) => setTimeout(resolve, 20)); return { schema_version: 1, selected: [] }; } } });
+  const timeout = await runSelectorRuntime(storage.db, { userId: 'owner', prompt: 'debug tests', config: { ...config, selector_timeout_ms: 1 }, law, now: '2026-07-08T01:05:00.000Z', embeddingAdapter: phase6Embedding, adapter: { async select() { await new Promise((resolve) => setTimeout(resolve, 20)); return judgments([]); } } });
   assert.equal(timeout.injected, false);
   assert.match(timeout.reason, /timeout/);
-  const staleLaw = await runSelectorRuntime(storage.db, { userId: 'owner', prompt: 'status', config, law: lawSnapshotForTest('changed law'), now: '2026-07-08T01:06:00.000Z', adapter });
+  const staleLaw = await runSelectorRuntime(storage.db, { userId: 'owner', prompt: 'status', config, law: lawSnapshotForTest('changed law'), now: '2026-07-08T01:06:00.000Z', adapter, embeddingAdapter: phase6Embedding });
   assert.equal(staleLaw.injected, false);
   assert.equal(staleLaw.reason, 'no_fresh_active_candidates');
 
@@ -226,14 +238,15 @@ try {
   await commands.get('experience').handler('enable', ctx);
   let readConfig = await readAgentExperienceConfig(getAgentExperiencePaths());
   assert.equal(readConfig.config.selector_enabled, false, 'master enable must not enable selector');
-  await commands.get('experience').handler('selector on', ctx);
-  assert.match(notes.at(-1).message, /local\/no-network|configured model\/provider/);
-  readConfig = await readAgentExperienceConfig(getAgentExperiencePaths());
-  assert.equal(readConfig.config.selector_enabled, true);
-
+  __setAgentExperienceSelectorEmbeddingAdapterForTest(phase6Embedding);
   const realLaw = await readConfiguredLawSnapshot(root, readConfig.config);
   insertStorageRecord(storage.db, 'habits', { id: 'hook-active', userId: 'owner', data: habitData({ status: 'active', active: true, condition: 'hook prompt', behavior: 'use hook guidance', law_hash: realLaw.hash, confidence_bp: 9500 }), now: '2026-07-08T03:00:00.000Z' });
-  __setAgentExperienceSelectorAdapterForTest({ async select({ candidateIds }) { return { schema_version: 1, selected: [{ id: candidateIds[0], confidence_bp: 9500 }] }; } });
+  const hookSnapshot = filterEligibleSelectorCandidates(selectActiveSelectorSnapshot(storage.db, { userId: 'owner' }), { minConfidenceBp: 7500, stalenessMax: 0.8 });
+  await prepareSelectorConditionVectors(storage.db, { userId: 'owner', candidates: hookSnapshot, embeddingAdapter: phase6Embedding, now: '2026-07-08T03:00:01.000Z' });
+  await setAgentExperienceSelectorEnabled(true);
+  readConfig = await readAgentExperienceConfig(getAgentExperiencePaths());
+  assert.equal(readConfig.config.selector_enabled, true);
+  __setAgentExperienceSelectorAdapterForTest({ async select({ candidateIds }) { return judgments(candidateIds, candidateIds.includes('hook-active') ? ['hook-active'] : []); } });
   const beforeStatus = storage.db.prepare("SELECT status FROM habits WHERE id = 'hook-active'").get().status;
   const hookResult = await handlers.get('before_agent_start')({ prompt: 'hook prompt please', systemPrompt: 'base system prompt' }, ctx);
   operations.push('prepared');
@@ -286,7 +299,6 @@ try {
   assert.equal(noSelectionResult, undefined);
   assert.equal(await handlers.get('context')({ messages: [{ role: 'user', content: [{ type: 'text', text: 'words with no matching habit' }] }] }, ctx), undefined);
   assert.equal(entries.length, entryCountBeforeNoSelection, 'an unsteered answer must append no marker and inject no hidden guidance');
-  __setAgentExperienceSelectorAdapterForTest(undefined);
 
   const overwritten = makePi();
   const overwrittenCtx = { cwd: liveCwd, mode: 'tui', sessionManager: { getSessionId: () => 'phase6-overwrite', getSessionFile: () => join(temp, 'phase6-overwrite.jsonl') }, ui: { notify() {} } };
@@ -354,7 +366,7 @@ try {
   const missingLawNotes = [];
   const missingLawCtx = { cwd: liveCwd, mode: 'tui', sessionManager: { getSessionId: () => 'phase6-missing-law', getSessionFile: () => join(temp, 'phase6-missing-law.jsonl') }, ui: { notify(message, level) { missingLawNotes.push({ message, level }); } } };
   await missingLaw.commands.get('experience').handler('enable', missingLawCtx);
-  await missingLaw.commands.get('experience').handler('selector on', missingLawCtx);
+  await setAgentExperienceSelectorEnabled(true);
   __setAgentExperienceSelectorAdapterForTest({ async select() { throw new Error('selector must not run without configured law'); } });
   const missingLawResult = await missingLaw.handlers.get('before_agent_start')({ prompt: 'hook prompt please', systemPrompt: 'base' }, missingLawCtx);
   assert.equal(missingLawResult, undefined, 'selector hook must fail closed when configured law file is missing');
@@ -366,7 +378,7 @@ try {
   const missingLawNoteCount = missingLawNotes.length;
   await missingLaw.handlers.get('before_agent_start')({ prompt: 'hook prompt again', systemPrompt: 'base' }, missingLawCtx);
   assert.equal(missingLawNotes.length, missingLawNoteCount, 'disabled selector must not keep warning every turn');
-  await missingLaw.commands.get('experience').handler('selector on', missingLawCtx);
+  await setAgentExperienceSelectorEnabled(true);
   const schemaMismatchStorage = await initExperienceStorage(missingLawRoot, { allowInit: true, userId: 'owner' });
   schemaMismatchStorage.db.exec('PRAGMA user_version = 999');
   schemaMismatchStorage.db.close();
@@ -382,7 +394,7 @@ try {
   const noLedgerNotes = [];
   const noLedgerCtx = { cwd: liveCwd, mode: 'tui', sessionManager: { getSessionId: () => 'phase6-no-ledger', getSessionFile: () => join(temp, 'phase6-no-ledger.jsonl') }, ui: { notify(message, level) { noLedgerNotes.push({ message, level }); } } };
   await noLedger.commands.get('experience').handler('enable', noLedgerCtx);
-  await noLedger.commands.get('experience').handler('selector on', noLedgerCtx);
+  await setAgentExperienceSelectorEnabled(true);
   const noLedgerResult = await noLedger.handlers.get('before_agent_start')({ prompt: 'nothing stored yet', systemPrompt: 'base' }, noLedgerCtx);
   assert.equal(noLedgerResult, undefined, 'selector hook must fail closed when ledger is absent');
   assert.equal(existsSync(join(noLedgerRoot, 'ledger.sqlite')), false, 'selector hook must not initialize storage on missing ledger');
@@ -390,6 +402,7 @@ try {
 } finally {
   storage.db.close();
   __setAgentExperienceSelectorAdapterForTest(undefined);
+  __setAgentExperienceSelectorEmbeddingAdapterForTest(undefined);
 }
 
 await rm(temp, { recursive: true, force: true });

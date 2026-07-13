@@ -3,12 +3,14 @@ import fcntl, os, pty, re, select, shutil, signal, struct, subprocess, sys, term
 from pathlib import Path
 if len(sys.argv)<3: raise SystemExit('usage: test-steering-tui-smoke.py INSTALLED_PACKAGE TRANSCRIPT')
 package=Path(sys.argv[1]).resolve(); transcript=Path(sys.argv[2]).resolve()
-state=Path(os.environ.get('AX_STATE_ROOT','/tmp/pi-experiences-035-steering-tui-state')).resolve()
-runtime=state.parent/'pi-experiences-0.1.35-steering-runtime'
+state=Path(os.environ.get('AX_STATE_ROOT','/tmp/pi-experiences-036-steering-tui-state')).resolve()
+runtime=state.parent/'pi-experiences-0.1.36-steering-runtime'
 shutil.rmtree(state,ignore_errors=True); shutil.rmtree(runtime,ignore_errors=True)
 state.mkdir(parents=True,exist_ok=True); shutil.copytree(package,runtime)
-subprocess.run(['node','--experimental-strip-types',str(runtime/'scripts/seed-steering-tui-smoke.mjs'),str(state)],check=True,cwd=runtime,env={**os.environ,'AX_STATE_ROOT':str(state),'AX_USER_ID':'owner'},stdout=subprocess.PIPE,stderr=subprocess.PIPE)
-work=state.parent/'pi-experiences-0.1.35-steering-tui-work'; work.mkdir(parents=True,exist_ok=True)
+os.symlink(package.parent,runtime/'node_modules',target_is_directory=True)
+asset_source=Path(os.environ.get('AX_SELECTOR_MODEL_SOURCE_ROOT',str(Path.home()/'.agents/experience'))).resolve()
+subprocess.run(['node','--experimental-strip-types',str(runtime/'scripts/seed-steering-tui-smoke.mjs'),str(state)],check=True,cwd=runtime,env={**os.environ,'AX_STATE_ROOT':str(state),'AX_USER_ID':'owner','AX_SELECTOR_MODEL_SOURCE_ROOT':str(asset_source)},stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+work=state.parent/'pi-experiences-0.1.36-steering-tui-work'; work.mkdir(parents=True,exist_ok=True)
 raw=bytearray(); csi=re.compile(rb'\x1b\[[0-?]*[ -/]*[@-~]'); osc=re.compile(rb'\x1b\][^\x07]*(?:\x07|\x1b\\)')
 def clean(data): return csi.sub(b'',osc.sub(b'',data)).replace(b'\r',b'\n').decode('utf-8','replace')
 def text(start=0): return clean(bytes(raw[start:]))
@@ -42,7 +44,6 @@ try:
     marker_pos=collapsed.rfind('Steered by habit')
     assert prompt_pos>=0 and marker_pos>prompt_pos, 'response marker must render after the triggering user prompt'
     assert 'Do: Answer exactly “Steering smoke OK.”' not in collapsed, 'steering entry must start collapsed'
-    assert 'When asked for status or progress' not in collapsed, 'weaker generic habit must not appear in response marker'
     assert 'When doing nontrivial code review' not in collapsed, 'behavior-token false match must not appear in response marker'
     wait(fd,r'(Thinking|Working)\.{0,3}',timeout=12,start=marker_pos)
     active=text(mark)

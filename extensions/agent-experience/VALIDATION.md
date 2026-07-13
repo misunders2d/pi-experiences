@@ -74,12 +74,12 @@ Build and inspect the exact tarball:
 
 ```bash
 npm pack --dry-run
-npm pack --json --pack-destination /tmp/pi-experiences-035-pack
+npm pack --json --pack-destination /tmp/pi-experiences-036-pack
 ```
 
 The tarball must include:
 
-- `package.json` version `0.1.35` and Node floor `>=22.19.0`;
+- `package.json` version `0.1.36` and Node floor `>=22.19.0`;
 - wildcard Pi peer dependencies;
 - extension source, `steering-note.ts`, and public skill;
 - current executable `dist/experience-consolidate.mjs`;
@@ -91,7 +91,7 @@ The tarball must include:
 Fresh installation must use the exact generated tarball and disable lifecycle scripts:
 
 ```bash
-npm install --ignore-scripts --legacy-peer-deps /tmp/pi-experiences-035-pack/pi-experiences-0.1.35.tgz
+npm install --ignore-scripts --legacy-peer-deps /tmp/pi-experiences-036-pack/pi-experiences-0.1.36.tgz
 ```
 
 Use a dedicated disposable `/tmp/*smoke*` prefix. Verify package version, CLI help/status, extension import, skill loading, package-relative worker resolution, and file allowlist from that installed copy—not the source checkout.
@@ -105,7 +105,7 @@ Run Pi's actual skill loader against the installed package and require zero diag
 Use the packed/fresh-installed package with:
 
 ```bash
-AX_STATE_ROOT=/tmp/pi-experiences-035-tui-smoke-state
+AX_STATE_ROOT=/tmp/pi-experiences-036-tui-smoke-state
 ```
 
 Launch the real Pi TUI in a disposable Pi config/package root that references the installed tarball copy, not this repository. Exercise every major `/experience setup` section:
@@ -161,8 +161,11 @@ Release evidence must include:
 - retry/correction/expiry/session-isolation behavior creates no duplicate or replaced-draft habit;
 - actual TUI steering renders and persists in order: triggering user message → one `agent_experience.habit_steering` entry → assistant response;
 - collapsed rendering identifies every exact selected condition; expanded/malformed rendering stays safe; no-selection emits no marker;
-- instant matching uses condition tokens only, removes common stopwords, and keeps only the strongest overlap tier while preserving genuine ties;
-- selector guidance has no daily quota in any mode; repeated eligible messages continue receiving guidance, while hit logs remain audit/provenance only;
+- every enabled selection embeds the request locally and ephemerally, validates all eligible condition-vector cache rows, and uses no lexical-only or vector-only fallback;
+- the strict schema-v2 judge receives only redacted request summary plus retrieved IDs/conditions, covers every candidate exactly, and rejects mention, quotation, negation, generic wording, future/hypothetical intent, low confidence, ambiguity, malformed/partial output, timeout, cancellation, missing auth, and state drift;
+- confirmed lexical false positives stay silent, while status/code/release/decision and multilingual true positives pass vector retrieval plus judgment;
+- missing/corrupt vectors fail before the judge, setup repairs complete condition caches, and post-activation maintenance failure never rolls back approved habit state;
+- selector guidance has no daily quota; repeated eligible messages continue receiving guidance, while hit logs remain audit/provenance only and persist no prompt derivative, vector, similarity, or judge rationale/confidence;
 - durable provenance stores approved wording/count/time only and never enters LLM context; separate transient guidance enters only the marked response;
 - tool-loop context receives the same guidance without duplicate markers, and a new user message cannot inherit it;
 - non-TUI, renderer/build/append failure produces no habit guidance and only a static sanitized diagnostic.
@@ -180,4 +183,4 @@ git status --short
 
 Then obtain independent DeepSeek, an available model-diverse reviewer, and constitution review of the actual diff plus test evidence. Skip a reviewer that stalls or reports exhausted usage rather than blocking release evidence. Reviewer verdicts do not replace test evidence.
 
-After final commit/tag push, verify local `HEAD`, `origin/main`, and `refs/tags/v0.1.35` resolve to the same commit and `v0.1.25` through `v0.1.34` remain unchanged. npm publication is a separate manual action and is outside this release scope.
+After final commit and an explicitly approved tag push, verify local `HEAD`, `origin/main`, and the new immutable release tag resolve to the same commit while all historical tags remain unchanged. npm publication is a separate manual action and is outside this release scope.

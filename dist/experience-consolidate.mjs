@@ -2194,6 +2194,49 @@ function getCachedHabitEmbedding(db, input) {
   if (vectorChecksum(vector) !== row.vector_checksum) return null;
   return { ...row, dimensions: Number(row.dimensions), vector };
 }
+function getCachedHabitEmbeddingsBatch(db, input) {
+  const userId = normalizeUserId(input.userId);
+  const maxHabits = Math.max(1, Math.min(500, Math.trunc(input.maxHabits ?? 100)));
+  if (!input.expectations.length) return { embeddings: /* @__PURE__ */ new Map(), missingIds: [], invalidIds: [] };
+  if (input.expectations.length > maxHabits) throw new Error("Embedding cache batch exceeds bounded habit limit");
+  if (!Number.isInteger(input.dimensions) || input.dimensions < 1 || input.dimensions > 8192) throw new Error("Invalid embedding dimensions");
+  const expectedById = /* @__PURE__ */ new Map();
+  for (const expectation of input.expectations) {
+    if (!expectation.habitId || expectedById.has(expectation.habitId)) throw new Error("Duplicate embedding cache expectation");
+    expectedById.set(expectation.habitId, expectation);
+  }
+  const habitIds = [...expectedById.keys()];
+  const placeholders = habitIds.map(() => "?").join(",");
+  const rows = db.prepare(`SELECT * FROM habit_embeddings WHERE user_id = ? AND embedding_input_version = ? AND provider = ? AND model = ? AND dimensions = ? AND habit_id IN (${placeholders}) ORDER BY habit_id`).all(userId, input.embeddingInputVersion, input.provider, input.model, input.dimensions, ...habitIds);
+  const rowsById = /* @__PURE__ */ new Map();
+  for (const row of rows) {
+    if (rowsById.has(row.habit_id)) throw new Error("Conflicting embedding cache rows");
+    rowsById.set(row.habit_id, row);
+  }
+  const embeddings = /* @__PURE__ */ new Map();
+  const missingIds = [];
+  const invalidIds = [];
+  for (const habitId of habitIds) {
+    const expectation = expectedById.get(habitId);
+    const row = rowsById.get(habitId);
+    if (!row) {
+      missingIds.push(habitId);
+      continue;
+    }
+    try {
+      if (row.user_id !== userId || row.habit_id !== habitId || row.embedding_input_version !== input.embeddingInputVersion || row.provider !== input.provider || row.model !== input.model || Number(row.dimensions) !== input.dimensions) throw new Error("Embedding cache scope mismatch");
+      if (row.embedding_input_checksum !== expectation.embeddingInputChecksum || row.habit_row_checksum !== expectation.habitRowChecksum) throw new Error("Embedding cache identity mismatch");
+      const expectedRowChecksum = embeddingRowChecksum({ user_id: row.user_id, habit_id: row.habit_id, embedding_input_version: row.embedding_input_version, embedding_input_checksum: row.embedding_input_checksum, habit_row_checksum: row.habit_row_checksum, provider: row.provider, model: row.model, dimensions: Number(row.dimensions), vector_checksum: row.vector_checksum, created_at: row.created_at, updated_at: row.updated_at });
+      if (expectedRowChecksum !== row.row_checksum) throw new Error("Embedding cache row checksum mismatch");
+      const vector = blobToVector(row.vector_blob, Number(row.dimensions));
+      if (vectorChecksum(vector) !== row.vector_checksum) throw new Error("Embedding vector checksum mismatch");
+      embeddings.set(habitId, { ...row, dimensions: Number(row.dimensions), vector });
+    } catch {
+      invalidIds.push(habitId);
+    }
+  }
+  return { embeddings, missingIds, invalidIds };
+}
 function upsertCachedHabitEmbedding(db, input) {
   const userId = normalizeUserId(input.userId);
   const embeddingInputVersion = input.embeddingInputVersion || SEMANTIC_EMBEDDING_INPUT_VERSION;
@@ -3902,6 +3945,149 @@ function checkHabitConflict(db, input) {
 init_checksum();
 init_private_root();
 init_redaction();
+
+// extensions/agent-experience/src/selector-vector.ts
+init_checksum();
+init_private_root();
+var SELECTOR_CONDITION_EMBEDDING_INPUT_VERSION = "selector_condition_embedding_input_v1";
+var MAX_SELECTOR_ELIGIBLE_HABITS = 100;
+function throwIfAborted2(signal) {
+  if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : new Error("selector_cancelled");
+}
+function assertLocalSelectorAdapter(adapter) {
+  if (adapter.provider !== LOCAL_EMBEDDING_PROVIDER || adapter.model !== LOCAL_EMBEDDING_MODEL || adapter.dimensions !== LOCAL_EMBEDDING_DIMENSIONS) {
+    throw new Error("selector_embedding_runtime_mismatch");
+  }
+}
+function selectorConditionEmbeddingInputV1(condition) {
+  return habitConditionEmbeddingInputV1({ condition: condition ?? "" });
+}
+function selectorConditionIdentityChecksum(condition) {
+  return sha256Hex(`${SELECTOR_CONDITION_EMBEDDING_INPUT_VERSION}
+${normalizeSemanticText(condition)}`);
+}
+function expectationFor(candidate) {
+  const text = selectorConditionEmbeddingInputV1(candidate.condition);
+  return {
+    habitId: candidate.id,
+    embeddingInputChecksum: embeddingInputChecksum(text, SELECTOR_CONDITION_EMBEDDING_INPUT_VERSION),
+    // Version-scoped compatibility note: for selector condition rows only, the
+    // legacy-named habit_row_checksum column stores stable condition identity.
+    // Mutable confidence/staleness changes therefore do not invalidate meaning.
+    habitRowChecksum: selectorConditionIdentityChecksum(candidate.condition)
+  };
+}
+function assertCandidateBounds(candidates) {
+  if (candidates.length > MAX_SELECTOR_ELIGIBLE_HABITS) throw new Error("selector_candidate_limit_exceeded");
+  const ids = /* @__PURE__ */ new Set();
+  for (const candidate of candidates) {
+    if (!candidate.id || ids.has(candidate.id)) throw new Error("selector_candidate_identity_invalid");
+    ids.add(candidate.id);
+  }
+}
+function readSelectorConditionVectors(db, input) {
+  assertLocalSelectorAdapter(input.embeddingAdapter);
+  assertCandidateBounds(input.candidates);
+  const expectations = input.candidates.map(expectationFor);
+  const cached = getCachedHabitEmbeddingsBatch(db, {
+    userId: normalizeUserId(input.userId),
+    embeddingInputVersion: SELECTOR_CONDITION_EMBEDDING_INPUT_VERSION,
+    provider: input.embeddingAdapter.provider,
+    model: input.embeddingAdapter.model,
+    dimensions: input.embeddingAdapter.dimensions,
+    expectations,
+    maxHabits: MAX_SELECTOR_ELIGIBLE_HABITS
+  });
+  if (cached.missingIds.length || cached.invalidIds.length || cached.embeddings.size !== input.candidates.length) {
+    throw new Error("selector_vectors_unavailable");
+  }
+  const byExpectation = new Map(expectations.map((expectation) => [expectation.habitId, expectation]));
+  return new Map([...cached.embeddings].map(([habitId, row]) => {
+    const expectation = byExpectation.get(habitId);
+    return [habitId, {
+      habitId,
+      conditionIdentity: expectation.habitRowChecksum,
+      embeddingInputChecksum: expectation.embeddingInputChecksum,
+      vector: normalizedVector(row.vector)
+    }];
+  }));
+}
+async function prepareSelectorConditionVectors(db, input) {
+  assertLocalSelectorAdapter(input.embeddingAdapter);
+  assertCandidateBounds(input.candidates);
+  throwIfAborted2(input.signal);
+  const userId = normalizeUserId(input.userId);
+  const expectations = input.candidates.map(expectationFor);
+  const byId = new Map(input.candidates.map((candidate) => [candidate.id, candidate]));
+  const inspected = getCachedHabitEmbeddingsBatch(db, {
+    userId,
+    embeddingInputVersion: SELECTOR_CONDITION_EMBEDDING_INPUT_VERSION,
+    provider: input.embeddingAdapter.provider,
+    model: input.embeddingAdapter.model,
+    dimensions: input.embeddingAdapter.dimensions,
+    expectations,
+    maxHabits: MAX_SELECTOR_ELIGIBLE_HABITS
+  });
+  const repairIds = [.../* @__PURE__ */ new Set([...inspected.missingIds, ...inspected.invalidIds])].sort();
+  const prepared = /* @__PURE__ */ new Map();
+  const batchSize = Math.max(1, Math.min(LOCAL_EMBEDDING_MAX_BATCH, Math.trunc(input.batchSize ?? LOCAL_EMBEDDING_MAX_BATCH)));
+  let completed = input.candidates.length - repairIds.length;
+  input.onProgress?.({ completed, total: input.candidates.length });
+  for (let offset = 0; offset < repairIds.length; offset += batchSize) {
+    throwIfAborted2(input.signal);
+    const ids = repairIds.slice(offset, offset + batchSize);
+    const texts = ids.map((id) => selectorConditionEmbeddingInputV1(byId.get(id).condition));
+    const vectors = await input.embeddingAdapter.embed(texts, { signal: input.signal });
+    if (!Array.isArray(vectors) || vectors.length !== ids.length) throw new Error("selector_embedding_vector_count_invalid");
+    for (let index = 0; index < ids.length; index += 1) {
+      const vector = vectors[index];
+      if (!vector || vector.length !== input.embeddingAdapter.dimensions) throw new Error("selector_embedding_dimensions_invalid");
+      prepared.set(ids[index], normalizedVector(vector));
+    }
+    completed += ids.length;
+    input.onProgress?.({ completed, total: input.candidates.length });
+  }
+  throwIfAborted2(input.signal);
+  if (repairIds.length) {
+    const placeholders = repairIds.map(() => "?").join(",");
+    const freshRows = db.prepare(`SELECT id, user_id, condition FROM habits WHERE user_id = ? AND id IN (${placeholders}) ORDER BY id`).all(userId, ...repairIds);
+    if (freshRows.length !== repairIds.length) throw new Error("selector_vector_snapshot_changed");
+    for (const row of freshRows) {
+      const candidate = byId.get(row.id);
+      if (!candidate || row.user_id !== userId || selectorConditionIdentityChecksum(row.condition) !== selectorConditionIdentityChecksum(candidate.condition)) throw new Error("selector_vector_snapshot_changed");
+    }
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const habitId of repairIds) {
+        const candidate = byId.get(habitId);
+        const expectation = expectationFor(candidate);
+        upsertCachedHabitEmbedding(db, {
+          userId,
+          habitId,
+          embeddingInputVersion: SELECTOR_CONDITION_EMBEDDING_INPUT_VERSION,
+          embeddingInputChecksum: expectation.embeddingInputChecksum,
+          habitRowChecksum: expectation.habitRowChecksum,
+          provider: input.embeddingAdapter.provider,
+          model: input.embeddingAdapter.model,
+          dimensions: input.embeddingAdapter.dimensions,
+          vector: prepared.get(habitId),
+          now: input.now
+        });
+      }
+      db.exec("COMMIT");
+    } catch (error) {
+      try {
+        db.exec("ROLLBACK");
+      } catch {
+      }
+      throw error;
+    }
+  }
+  readSelectorConditionVectors(db, { userId, candidates: input.candidates, embeddingAdapter: input.embeddingAdapter });
+  return { prepared: repairIds.length, cached: input.candidates.length - repairIds.length, total: input.candidates.length };
+}
+
+// extensions/agent-experience/src/selector.ts
 function parseJson3(text) {
   try {
     return JSON.parse(String(text || "{}"));
@@ -3917,6 +4103,56 @@ function boundedJson2(value, max = 12e3) {
   if (text.length > max) throw new Error("Selector payload too large");
   if (containsUnredactedSensitiveText(text)) throw new Error("Selector payload contains unredacted sensitive text");
   return text;
+}
+function selectorCandidateFromRow(row) {
+  const data = parseJson3(row.data_json);
+  return redactJson({
+    id: row.id,
+    user_id: row.user_id,
+    condition: row.condition || "",
+    behavior: row.behavior || "",
+    polarity: Number(row.polarity),
+    confidence_bp: Number(row.confidence_bp),
+    activation: Number(row.activation),
+    staleness: Number(row.staleness),
+    checksum: row.checksum,
+    law_hash: typeof data.law_hash === "string" ? data.law_hash : void 0
+  });
+}
+function assertValidHabitStorageRow(row) {
+  const data = parseJson3(row.data_json);
+  const rebuilt = buildTypedStorageRow("habits", {
+    id: row.id,
+    userId: row.user_id,
+    data: {
+      ...data,
+      record_kind: row.record_kind,
+      schema_version: Number(row.schema_version),
+      status: row.status,
+      habit_id: row.habit_id,
+      condition: row.condition,
+      behavior: row.behavior,
+      polarity: Number(row.polarity),
+      confidence_bp: Number(row.confidence_bp),
+      activation: Number(row.activation),
+      staleness: Number(row.staleness)
+    },
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  });
+  if (rebuilt.checksum !== row.checksum) throw new Error("selector_habit_integrity_failed");
+}
+function selectActiveSelectorSnapshot(db, input) {
+  const userId = normalizeUserId(input.userId);
+  return db.prepare("SELECT * FROM habits WHERE user_id = ? AND status = 'active' ORDER BY id").all(userId).map((row) => {
+    assertValidHabitStorageRow(row);
+    return selectorCandidateFromRow(row);
+  });
+}
+function filterEligibleSelectorCandidates(candidates, input) {
+  const minConfidence = Math.max(0, Math.min(1e4, Math.trunc(input.minConfidenceBp ?? 0)));
+  const stalenessMax = Number.isFinite(input.stalenessMax) ? Number(input.stalenessMax) : Number.POSITIVE_INFINITY;
+  return candidates.filter((candidate) => candidate.confidence_bp >= minConfidence && candidate.staleness <= stalenessMax).sort((left, right) => right.confidence_bp - left.confidence_bp || left.id.localeCompare(right.id));
 }
 function normalizedApprovalIdentity(row) {
   return { candidate_id: row.id, condition: String(row.condition ?? "").trim().replace(/\s+/g, " ").toLowerCase(), behavior: String(row.behavior ?? "").trim().replace(/\s+/g, " ").toLowerCase(), polarity: Number(row.polarity) };
@@ -4015,6 +4251,29 @@ async function promoteApprovedPendingCandidates(db, input) {
   return { user_id: userId, checked: rows.length, promoted, blocked };
 }
 
+// extensions/agent-experience/src/selector-maintenance.ts
+async function prepareActiveSelectorVectorsAfterChange(db, input) {
+  if (!input.config.enabled || !input.config.selector_enabled) return { attempted: false, ready: true, total: 0, prepared: 0 };
+  let adapter = input.embeddingAdapter;
+  let owned;
+  try {
+    if (!adapter) {
+      const status = await getLocalEmbeddingAssetStatus(input.root, { deep: true });
+      if (!status.ready) return { attempted: true, ready: false, total: 0, prepared: 0 };
+      owned = createLocalEmbeddingAdapter(input.root, { idleMs: 3e5 });
+      adapter = owned;
+    }
+    const active = selectActiveSelectorSnapshot(db, { userId: input.userId });
+    const eligible = filterEligibleSelectorCandidates(active, { minConfidenceBp: input.config.selector_min_confidence_bp, stalenessMax: input.config.selector_staleness_max });
+    const result = await prepareSelectorConditionVectors(db, { userId: input.userId, candidates: eligible, embeddingAdapter: adapter, now: input.now, signal: input.signal });
+    return { attempted: true, ready: true, total: result.total, prepared: result.prepared };
+  } catch {
+    return { attempted: true, ready: false, total: 0, prepared: 0 };
+  } finally {
+    await owned?.close().catch(() => void 0);
+  }
+}
+
 // extensions/agent-experience/src/schedule/runner.ts
 init_locks();
 init_private_root();
@@ -4094,6 +4353,7 @@ async function runScheduledAnalyzeCore(input) {
       });
       promoted = promotion.promoted.length;
       promotionBlocked = promotion.blocked.length;
+      if (promoted) await prepareActiveSelectorVectorsAfterChange(storage.db, { root: input.root, userId, config: input.config, now: now(), signal: input.signal });
     } catch {
     } finally {
       await promotionProvider?.close?.().catch(() => void 0);

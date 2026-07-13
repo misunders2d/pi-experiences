@@ -85,6 +85,71 @@ export function getCachedHabitEmbedding(db: any, input: { userId: string; habitI
 	return { ...row, dimensions: Number(row.dimensions), vector };
 }
 
+export interface HabitEmbeddingExpectation {
+	habitId: string;
+	embeddingInputChecksum: string;
+	habitRowChecksum: string;
+}
+
+/**
+ * Read one bounded embedding namespace in one query. Parameter order is kept
+ * explicit for auditability: user, input version, provider, model, dimensions,
+ * then habit ids. Callers decide whether missing/invalid rows are repairable;
+ * reply-time selection treats either set as unavailable and fails closed.
+ */
+export function getCachedHabitEmbeddingsBatch(db: any, input: {
+	userId: string;
+	embeddingInputVersion: string;
+	provider: string;
+	model: string;
+	dimensions: number;
+	expectations: HabitEmbeddingExpectation[];
+	maxHabits?: number;
+}): { embeddings: Map<string, CachedHabitEmbedding>; missingIds: string[]; invalidIds: string[] } {
+	const userId = normalizeUserId(input.userId);
+	const maxHabits = Math.max(1, Math.min(500, Math.trunc(input.maxHabits ?? 100)));
+	if (!input.expectations.length) return { embeddings: new Map(), missingIds: [], invalidIds: [] };
+	if (input.expectations.length > maxHabits) throw new Error("Embedding cache batch exceeds bounded habit limit");
+	if (!Number.isInteger(input.dimensions) || input.dimensions < 1 || input.dimensions > 8192) throw new Error("Invalid embedding dimensions");
+	const expectedById = new Map<string, HabitEmbeddingExpectation>();
+	for (const expectation of input.expectations) {
+		if (!expectation.habitId || expectedById.has(expectation.habitId)) throw new Error("Duplicate embedding cache expectation");
+		expectedById.set(expectation.habitId, expectation);
+	}
+	const habitIds = [...expectedById.keys()];
+	const placeholders = habitIds.map(() => "?").join(",");
+	const rows = db.prepare(`SELECT * FROM habit_embeddings WHERE user_id = ? AND embedding_input_version = ? AND provider = ? AND model = ? AND dimensions = ? AND habit_id IN (${placeholders}) ORDER BY habit_id`)
+		.all(userId, input.embeddingInputVersion, input.provider, input.model, input.dimensions, ...habitIds);
+	const rowsById = new Map<string, any>();
+	for (const row of rows) {
+		if (rowsById.has(row.habit_id)) throw new Error("Conflicting embedding cache rows");
+		rowsById.set(row.habit_id, row);
+	}
+	const embeddings = new Map<string, CachedHabitEmbedding>();
+	const missingIds: string[] = [];
+	const invalidIds: string[] = [];
+	for (const habitId of habitIds) {
+		const expectation = expectedById.get(habitId)!;
+		const row = rowsById.get(habitId);
+		if (!row) {
+			missingIds.push(habitId);
+			continue;
+		}
+		try {
+			if (row.user_id !== userId || row.habit_id !== habitId || row.embedding_input_version !== input.embeddingInputVersion || row.provider !== input.provider || row.model !== input.model || Number(row.dimensions) !== input.dimensions) throw new Error("Embedding cache scope mismatch");
+			if (row.embedding_input_checksum !== expectation.embeddingInputChecksum || row.habit_row_checksum !== expectation.habitRowChecksum) throw new Error("Embedding cache identity mismatch");
+			const expectedRowChecksum = embeddingRowChecksum({ user_id: row.user_id, habit_id: row.habit_id, embedding_input_version: row.embedding_input_version, embedding_input_checksum: row.embedding_input_checksum, habit_row_checksum: row.habit_row_checksum, provider: row.provider, model: row.model, dimensions: Number(row.dimensions), vector_checksum: row.vector_checksum, created_at: row.created_at, updated_at: row.updated_at });
+			if (expectedRowChecksum !== row.row_checksum) throw new Error("Embedding cache row checksum mismatch");
+			const vector = blobToVector(row.vector_blob, Number(row.dimensions));
+			if (vectorChecksum(vector) !== row.vector_checksum) throw new Error("Embedding vector checksum mismatch");
+			embeddings.set(habitId, { ...row, dimensions: Number(row.dimensions), vector });
+		} catch {
+			invalidIds.push(habitId);
+		}
+	}
+	return { embeddings, missingIds, invalidIds };
+}
+
 export function upsertCachedHabitEmbedding(db: any, input: { userId: string; habitId: string; embeddingInputVersion?: string; embeddingInputChecksum: string; habitRowChecksum: string; provider: string; model: string; dimensions: number; vector: Float32Array; now: string }): CachedHabitEmbedding {
 	const userId = normalizeUserId(input.userId);
 	const embeddingInputVersion = input.embeddingInputVersion || SEMANTIC_EMBEDDING_INPUT_VERSION;

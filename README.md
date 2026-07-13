@@ -307,7 +307,7 @@ A profile document is appropriate for small, stable, deliberately declared ident
 
 **Implementation wins:** bounded context instead of profile growth; per-habit approval and rollback; evidence/provenance; same-user and freshness gates; auditable conflict/duplicate handling; raw history excluded from normal reply selection.
 
-**Caveats:** selection is relevance matching, not guaranteed human-level judgment; default instant matching is lexical and intentionally simple; no reminder is injected when relevance, freshness, status, law, or budget gates fail; disabled reminders mean no habit injection; structured lifecycle control adds SQLite and migration complexity, so unavailable or inconsistent state fails closed.
+**Caveats:** local vector similarity retrieves possibly relevant conditions but does not prove present applicability, so one bounded configured-model judge must independently accept each retrieved condition; no reminder is injected when vector readiness, judge confidence, freshness, status, law, or scope gates fail; disabled reminders mean no habit injection; structured lifecycle control adds SQLite and migration complexity, so unavailable or inconsistent state fails closed.
 
 Do not market an ever-growing `profile.md` as equivalent to Experience. The architectural distinction is contextual selection and lifecycle control, not merely a different file format.
 
@@ -332,7 +332,8 @@ Do not market an ever-growing `profile.md` as equivalent to Experience. The arch
 - Cache input versions and relation scoring methods are independent. Legacy whole-habit cache rows remain only to prove unchanged historical keep-separate decisions; missing or corrupt proof fails closed to re-review.
 - Assets use private 0700 directories and 0600 files and are version, size, and SHA-256 checked before use.
 - Complete interrupted generations may recover offline; corrupt, partial, symlinked, obsolete, or abandoned generations are rejected or removed only under the owned model lock.
-- Inference runs in a bounded worker and unloads after 30 seconds idle or explicit scan completion.
+- Inference runs in a bounded worker. Duplicate scans unload it after 30 seconds idle or explicit completion; reply-time selection may reuse it for up to 300 seconds and closes it on session shutdown or state-root replacement.
+- Reply-time selector cache rows use a separate versioned condition-only input and stable normalized-condition identity. Prompt embeddings are ephemeral and are never written to SQLite, logs, markers, config, or session context.
 - Explicit scans cap at 100 current habits / 4,950 pairs, embed each selected condition and behavior once, support cancellation, revalidate all habit/relation state they may change, and commit atomically.
 - Normal scans compare active/disabled approved habits only. Candidate targets are checked against approved habits at proposal/activation; candidate-to-candidate semantic routing is excluded.
 
@@ -420,13 +421,15 @@ Habit declaration, approval, re-enable, and promotion prepare local vectors outs
 
 ### Approved-habit reminders
 
-Reminder injection is off by default.
+Reminder injection is off by default. Enabling it from `/experience setup` first discloses and verifies two mandatory stages: private local multilingual vector retrieval and one bounded configured-model applicability call per eligible request. Setup prepares pinned local assets and every currently eligible approved-condition vector before writing the ON setting. Package installation and updates never download those assets or enable reminders.
 
-Default `instant` mode is local lexical/no-network matching. It scores meaningful tokens from each habit condition only—never behavior text or common stopwords—and selects only the strongest overlap tier, capped by configuration. Several genuinely tied habits may apply. Only active, same-user, fresh approved habits are candidates. Pending, disabled, dormant, suppressed, archived, evidence, quarantine, report, and raw observation rows are excluded.
+Every enabled selection embeds the current request locally and ephemerally, validates the complete cache for all active same-user law-valid habits that pass confidence/freshness gates, and retrieves a bounded condition-only candidate set by cosine similarity. Behavior text cannot make a habit applicable. The judge receives only a bounded redacted request summary plus retrieved IDs and condition text—never behavior, similarity, habit confidence/staleness, rationale, unretrieved habits, source evidence, paths, or audit data. It must cover every candidate exactly and reject mere mentions, quotations, negation, generic shared wording, hypothetical/future intent, low confidence, and ambiguity. There is no lexical-only or vector-only guidance path. Missing/corrupt vectors or assets, auth failure, timeout, cancellation, malformed/partial output, state drift, or uncertainty produces no guidance.
+
+After judgment, selected habit rows are re-read in one query and must retain the same user, active approval state, checksum, law hash, confidence/freshness eligibility, and condition identity. Post-activation maintenance prepares new condition vectors when possible without rolling back an approved habit; failure leaves habit state valid while reply-time steering fails closed until setup repair. Pending, disabled, dormant, suppressed, archived, evidence, quarantine, report, and raw observation rows are excluded.
 
 `before_agent_start` prepares a validated transient selection but neither changes the system prompt nor appends provenance above the user message. At the first provider-context boundary, after Pi has persisted the triggering user message, the extension appends one durable `agent_experience.habit_steering` entry. Only a successful append allows a separate non-persisted `agent_experience.habit_guidance` message into that response's LLM context. Tool-loop calls reuse the same guidance without adding another marker; a new user message cannot inherit it. Collapsed rendering identifies every selected condition; expanded rendering shows exact selected condition/behavior wording. The durable marker does not participate in LLM context. Entry construction/renderer/append failure, malformed or sensitive wording, and non-TUI modes suppress guidance with a static sanitized diagnostic.
 
-Optional advanced smart matching is separately configured and fails closed on unavailable authentication, timeout, or malformed output. Selector hit logs never persist raw prompts, sessions, or injected guidance; `prompt_hash` is deliberately `omitted`. Selector logs describe the bounded selection attempt; the response-adjacent durable marker is authoritative proof that guidance reached that response. The marker contains no prompt and stores selected approved wording only.
+Selector hit logs never persist prompt text, prompt hashes/derivatives, prompt vectors, similarities, judge confidence/reasons, sessions, or injected guidance; `prompt_hash` is deliberately the fixed sentinel `omitted`. Logs retain only bounded selected/skipped audit metadata. The response-adjacent durable marker is authoritative proof that guidance reached that response and stores selected approved wording only.
 
 ### Optional local scheduled Analyze
 
@@ -463,7 +466,11 @@ capture_enabled = true
 consolidation_enabled = true
 embedding_enabled = false
 selector_enabled = false
-selector_mode = "instant"
+selector_model = "openai-codex/gpt-5.4-mini"
+selector_timeout_ms = 5000
+selector_min_confidence_bp = 7500
+selector_max_habits = 3
+selector_staleness_max = 0.8
 observation_retention_days = 7
 analyze_batch_max_records = 200
 analyze_batch_max_bytes = 80000
@@ -472,7 +479,7 @@ timer_enabled = false
 break_in_enabled = false
 ```
 
-Legacy hosted-embedding fields are ignored and removed on the next config write. No hosted embedding environment variables are supported.
+Legacy hosted-embedding fields are ignored and removed on the next config write. Legacy `selector_mode` and `selector_min_overlap_score` remain readable for compatibility but are ignored and omitted on rewrite; all enabled steering uses vectors plus the bounded judge. No hosted embedding environment variables are supported.
 
 Override the private root when isolating a test:
 
@@ -500,6 +507,7 @@ npm pack --dry-run
 - separate-field multilingual precision fixtures, approved-only scans, obsolete-method reconciliation, multi-relation candidate restoration, and keep-separate continuity;
 - stale lock recovery;
 - source/import bundling;
+- mandatory vector retrieval plus strict judge schema, confirmed false-positive, true-positive, multilingual, missing/corrupt-cache, cancellation, timeout, drift, and prompt-non-persistence regressions;
 - CLI generation drift.
 
 The real local-model integration command used by maintainers is documented in `extensions/agent-experience/VALIDATION.md` and requires already downloaded pinned fixtures; it makes inference offline.

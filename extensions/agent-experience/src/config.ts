@@ -148,11 +148,12 @@ export function formatAgentExperienceConfig(config: AgentExperienceConfig): stri
 		`consolidation_enabled = ${merged.consolidation_enabled}`,
 		`timer_enabled = ${merged.timer_enabled}`,
 		`break_in_enabled = ${merged.break_in_enabled}`,
-		`selector_mode = ${quote(merged.selector_mode)}`,
+		// selector_mode and selector_min_overlap_score remain readable for old
+		// configs but are intentionally not rewritten. All steering now requires
+		// mandatory local vectors followed by the bounded applicability judge.
 		`selector_model = ${quote(merged.selector_model)}`,
 		`selector_timeout_ms = ${merged.selector_timeout_ms}`,
 		`selector_min_confidence_bp = ${Math.trunc(merged.selector_min_confidence_bp)}`,
-		`selector_min_overlap_score = ${Math.trunc(merged.selector_min_overlap_score)}`,
 		`selector_max_habits = ${Math.trunc(merged.selector_max_habits)}`,
 		`selector_staleness_max = ${merged.selector_staleness_max}`,
 		`consolidation_model = ${quote(merged.consolidation_model)}`,
@@ -169,8 +170,8 @@ export function summarizeAgentExperienceConfig(config: AgentExperienceConfig, co
 		`Agent Experience: ${config.enabled ? "enabled" : "disabled"}`,
 		`config: ${configPath}${exists ? "" : " (not created; using defaults)"}`,
 		`capture=${config.capture_enabled}`,
-		`selector=${config.selector_enabled} mode=${config.selector_mode} timeout_ms=${config.selector_timeout_ms} min_confidence_bp=${config.selector_min_confidence_bp} min_overlap_score=${config.selector_min_overlap_score} max_habits=${config.selector_max_habits}`,
-		config.selector_mode === "instant" ? "selector mode instant: local lexical/no-network selection" : `selector mode smart: may call configured model/provider ${config.selector_model}`,
+		`selector=${config.selector_enabled} method=local_vectors_plus_bounded_judge timeout_ms=${config.selector_timeout_ms} min_confidence_bp=${config.selector_min_confidence_bp} max_habits=${config.selector_max_habits}`,
+		`selector: local condition-vector retrieval is mandatory; one bounded ${config.selector_model} applicability call follows retrieval and failures produce no guidance`,
 		`duplicate_prevention=${config.embedding_enabled ? "enabled_local" : "disabled"}`,
 		`consolidation=${config.consolidation_enabled} analyze_batch_max_records=${config.analyze_batch_max_records} analyze_batch_max_bytes=${config.analyze_batch_max_bytes}`,
 		`observation_retention_days=${config.observation_retention_days}`,
