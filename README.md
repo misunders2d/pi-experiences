@@ -521,13 +521,15 @@ For a release:
 
 1. update source, tests, docs, and generated CLI together;
 2. run complete automated and packed-installed validation;
-3. obtain independent code/privacy/constitution review for significant changes;
+3. obtain independent code/privacy/constitution review only for significant changes—not routine technical release mechanics;
 4. bump version;
 5. commit and push `main`;
-6. create and push the matching immutable tag;
-7. publish npm only as a separate explicit manual action.
+6. create and push the matching immutable `v*` tag;
+7. let `.github/workflows/publish.yml` validate the tag/version and stage the package through npm Trusted Publishing (`npm stage publish`);
+8. review the staged artifact and explicitly approve it with npm passkey/2FA;
+9. verify the registry version, `latest` tag, signature, and OIDC provenance.
 
-GitHub is the source of truth. npm publication is not performed automatically by this repository.
+GitHub is the source of truth. The GitHub-hosted workflow uses short-lived OIDC credentials, has only `npm stage publish` permission, and stores no npm publishing token. Automation can stage a release but cannot approve it or publish directly. npm package settings require 2FA and disallow traditional publishing tokens. Failed release tags remain immutable; fix forward with a new version rather than rewriting a tag.
 
 </details>
 
