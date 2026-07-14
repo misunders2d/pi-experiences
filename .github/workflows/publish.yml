@@ -1,0 +1,57 @@
+name: Stage npm release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: npm-stage-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  stage:
+    name: Validate and stage package
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+
+      # Staged publishing requires npm 11.15.0 or newer. Pin the CLI used
+      # for release authentication and package creation.
+      - name: Install npm CLI
+        run: npm install --global npm@12.0.1
+
+      - name: Verify tag matches package version
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_version="$(node -p "require('./package.json').version")"
+          expected_tag="v${package_version}"
+
+          if [[ "${GITHUB_REF_NAME}" != "${expected_tag}" ]]; then
+            echo "Release tag ${GITHUB_REF_NAME} does not match package version ${package_version}." >&2
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: npm ci
+
+      # prepublishOnly runs the full check suite and build. Trusted
+      # publishing supplies short-lived OIDC credentials and provenance.
+      # A maintainer must approve the staged package with npm 2FA/passkey.
+      - name: Stage package on npm
+        run: npm stage publish
