@@ -227,14 +227,20 @@ try {
   await prepareSelectorConditionVectors(storage.db, { userId: 'owner', candidates: hookSnapshot, embeddingAdapter: phase7Embedding, now: '2026-07-08T02:00:01.000Z' });
   await setAgentExperienceSelectorEnabled(true);
   storage.db.prepare('DELETE FROM selector_hit_log').run();
-  __setAgentExperienceSelectorAdapterForTest({ async select({ candidateIds, signal }) { assert.ok(signal instanceof AbortSignal); return judgments(candidateIds, candidateIds.includes('hook-active') ? ['hook-active'] : []); } });
+  let hookAdapterCalls = 0;
+  __setAgentExperienceSelectorAdapterForTest({ async select({ candidateIds, signal }) { hookAdapterCalls += 1; assert.ok(signal instanceof AbortSignal); return judgments(candidateIds, candidateIds.includes('hook-active') ? ['hook-active'] : []); } });
   const hookCtx = { ...ctx, modelRegistry: fakeRegistry() };
-  const hookResult = await handlers.get('before_agent_start')({ prompt: 'hook adapter prompt', systemPrompt: 'base' }, hookCtx);
-  assert.equal(hookResult, undefined, 'before_agent_start prepares steering but must not modify the system prompt');
-  const contextResult = await handlers.get('context')({ messages: [{ role: 'user', content: [{ type: 'text', text: 'hook adapter prompt' }], timestamp: Date.now() }] }, hookCtx);
+  const hookResult = handlers.get('before_agent_start')({ prompt: 'hook adapter prompt', systemPrompt: 'base' }, hookCtx);
+  assert.equal(hookResult, undefined, 'before_agent_start must synchronously arm steering without model work');
+  assert.equal(hookAdapterCalls, 0, 'model assessment must wait until Pi has rendered the user message');
+  const hookMessages = [{ role: 'user', content: [{ type: 'text', text: 'hook adapter prompt' }], timestamp: Date.now() }];
+  const contextResult = await handlers.get('context')({ messages: hookMessages }, hookCtx);
+  assert.equal(hookAdapterCalls, 1);
   assert.equal(contextResult.messages.at(-1).customType, 'agent_experience.habit_guidance');
   assert.match(contextResult.messages.at(-1).content, /Agent Experience approved habit guidance/);
   assert.match(contextResult.messages.at(-1).content, /Do: use production adapter guidance/);
+  await handlers.get('context')({ messages: hookMessages }, hookCtx);
+  assert.equal(hookAdapterCalls, 1, 'tool-loop/retry context must reuse one assessment');
 
   const noLedgerRoot = join(temp, 'no-ledger-state');
   process.env.AX_STATE_ROOT = noLedgerRoot;
@@ -242,9 +248,12 @@ try {
   const noLedgerCtx = { cwd: liveCwd, mode: 'tui', sessionManager: { getSessionId: () => 'phase7a-no-ledger', getSessionFile: () => join(temp, 'phase7a-no-ledger.jsonl') }, ui: { notify() {} } };
   await noLedger.commands.get('experience').handler('enable', noLedgerCtx);
   await setAgentExperienceSelectorEnabled(true);
-  const noLedgerResult = await noLedger.handlers.get('before_agent_start')({ prompt: 'no ledger', systemPrompt: 'base' }, { ...noLedgerCtx, modelRegistry: fakeRegistry({ auth: { ok: false, error: 'SECRET should not matter' } }) });
+  const noLedgerHookCtx = { ...noLedgerCtx, modelRegistry: fakeRegistry({ auth: { ok: false, error: 'SECRET should not matter' } }) };
+  const noLedgerResult = noLedger.handlers.get('before_agent_start')({ prompt: 'no ledger', systemPrompt: 'base' }, noLedgerHookCtx);
   assert.equal(noLedgerResult, undefined);
-  assert.equal(existsSync(join(noLedgerRoot, 'ledger.sqlite')), false, 'selector hook must not initialize storage on missing ledger');
+  assert.equal(existsSync(join(noLedgerRoot, 'ledger.sqlite')), false, 'submission hook must not initialize storage on missing ledger');
+  await noLedger.handlers.get('context')({ messages: [{ role: 'user', content: [{ type: 'text', text: 'no ledger' }] }] }, noLedgerHookCtx);
+  assert.equal(existsSync(join(noLedgerRoot, 'ledger.sqlite')), false, 'post-render selector assessment must not initialize missing storage');
   process.env.AX_STATE_ROOT = join(temp, 'state');
 } finally {
   storage.db.close();

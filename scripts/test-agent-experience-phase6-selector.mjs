@@ -104,6 +104,7 @@ function unit(index) {
   return vector;
 }
 const phase6Vectors = { status: unit(0), debug: unit(1), hook: unit(2), unrelated: unit(3) };
+let phase6EmbeddingCalls = 0;
 const phase6Embedding = {
   id: `${LOCAL_EMBEDDING_PROVIDER}:${LOCAL_EMBEDDING_MODEL}:${LOCAL_EMBEDDING_DIMENSIONS}`,
   provider: LOCAL_EMBEDDING_PROVIDER,
@@ -111,6 +112,7 @@ const phase6Embedding = {
   dimensions: LOCAL_EMBEDDING_DIMENSIONS,
   async embed(texts, { signal } = {}) {
     if (signal?.aborted) throw signal.reason || new Error('aborted');
+    phase6EmbeddingCalls += 1;
     return texts.map((text) => {
       const value = String(text).toLowerCase();
       if (/status/.test(value)) return phase6Vectors.status;
@@ -246,14 +248,18 @@ try {
   await setAgentExperienceSelectorEnabled(true);
   readConfig = await readAgentExperienceConfig(getAgentExperiencePaths());
   assert.equal(readConfig.config.selector_enabled, true);
-  __setAgentExperienceSelectorAdapterForTest({ async select({ candidateIds }) { return judgments(candidateIds, candidateIds.includes('hook-active') ? ['hook-active'] : []); } });
+  let hookSelectorCalls = 0;
+  __setAgentExperienceSelectorAdapterForTest({ async select({ candidateIds }) { hookSelectorCalls += 1; operations.push('assess'); return judgments(candidateIds, candidateIds.includes('hook-active') ? ['hook-active'] : []); } });
   const beforeStatus = storage.db.prepare("SELECT status FROM habits WHERE id = 'hook-active'").get().status;
-  const hookResult = await handlers.get('before_agent_start')({ prompt: 'hook prompt please', systemPrompt: 'base system prompt' }, ctx);
-  operations.push('prepared');
-  assert.equal(hookResult, undefined, 'selector preparation must not modify system prompt or append provenance before the user message');
-  assert.deepEqual(operations, ['prepared']);
+  const embeddingsBeforeHook = phase6EmbeddingCalls;
+  const hookResult = handlers.get('before_agent_start')({ prompt: 'hook prompt please', systemPrompt: 'base system prompt' }, ctx);
+  operations.push('submitted');
+  assert.equal(hookResult, undefined, 'before_agent_start must stay synchronous and must not modify the system prompt');
+  assert.equal(hookSelectorCalls, 0, 'submission hook must not start model assessment before Pi renders the user message');
+  assert.equal(phase6EmbeddingCalls, embeddingsBeforeHook, 'submission hook must not start local prompt embedding before Pi renders the user message');
+  assert.deepEqual(operations, ['submitted']);
   assert.equal(entries.length, 0, 'marker must wait for the response-specific context boundary');
-  assert.equal(storage.db.prepare("SELECT status FROM habits WHERE id = 'hook-active'").get().status, beforeStatus, 'selector hook must not mutate habit status');
+  assert.equal(storage.db.prepare("SELECT status FROM habits WHERE id = 'hook-active'").get().status, beforeStatus, 'submission hook must not mutate habit status');
   const userContext = [{ role: 'user', content: [{ type: 'text', text: 'hook prompt please' }], timestamp: Date.now() }];
   const otherSessionCtx = { ...ctx, sessionManager: { getSessionId: () => 'phase6-other', getSessionFile: () => join(temp, 'phase6-other.jsonl') } };
   assert.equal(await handlers.get('context')({ messages: userContext }, otherSessionCtx), undefined, 'same prompt in another session must not inherit or consume pending steering');
@@ -269,7 +275,9 @@ try {
   }
   const contextResult = await handlers.get('context')({ messages: userContext }, ctx);
   operations.push('context-returned');
-  assert.deepEqual(operations, ['prepared', 'append', 'context-returned'], 'marker must append after user persistence and before guided context is returned');
+  assert.equal(hookSelectorCalls, 1, 'first provider-context boundary must assess the rendered user message exactly once');
+  assert.ok(phase6EmbeddingCalls > embeddingsBeforeHook, 'first provider-context boundary must perform the deferred local prompt embedding');
+  assert.deepEqual(operations, ['submitted', 'assess', 'append', 'context-returned'], 'assessment and marker must run after user submission/rendering and before guided context is returned');
   assert.equal(entries.length, 1, 'one steered response must append exactly one provenance entry');
   assert.equal(entries[0].type, HABIT_STEERING_ENTRY_TYPE);
   assert.deepEqual(entries[0].data.habits, [{ condition: 'hook prompt', behavior: 'use hook guidance' }]);
@@ -295,9 +303,15 @@ try {
   assert.equal(entries.length, 1);
 
   const entryCountBeforeNoSelection = entries.length;
-  const noSelectionResult = await handlers.get('before_agent_start')({ prompt: 'words with no matching habit', systemPrompt: 'base' }, ctx);
+  const noSelectionMessages = [{ role: 'user', content: [{ type: 'text', text: 'words with no matching habit' }] }];
+  const noSelectionResult = handlers.get('before_agent_start')({ prompt: 'words with no matching habit', systemPrompt: 'base' }, ctx);
   assert.equal(noSelectionResult, undefined);
-  assert.equal(await handlers.get('context')({ messages: [{ role: 'user', content: [{ type: 'text', text: 'words with no matching habit' }] }] }, ctx), undefined);
+  const callsBeforeNoSelection = hookSelectorCalls;
+  assert.equal(await handlers.get('context')({ messages: noSelectionMessages }, ctx), undefined);
+  const callsAfterNoSelection = hookSelectorCalls;
+  assert.equal(await handlers.get('context')({ messages: noSelectionMessages }, ctx), undefined);
+  assert.equal(hookSelectorCalls, callsAfterNoSelection, 'no-selection tool-loop context must not retry assessment');
+  assert.ok(callsAfterNoSelection - callsBeforeNoSelection <= 1, 'one user message may launch at most one applicability judgment');
   assert.equal(entries.length, entryCountBeforeNoSelection, 'an unsteered answer must append no marker and inject no hidden guidance');
 
   const overwritten = makePi();
@@ -312,14 +326,18 @@ try {
   const appendFailure = makePi({ appendError: true });
   const appendFailureNotes = [];
   const appendFailureCtx = { cwd: liveCwd, mode: 'tui', sessionManager: { getSessionId: () => 'phase6-append-failure', getSessionFile: () => join(temp, 'phase6-append-failure.jsonl') }, ui: { notify(message, level) { appendFailureNotes.push({ message, level }); } } };
-  const appendFailureResult = await appendFailure.handlers.get('before_agent_start')({ prompt: 'hook prompt please', systemPrompt: 'base' }, appendFailureCtx);
+  const appendFailureResult = appendFailure.handlers.get('before_agent_start')({ prompt: 'hook prompt please', systemPrompt: 'base' }, appendFailureCtx);
   assert.equal(appendFailureResult, undefined);
+  const callsBeforeAppendFailure = hookSelectorCalls;
   const appendFailureContext = await appendFailure.handlers.get('context')({ messages: userContext }, appendFailureCtx);
   assert.equal(appendFailureContext, undefined, 'append failure must leave model context unchanged and suppress guidance');
   assert.equal(appendFailure.entries.length, 0);
   assert.ok(appendFailureNotes.some((note) => /provenance marker could not be recorded/.test(note.message)));
   assert.doesNotMatch(JSON.stringify(appendFailureNotes), /hook prompt|hook guidance|provider|model|checksum/i, 'provenance failure diagnostic must be static and sanitized');
-  assert.equal(await appendFailure.handlers.get('context')({ messages: userContext }, appendFailureCtx), undefined, 'failed provenance must clear transient steering state');
+  const callsAfterAppendFailure = hookSelectorCalls;
+  assert.equal(await appendFailure.handlers.get('context')({ messages: userContext }, appendFailureCtx), undefined, 'failed provenance must retain a no-guidance tombstone');
+  assert.equal(hookSelectorCalls, callsAfterAppendFailure, 'provenance failure must not retry selector assessment');
+  assert.equal(callsAfterAppendFailure, callsBeforeAppendFailure + 1);
 
   const rendererFailure = makePi({ rendererError: true });
   const rendererFailureNotes = [];
@@ -368,22 +386,26 @@ try {
   await missingLaw.commands.get('experience').handler('enable', missingLawCtx);
   await setAgentExperienceSelectorEnabled(true);
   __setAgentExperienceSelectorAdapterForTest({ async select() { throw new Error('selector must not run without configured law'); } });
-  const missingLawResult = await missingLaw.handlers.get('before_agent_start')({ prompt: 'hook prompt please', systemPrompt: 'base' }, missingLawCtx);
-  assert.equal(missingLawResult, undefined, 'selector hook must fail closed when configured law file is missing');
+  const missingLawResult = missingLaw.handlers.get('before_agent_start')({ prompt: 'hook prompt please', systemPrompt: 'base' }, missingLawCtx);
+  assert.equal(missingLawResult, undefined, 'submission hook must remain nonblocking when configured law is missing');
+  assert.equal(missingLawNotes.some((note) => /safety file is missing/.test(note.message)), false, 'law validation must wait until after user-message rendering');
+  await missingLaw.handlers.get('context')({ messages: userContext }, missingLawCtx);
   const missingLawWarning = missingLawNotes.find((note) => /safety file is missing/.test(note.message) && note.level === 'warn');
   assert.ok(missingLawWarning, 'missing safety file must emit one bounded visible diagnostic');
   assert.match(missingLawWarning.message, /turned off/);
   assert.doesNotMatch(missingLawWarning.message, /setup use-habits off|law file missing|selector skipped/i);
   assert.equal((await readAgentExperienceConfig(getAgentExperiencePaths())).config.selector_enabled, false, 'missing safety file turns reminders off to stop repeated warnings');
   const missingLawNoteCount = missingLawNotes.length;
-  await missingLaw.handlers.get('before_agent_start')({ prompt: 'hook prompt again', systemPrompt: 'base' }, missingLawCtx);
+  missingLaw.handlers.get('before_agent_start')({ prompt: 'hook prompt again', systemPrompt: 'base' }, missingLawCtx);
+  await missingLaw.handlers.get('context')({ messages: [{ role: 'user', content: [{ type: 'text', text: 'hook prompt again' }] }] }, missingLawCtx);
   assert.equal(missingLawNotes.length, missingLawNoteCount, 'disabled selector must not keep warning every turn');
   await setAgentExperienceSelectorEnabled(true);
   const schemaMismatchStorage = await initExperienceStorage(missingLawRoot, { allowInit: true, userId: 'owner' });
   schemaMismatchStorage.db.exec('PRAGMA user_version = 999');
   schemaMismatchStorage.db.close();
   await writeFile(join(missingLawRoot, 'law.md'), 'configured law after missing-law diagnostic\n');
-  await missingLaw.handlers.get('before_agent_start')({ prompt: 'hook prompt after schema mismatch', systemPrompt: 'base' }, missingLawCtx);
+  missingLaw.handlers.get('before_agent_start')({ prompt: 'hook prompt after schema mismatch', systemPrompt: 'base' }, missingLawCtx);
+  await missingLaw.handlers.get('context')({ messages: [{ role: 'user', content: [{ type: 'text', text: 'hook prompt after schema mismatch' }] }] }, missingLawCtx);
   assert.ok(missingLawNotes.length > missingLawNoteCount, 'distinct selector runtime diagnostics must not be suppressed by the first error');
   assert.ok(missingLawNotes.some((note) => /newer than this extension|schema mismatch/.test(note.message)), 'schema mismatch must emit its own diagnostic');
   __setAgentExperienceSelectorAdapterForTest(undefined);
@@ -395,9 +417,11 @@ try {
   const noLedgerCtx = { cwd: liveCwd, mode: 'tui', sessionManager: { getSessionId: () => 'phase6-no-ledger', getSessionFile: () => join(temp, 'phase6-no-ledger.jsonl') }, ui: { notify(message, level) { noLedgerNotes.push({ message, level }); } } };
   await noLedger.commands.get('experience').handler('enable', noLedgerCtx);
   await setAgentExperienceSelectorEnabled(true);
-  const noLedgerResult = await noLedger.handlers.get('before_agent_start')({ prompt: 'nothing stored yet', systemPrompt: 'base' }, noLedgerCtx);
-  assert.equal(noLedgerResult, undefined, 'selector hook must fail closed when ledger is absent');
-  assert.equal(existsSync(join(noLedgerRoot, 'ledger.sqlite')), false, 'selector hook must not initialize storage on missing ledger');
+  const noLedgerResult = noLedger.handlers.get('before_agent_start')({ prompt: 'nothing stored yet', systemPrompt: 'base' }, noLedgerCtx);
+  assert.equal(noLedgerResult, undefined, 'submission hook must remain nonblocking when ledger is absent');
+  assert.equal(existsSync(join(noLedgerRoot, 'ledger.sqlite')), false, 'submission hook must not initialize storage');
+  await noLedger.handlers.get('context')({ messages: [{ role: 'user', content: [{ type: 'text', text: 'nothing stored yet' }] }] }, noLedgerCtx);
+  assert.equal(existsSync(join(noLedgerRoot, 'ledger.sqlite')), false, 'post-render selector assessment must not initialize a missing ledger');
   process.env.AX_STATE_ROOT = join(temp, 'state');
 } finally {
   storage.db.close();

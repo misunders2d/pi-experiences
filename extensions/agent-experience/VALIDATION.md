@@ -159,7 +159,7 @@ Release evidence must include:
 - semantic-unavailable declaration creates no candidate/relation; clean activation and duplicate-block routing are atomic;
 - conversational review exposes numbered sanitized wording only, revalidates hidden snapshots, and rejects stale or same-turn mutation;
 - retry/correction/expiry/session-isolation behavior creates no duplicate or replaced-draft habit;
-- actual TUI steering renders and persists in order: triggering user message → one `agent_experience.habit_steering` entry → assistant response;
+- `before_agent_start` returns synchronously without embedding/model work; the packed TUI smoke requires the submitted message to re-render within 1.5 seconds, then verifies order: triggering user message → one post-render assessment → one `agent_experience.habit_steering` entry → assistant response;
 - collapsed rendering identifies every exact selected condition; expanded/malformed rendering stays safe; no-selection emits no marker;
 - every enabled selection embeds the request locally and ephemerally, validates all eligible condition-vector cache rows, and uses no lexical-only or vector-only fallback;
 - the strict schema-v2 judge receives only redacted request summary plus retrieved IDs/conditions, covers every candidate exactly, and rejects mention, quotation, negation, generic wording, future/hypothetical intent, low confidence, ambiguity, malformed/partial output, timeout, cancellation, missing auth, and state drift;
@@ -167,7 +167,7 @@ Release evidence must include:
 - missing/corrupt vectors fail before the judge, setup repairs complete condition caches, and post-activation maintenance failure never rolls back approved habit state;
 - selector guidance has no daily quota; repeated eligible messages continue receiving guidance, while hit logs remain audit/provenance only and persist no prompt derivative, vector, similarity, or judge rationale/confidence;
 - durable provenance stores approved wording/count/time only and never enters LLM context; separate transient guidance enters only the marked response;
-- tool-loop context receives the same guidance without duplicate markers, and a new user message cannot inherit it;
+- tool-loop context receives the same guidance without duplicate assessment/markers; no-selection and provenance-failure tombstones also prevent retries, and a new user message cannot inherit old steering;
 - non-TUI, renderer/build/append failure produces no habit guidance and only a static sanitized diagnostic.
 
 ## Release gate

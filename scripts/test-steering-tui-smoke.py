@@ -37,9 +37,14 @@ if pid==0:
 fcntl.ioctl(fd,termios.TIOCSWINSZ,struct.pack('HHHH',42,120,0,0))
 try:
     drain(fd,2); mark=len(raw)
-    send(fd,b'Please provide steering smoke status.\r',.2)
-    wait(fd,r'Steered by habit\s*[·.]\s*When asked for steering smoke status',timeout=30,start=mark)
-    collapsed=text(mark)
+    send(fd,b'Please provide steering smoke status.',.1)
+    submitted_mark=len(raw); submitted_at=time.monotonic()
+    send(fd,b'\r',.05)
+    wait(fd,r'Please provide steering smoke status\.',timeout=1.5,start=submitted_mark)
+    submit_render_ms=round((time.monotonic()-submitted_at)*1000)
+    assert submit_render_ms<1500, 'submitted user message must render immediately, before selector preprocessing finishes'
+    wait(fd,r'Steered by habit\s*[·.]\s*When asked for steering smoke status',timeout=30,start=submitted_mark)
+    collapsed=text(submitted_mark)
     prompt_pos=collapsed.rfind('Please provide steering smoke status.')
     marker_pos=collapsed.rfind('Steered by habit')
     assert prompt_pos>=0 and marker_pos>prompt_pos, 'response marker must render after the triggering user prompt'
@@ -67,4 +72,4 @@ finally:
     except ProcessLookupError: pass
     try: os.waitpid(pid,0)
     except ChildProcessError: pass
-print(f'installed steering TUI smoke passed; transcript={transcript}')
+print(f'installed steering TUI smoke passed; submit_render_ms={submit_render_ms}; transcript={transcript}')

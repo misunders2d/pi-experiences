@@ -120,7 +120,7 @@ Approved-habit reminders are off by default. There is no daily quota: every genu
 
 Every enabled attempt embeds the request locally and ephemerally, validates the complete eligible condition-vector cache, and retrieves a bounded condition-only set. The judge receives only a bounded redacted request summary plus retrieved IDs/conditions; behavior, similarity, confidence/staleness, unretrieved habits, source evidence, and audit data are excluded. It must reject mere mention, quotation, negation, generic shared wording, hypothetical/future intent, low confidence, and ambiguity. There is no lexical-only or vector-only injection path. Missing/corrupt vectors/assets, auth, timeout, cancellation, malformed/partial output, or state drift produces no guidance.
 
-A habit may steer one specific TUI response only when Pi can append response-adjacent provenance after the triggering user message and before provider context is returned:
+Pressing Enter is not held behind this work: the submission hook only arms transient response state, so Pi persists and renders the user message first. Local embedding and bounded assessment then run once at the first provider-context boundary. A habit may steer that specific TUI response only when Pi can append response-adjacent provenance after the triggering user message and before provider context is returned:
 
 ```text
 ◇ Steered by habit · When I ask for cobalt status

@@ -2766,7 +2766,14 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 		}
 	});
 	const HABIT_GUIDANCE_CUSTOM_TYPE = "agent_experience.habit_guidance";
-	type PendingSteeringRun = { prompt: string; entry: HabitSteeringEntryData; guidance: string; markerCommitted: boolean; userMessageCount?: number };
+	type PendingSteeringRun = {
+		prompt: string;
+		phase: "armed" | "attempted";
+		entry?: HabitSteeringEntryData;
+		guidance?: string;
+		markerCommitted: boolean;
+		userMessageCount?: number;
+	};
 	const pendingSteeringRuns = new Map<string, PendingSteeringRun>();
 	const steeringScopeFromContext = (ctx: Pick<ExtensionContext, "sessionManager"> | { sessionManager?: ExtensionContext["sessionManager"] }): string | undefined => {
 		const key = captureKeyFromContext(ctx);
@@ -2844,12 +2851,11 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 		},
 	});
 
-	pi.on("before_agent_start", async (event, ctx) => {
+	pi.on("before_agent_start", (event, ctx) => {
 		const breakScope = breakInScopeFromContext(ctx);
 		if (breakScope) breakInAgentActive.add(breakInScopeKey(breakScope));
-		// Every normal user turn replaces prior transient steering state in this
-		// exact user/session scope. Approved wording is persisted only in the later
-		// custom marker entry, never in this in-memory key.
+		// Keep submission path synchronous and cheap so Pi can emit/persist/render
+		// the user message before local embedding and applicability assessment.
 		const steeringScope = steeringScopeFromContext(ctx);
 		if (steeringScope) pendingSteeringRuns.delete(steeringScope);
 		if (!steeringScope) {
@@ -2859,70 +2865,9 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 			});
 			return;
 		}
-		const paths = getAgentExperiencePaths();
-		let config: Awaited<ReturnType<typeof readAgentExperienceConfig>>["config"];
-		try {
-			({ config } = await readAgentExperienceConfig(paths));
-		} catch (error) {
-			notifyDedupedDiagnostic(ctx, selectorDiagnosticsShown, { key: "selector-runtime:config-read-failed", message: `Agent Experience approved-habit reminders are paused because config could not be read: ${redactText(String((error as any)?.message || error)).slice(0, 300)}` });
-			return;
-		}
-		if (!config.enabled || !config.selector_enabled) return;
 		const prompt = String((event as { prompt?: unknown; text?: unknown }).prompt ?? (event as { text?: unknown }).text ?? "");
 		if (!prompt.trim()) return;
-		if (ctx.mode !== "tui" || !steeringRendererReady || typeof pi.appendEntry !== "function") {
-			notifyDedupedDiagnostic(ctx, selectorDiagnosticsShown, {
-				key: "selector-runtime:steering-provenance-unavailable",
-				message: "Agent Experience habit steering was suppressed because response-specific visual provenance is unavailable in this interface. No habit guidance was injected.",
-			});
-			return;
-		}
-		if (!(await fileExists(resolvePrivatePath(paths.root, "ledger.sqlite")))) return;
-		let storage: Awaited<ReturnType<typeof openExistingExperienceStorage>> | undefined;
-		try {
-			storage = await openExistingExperienceStorage(paths.root, { userId: getConfiguredUserId() });
-			const law = await readConfiguredLawSnapshot(storage.root, config);
-			const adapter = selectorModelAdapter ?? createPiSelectorModelAdapter(ctx);
-			const embeddingAdapter = await selectorRuntimeEmbeddingAdapter(storage.root);
-			const now = new Date().toISOString();
-			const result = await runSelectorRuntime(storage.db, { userId: storage.userId, prompt, config, law, now, adapter, embeddingAdapter, signal: ctx.signal });
-			if (!result.injected || !result.message) return;
-			try {
-				pendingSteeringRuns.set(steeringScope, {
-					prompt,
-					entry: buildHabitSteeringEntry({ candidates: result.candidates, selected: result.selected, createdAt: now }),
-					guidance: result.message,
-					markerCommitted: false,
-				});
-			} catch {
-				pendingSteeringRuns.delete(steeringScope);
-				notifyDedupedDiagnostic(ctx, selectorDiagnosticsShown, {
-					key: "selector-runtime:steering-provenance-build-failed",
-					message: "Agent Experience habit steering was suppressed because response-specific provenance could not be prepared. No habit guidance was injected.",
-				});
-			}
-		} catch (error: any) {
-			pendingSteeringRuns.delete(steeringScope);
-			const raw = String(error?.message || error);
-			if (/law file missing/i.test(raw)) {
-				try {
-					await setAgentExperienceSelectorEnabled(false, paths);
-					notifyDedupedDiagnostic(ctx, selectorDiagnosticsShown, {
-						key: "selector-runtime:missing-safety-file:auto-off",
-						message: "Agent Experience approved-habit reminders were turned off because the internal safety file is missing. Re-enable them from /experience setup if wanted.",
-					});
-				} catch (disableError: any) {
-					notifyDedupedDiagnostic(ctx, selectorDiagnosticsShown, {
-						key: `selector-runtime:missing-safety-file:disable-failed:${redactText(String(disableError?.message || disableError)).slice(0, 200)}`,
-						message: `Agent Experience approved-habit reminders are paused because the internal safety file is missing, but Pi could not turn them off automatically. Detail: ${redactText(String(disableError?.message || disableError)).slice(0, 300)}`,
-					});
-				}
-				return;
-			}
-			notifyDedupedDiagnostic(ctx, selectorDiagnosticsShown, diagnosticFor("selector-runtime", error));
-		} finally {
-			storage?.db.close();
-		}
+		pendingSteeringRuns.set(steeringScope, { prompt, phase: "armed", markerCommitted: false });
 	});
 
 	pi.on("context", async (event, ctx) => {
@@ -2930,33 +2875,93 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 		if (!steeringScope) return;
 		const state = pendingSteeringRuns.get(steeringScope);
 		if (!state) return;
-		if (ctx.mode !== "tui" || !steeringRendererReady || typeof pi.appendEntry !== "function") {
-			pendingSteeringRuns.delete(steeringScope);
-			notifyDedupedDiagnostic(ctx, selectorDiagnosticsShown, {
-				key: "selector-runtime:steering-context-provenance-unavailable",
-				message: "Agent Experience habit steering was suppressed because response-specific visual provenance became unavailable. No habit guidance was injected.",
-			});
-			return;
-		}
 		const userMessages = event.messages.filter((message: any) => message?.role === "user");
 		const latestUser = userMessages.at(-1) as any;
 		const latestText = Array.isArray(latestUser?.content)
 			? latestUser.content.filter((part: any) => part?.type === "text").map((part: any) => String(part.text ?? "")).join("")
 			: String(latestUser?.content ?? "");
 		if (!latestUser || latestText !== state.prompt || (state.userMessageCount !== undefined && state.userMessageCount !== userMessages.length)) {
-			// A committed response must stop at a changed user message. An uncommitted
-			// pending selection may coexist briefly with an older context callback;
-			// leave it for its exact prompt rather than letting the old callback consume it.
-			if (state.markerCommitted) pendingSteeringRuns.delete(steeringScope);
+			// An armed turn may coexist briefly with an older context callback; leave
+			// it for its exact prompt. Completed state must stop at a changed user turn.
+			if (state.phase === "attempted") pendingSteeringRuns.delete(steeringScope);
 			return;
 		}
 		state.userMessageCount ??= userMessages.length;
+
+		if (state.phase === "armed") {
+			// Mark attempted before awaiting anything. Retries/tool-loop contexts must
+			// never launch another selector call for this same user message.
+			state.phase = "attempted";
+			if (ctx.mode !== "tui" || !steeringRendererReady || typeof pi.appendEntry !== "function") {
+				notifyDedupedDiagnostic(ctx, selectorDiagnosticsShown, {
+					key: "selector-runtime:steering-provenance-unavailable",
+					message: "Agent Experience habit steering was suppressed because response-specific visual provenance is unavailable in this interface. No habit guidance was injected.",
+				});
+				return;
+			}
+			const paths = getAgentExperiencePaths();
+			let config: Awaited<ReturnType<typeof readAgentExperienceConfig>>["config"];
+			try {
+				({ config } = await readAgentExperienceConfig(paths));
+			} catch (error) {
+				notifyDedupedDiagnostic(ctx, selectorDiagnosticsShown, { key: "selector-runtime:config-read-failed", message: `Agent Experience approved-habit reminders are paused because config could not be read: ${redactText(String((error as any)?.message || error)).slice(0, 300)}` });
+				return;
+			}
+			if (!config.enabled || !config.selector_enabled) return;
+			if (!(await fileExists(resolvePrivatePath(paths.root, "ledger.sqlite")))) return;
+			let storage: Awaited<ReturnType<typeof openExistingExperienceStorage>> | undefined;
+			try {
+				storage = await openExistingExperienceStorage(paths.root, { userId: getConfiguredUserId() });
+				const law = await readConfiguredLawSnapshot(storage.root, config);
+				const adapter = selectorModelAdapter ?? createPiSelectorModelAdapter(ctx);
+				const embeddingAdapter = await selectorRuntimeEmbeddingAdapter(storage.root);
+				const now = new Date().toISOString();
+				const result = await runSelectorRuntime(storage.db, { userId: storage.userId, prompt: state.prompt, config, law, now, adapter, embeddingAdapter, signal: ctx.signal });
+				if (pendingSteeringRuns.get(steeringScope) !== state || !result.injected || !result.message) return;
+				try {
+					state.entry = buildHabitSteeringEntry({ candidates: result.candidates, selected: result.selected, createdAt: now });
+					state.guidance = result.message;
+				} catch {
+					state.entry = undefined;
+					state.guidance = undefined;
+					notifyDedupedDiagnostic(ctx, selectorDiagnosticsShown, {
+						key: "selector-runtime:steering-provenance-build-failed",
+						message: "Agent Experience habit steering was suppressed because response-specific provenance could not be prepared. No habit guidance was injected.",
+					});
+				}
+			} catch (error: any) {
+				const raw = String(error?.message || error);
+				if (/law file missing/i.test(raw)) {
+					try {
+						await setAgentExperienceSelectorEnabled(false, paths);
+						notifyDedupedDiagnostic(ctx, selectorDiagnosticsShown, {
+							key: "selector-runtime:missing-safety-file:auto-off",
+							message: "Agent Experience approved-habit reminders were turned off because the internal safety file is missing. Re-enable them from /experience setup if wanted.",
+						});
+					} catch (disableError: any) {
+						notifyDedupedDiagnostic(ctx, selectorDiagnosticsShown, {
+							key: `selector-runtime:missing-safety-file:disable-failed:${redactText(String(disableError?.message || disableError)).slice(0, 200)}`,
+							message: `Agent Experience approved-habit reminders are paused because the internal safety file is missing, but Pi could not turn them off automatically. Detail: ${redactText(String(disableError?.message || disableError)).slice(0, 300)}`,
+						});
+					}
+				} else {
+					notifyDedupedDiagnostic(ctx, selectorDiagnosticsShown, diagnosticFor("selector-runtime", error));
+				}
+			} finally {
+				storage?.db.close();
+			}
+		}
+
+		if (pendingSteeringRuns.get(steeringScope) !== state || !state.entry || !state.guidance) return;
 		if (!state.markerCommitted) {
 			try {
 				pi.appendEntry(HABIT_STEERING_ENTRY_TYPE, state.entry);
 				state.markerCommitted = true;
 			} catch {
-				pendingSteeringRuns.delete(steeringScope);
+				// Keep an attempted no-guidance tombstone so retries cannot rerun the
+				// selector after response-specific provenance failed.
+				state.entry = undefined;
+				state.guidance = undefined;
 				notifyDedupedDiagnostic(ctx, selectorDiagnosticsShown, {
 					key: "selector-runtime:steering-provenance-append-failed",
 					message: "Agent Experience habit steering was suppressed because its response-specific provenance marker could not be recorded. No habit guidance was injected.",
