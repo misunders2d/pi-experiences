@@ -16,6 +16,11 @@ const packageJson=JSON.parse(await readFile(join(root,'package.json'),'utf8'));
 assert.equal(packageJson.engines.node,'>=22.19.0','package Node floor must match locked Pi peers');
 assert.ok(packageJson.files.includes('runtime/'),'packed package must include local worker/vendor runtime');
 assert.ok(packageJson.files.includes('docs/'),'packed package must include README/gallery artwork');
+assert.ok(packageJson.files.includes('CHANGELOG.md'),'packed package must include user-facing release history');
+const changelog=await readFile(join(root,'CHANGELOG.md'),'utf8');
+assert.match(changelog,/^# Changelog$/m,'changelog heading missing');
+assert.match(changelog,/^## \[Unreleased\]$/m,'changelog must preserve an Unreleased section');
+assert.match(changelog,new RegExp(`^## \\[${packageJson.version.replaceAll('.', '\\.')}\\]`, 'm'),'changelog must contain the current published package version');
 assert.equal(packageJson.description,'Human-reviewed habits for Pi coding agents—a local-first behavioral learning layer alongside skills and memory.','package description must preserve the discoverable habits category');
 assert.equal(packageJson.dependencies?.typebox,'1.1.38','conversational tool schemas must declare their TypeBox runtime directly');
 assert.match(packageJson.scripts?.['check:agent-experience']||'',/test-agent-experience-phase16-conversation\.mjs/,'complete checks must include conversational habit validation');
@@ -43,6 +48,7 @@ for(const marker of ['# Pi Experiences — habits for a coding agent that learns
   const index=readme.indexOf(marker);
   assert.ok(index>=0&&index<technicalOpenIndex,`README human-first product section missing before technical contract: ${marker}`);
 }
+assert.match(readme.slice(0,technicalOpenIndex),/\[CHANGELOG\.md\]\(\.\/CHANGELOG\.md\)/,'README must link the user-facing changelog');
 for(const phrase of ['Pi coding agent','Agent skill','Agent memory','Experience habit','human-in-the-loop behavioral learning','Profiles describe the person; experience manages reviewed habits','selected Pi model/provider']){
   assert.match(readme.slice(0,technicalOpenIndex),new RegExp(phrase,'i'),`README discovery/product story missing: ${phrase}`);
 }

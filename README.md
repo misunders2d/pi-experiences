@@ -159,6 +159,8 @@ Requirements:
 
 Pi extensions execute with your user permissions. Review third-party package source before installation.
 
+See [CHANGELOG.md](./CHANGELOG.md) for verified user-facing release changes.
+
 ## Normal workflow
 
 ### Record a habit in conversation
@@ -519,13 +521,14 @@ Before release, validate the exact `npm pack` tarball in a fresh `--ignore-scrip
 
 For a release:
 
-1. update source, tests, docs, and generated CLI together;
-2. run complete automated and packed-installed validation;
-3. obtain independent code/privacy/constitution review for significant changes;
-4. bump version;
-5. commit and push `main`;
-6. create and push the matching immutable tag;
-7. publish npm only as a separate explicit manual action.
+1. update `CHANGELOG.md` first with verified user-facing changes;
+2. update source, tests, docs, and generated CLI together;
+3. run complete automated and packed-installed validation;
+4. obtain independent code/privacy/constitution review for significant changes;
+5. bump version and move the verified changelog entry from **Unreleased** to that version;
+6. commit and push `main`;
+7. create and push the matching immutable tag;
+8. stage npm through the GitHub OIDC workflow; a human approves publication with passkey/2FA.
 
 GitHub is the source of truth. npm publication is not performed automatically by this repository.
 

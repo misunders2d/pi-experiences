@@ -80,6 +80,7 @@ npm pack --json --pack-destination /tmp/pi-experiences-040-pack
 The tarball must include:
 
 - `package.json` version `0.1.40` and Node floor `>=22.19.0`;
+- `CHANGELOG.md` with a verified entry for the release;
 - wildcard Pi peer dependencies;
 - extension source, `steering-note.ts`, and public skill;
 - current executable `dist/experience-consolidate.mjs`;
@@ -171,6 +172,8 @@ Release evidence must include:
 - non-TUI, renderer/build/append failure produces no habit guidance and only a static sanitized diagnostic.
 
 ## Release gate
+
+Before version bump or tag/push, update `CHANGELOG.md` first with verified user-facing changes. Keep work under **Unreleased** until release preparation, then move it under the exact release version/date. Do not reconstruct or guess unsupported historical entries.
 
 Before tag/push:
 
