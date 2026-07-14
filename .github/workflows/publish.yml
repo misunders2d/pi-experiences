@@ -27,7 +27,6 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: "24"
-          registry-url: "https://registry.npmjs.org"
           package-manager-cache: false
 
       # Staged publishing requires npm 11.15.0 or newer. Pin the CLI used
@@ -50,8 +49,15 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # prepublishOnly runs the full check suite and build. Trusted
-      # publishing supplies short-lived OIDC credentials and provenance.
+      - name: Verify GitHub OIDC is available
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}"
+          test -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}"
+
+      # prepublishOnly runs the full check suite and build. npm exchanges
+      # GitHub's short-lived OIDC identity and adds provenance automatically.
       # A maintainer must approve the staged package with npm 2FA/passkey.
       - name: Stage package on npm
-        run: npm stage publish
+        run: npm stage publish --loglevel=verbose
