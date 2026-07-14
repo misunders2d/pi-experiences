@@ -14,7 +14,7 @@ const packageRoot=resolve(process.argv[2]||'');
 if(!packageRoot)throw new Error('Usage: verify-packed-install.mjs /absolute/installed/pi-experiences');
 const pkg=JSON.parse(await readFile(join(packageRoot,'package.json'),'utf8'));
 assert.equal(pkg.name,'pi-experiences');
-assert.equal(pkg.version,'0.1.37');
+assert.equal(pkg.version,'0.1.38');
 assert.equal(pkg.engines.node,'>=22.19.0');
 assert.deepEqual(pkg.peerDependencies,{'@earendil-works/pi-ai':'*','@earendil-works/pi-coding-agent':'*','@earendil-works/pi-tui':'*'});
 assert.equal(pkg.dependencies?.typebox,'1.1.38');
