@@ -6,6 +6,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 ## [Unreleased]
 
+## [0.1.41] - 2026-07-14
+
 ### Fixed
 
 - Habit assessment now distinguishes a request made now about a future-dated subject from a condition mentioned only as a possible later trigger. For example, “plan my vacation for next summer” is current applicability, while “if I ask you to plan a trip next month…” remains hypothetical/future.
@@ -32,5 +34,6 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 - Added synchronous submission-hook checks, deferred embedding/model assertions, and a packed Pi TUI smoke requiring submitted-message rendering within 1.5 seconds.
 
-[Unreleased]: https://github.com/misunders2d/pi-experiences/compare/v0.1.40...HEAD
+[Unreleased]: https://github.com/misunders2d/pi-experiences/compare/v0.1.41...HEAD
+[0.1.41]: https://github.com/misunders2d/pi-experiences/compare/v0.1.40...v0.1.41
 [0.1.40]: https://github.com/misunders2d/pi-experiences/compare/v0.1.39...v0.1.40
