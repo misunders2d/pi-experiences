@@ -40,6 +40,7 @@ const vectors = {
   release: unit(2),
   decision: unit(3),
   unrelated: unit(4),
+  vacation: unit(5),
 };
 
 function vectorFor(text) {
@@ -48,6 +49,7 @@ function vectorFor(text) {
   if (/nontrivial|code changes|safety-sensitive|vector selector across the package code/.test(value)) return vectors.code;
   if (/package release|publishing|verifying/.test(value)) return vectors.release;
   if (/decision|approval|setup choice|missing information/.test(value)) return vectors.decision;
+  if (/summer vacation|vacation for the next summer|plan.*vacation/.test(value)) return vectors.vacation;
   if (/take a lot of code/.test(value)) return vectors.code;
   if (/agent package/.test(value)) return normalizedVector(Float32Array.from(vectors.code, (entry, index) => entry + vectors.release[index]));
   return vectors.unrelated;
@@ -111,21 +113,22 @@ try {
     ['code', 'When doing nontrivial code changes, safety-sensitive fixes, or release review', 'Use thorough review and validation.'],
     ['release', 'When preparing, publishing, or verifying a package release.', 'Verify artifacts and stop before publication.'],
     ['decision', 'When asking me for a decision, approval, setup choice, or missing information', 'Ask one crisp bounded question.'],
+    ['vacation', 'When I mention or ask about summer vacation', 'Give the approved summer-vacation response.'],
   ];
   for (const [id, condition, behavior] of definitions) insertStorageRecord(storage.db, 'habits', { id, userId: 'owner', data: habitData(condition, behavior, law.hash), now: `2026-07-13T00:0${definitions.findIndex((row) => row[0] === id)}:00.000Z` });
 
   const candidates = selectActiveSelectorSnapshot(storage.db, { userId: 'owner' });
   const embedding = fakeEmbeddingAdapter();
   const prepared = await prepareSelectorConditionVectors(storage.db, { userId: 'owner', candidates, embeddingAdapter: embedding, now: '2026-07-13T01:00:00.000Z' });
-  assert.deepEqual(prepared, { prepared: 4, cached: 0, total: 4 });
-  assert.equal(storage.db.prepare('SELECT COUNT(*) count FROM habit_embeddings WHERE embedding_input_version = ?').get(SELECTOR_CONDITION_EMBEDDING_INPUT_VERSION).count, 4);
+  assert.deepEqual(prepared, { prepared: 5, cached: 0, total: 5 });
+  assert.equal(storage.db.prepare('SELECT COUNT(*) count FROM habit_embeddings WHERE embedding_input_version = ?').get(SELECTOR_CONDITION_EMBEDDING_INPUT_VERSION).count, 5);
   for (const row of storage.db.prepare('SELECT habit_id, habit_row_checksum FROM habit_embeddings WHERE embedding_input_version = ? ORDER BY habit_id').all(SELECTOR_CONDITION_EMBEDDING_INPUT_VERSION)) {
     const candidate = candidates.find((item) => item.id === row.habit_id);
     assert.equal(row.habit_row_checksum, selectorConditionIdentityChecksum(candidate.condition), 'selector cache must bind stable condition identity, not mutable whole row');
     assert.notEqual(row.habit_row_checksum, candidate.checksum);
   }
   const cached = await prepareSelectorConditionVectors(storage.db, { userId: 'owner', candidates, embeddingAdapter: embedding, now: '2026-07-13T01:01:00.000Z' });
-  assert.deepEqual(cached, { prepared: 0, cached: 4, total: 4 });
+  assert.deepEqual(cached, { prepared: 0, cached: 5, total: 5 });
 
   const conditionVectors = readSelectorConditionVectors(storage.db, { userId: 'owner', candidates, embeddingAdapter: embedding });
   const retrieved = retrieveSelectorCandidates({ candidates, conditionVectors, promptVector: vectors.status });
@@ -161,6 +164,7 @@ try {
     ['Implement and validate the vector selector across the package code and tests.', 'code', '2026-07-13T02:01:10.000Z'],
     ['Tag and verify the package release now.', 'release', '2026-07-13T02:01:20.000Z'],
     ['I need your decision now: should we use vectors or lexical matching?', 'decision', '2026-07-13T02:01:30.000Z'],
+    ["Now, let's plan a vacation for the next summer.", 'vacation', '2026-07-13T02:01:40.000Z'],
   ]) {
     const positive = await runSelectorRuntime(storage.db, {
       userId: 'owner', prompt, config, law, now, embeddingAdapter: embedding,
@@ -172,6 +176,7 @@ try {
   for (const [prompt, now] of [
     ['does it take a lot of code?', '2026-07-13T02:02:00.000Z'],
     ['coder is working now, and later we will turn this into an actual agent package', '2026-07-13T02:03:00.000Z'],
+    ['If I ask you next year to plan a summer vacation, what would happen?', '2026-07-13T02:03:10.000Z'],
   ]) {
     const rejected = await runSelectorRuntime(storage.db, {
       userId: 'owner', prompt, config, law, now, embeddingAdapter: embedding,

@@ -96,6 +96,10 @@ const adapter = createPiSelectorModelAdapter({ modelRegistry: fakeRegistry() }, 
     assert.ok(options.signal instanceof AbortSignal, 'production adapter must pass AbortSignal');
     assert.equal(options.timeoutMs, 1500);
     assert.equal(options.maxRetries, 0);
+    assert.match(String(context.systemPrompt), /currently making the kind of request or statement described by the condition/i, 'judge must evaluate the trigger occurring in the present message');
+    assert.match(String(context.systemPrompt), /When I mention or ask about X.*broad current trigger/i, 'judge must explain broad current mention-or-ask triggers');
+    assert.match(String(context.systemPrompt), /Plan my vacation for next summer.*current_applicability/i, 'judge must treat a current request about a future-dated subject as current applicability');
+    assert.match(String(context.systemPrompt), /If I ask you to plan a trip next month.*hypothetical_or_future/i, 'judge must reserve future rejection for a future trigger');
     assert.equal(String(context.messages[0].content).includes('answering selector adapter tests'), false, 'raw habit text is supplied by selector prompt only in runtime tests, not this direct adapter test');
     return assistantText('{"schema_version":2,"judgments":[{"id":"active-1","applicable":true,"confidence_bp":9500,"reason":"current_applicability"}]}');
   },
