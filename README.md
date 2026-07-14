@@ -180,7 +180,8 @@ You can also ask Pi to show habit suggestions or possible duplicates, discuss nu
 6. Review suggestions conversationally or from **Review suggested habits**, then explicitly approve or reject each proposal.
 7. Use **Review approved habits** to inspect, disable, re-enable, archive, or recheck a waiting approval.
 8. Optionally prepare **Prevent duplicate habits**.
-9. Optionally enable **Use approved habits before replies**.
+9. Optionally select **Choose model for habit assessment** to choose which authenticated Pi model checks whether approved habits apply to a request.
+10. Optionally enable **Use approved habits before replies**.
 
 The setup panel remains the complete fallback/control panel. It also contains duplicate resolution, 7/14/30-day source-example retention, current settings, plain-language help, all-off, and explicit local schedule management.
 
@@ -421,7 +422,7 @@ Habit declaration, approval, re-enable, and promotion prepare local vectors outs
 
 ### Approved-habit reminders
 
-Reminder injection is off by default. Enabling it from `/experience setup` first discloses and verifies two mandatory stages: private local multilingual vector retrieval and one bounded configured-model applicability call per eligible request. Setup prepares pinned local assets and every currently eligible approved-condition vector before writing the ON setting. Package installation and updates never download those assets or enable reminders.
+Reminder injection is off by default. **Choose model for habit assessment** in `/experience setup` selects the authenticated Pi model used for the bounded applicability check; changing that model does not turn reminders on or off. Enabling reminders separately first discloses and verifies two mandatory stages: private local multilingual vector retrieval and one bounded configured-model applicability call per eligible request. Setup prepares pinned local assets and every currently eligible approved-condition vector before writing the ON setting. Package installation and updates never download those assets or enable reminders.
 
 Every enabled selection embeds the current request locally and ephemerally, validates the complete cache for all active same-user law-valid habits that pass confidence/freshness gates, and retrieves a bounded condition-only candidate set by cosine similarity. Behavior text cannot make a habit applicable. The judge receives only a bounded redacted request summary plus retrieved IDs and condition text—never behavior, similarity, habit confidence/staleness, rationale, unretrieved habits, source evidence, paths, or audit data. It must cover every candidate exactly and reject mere mentions, quotations, negation, generic shared wording, hypothetical/future intent, low confidence, and ambiguity. There is no lexical-only or vector-only guidance path. Missing/corrupt vectors or assets, auth failure, timeout, cancellation, malformed/partial output, state drift, or uncertainty produces no guidance.
 

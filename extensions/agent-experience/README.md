@@ -23,6 +23,7 @@ The panel contains every normal action:
 
 - save redacted chat examples locally;
 - choose the Pi model used for manual habit learning;
+- choose the Pi model that assesses whether approved habits apply before replies;
 - analyze the next bounded unread range;
 - review suggestions;
 - resolve possible duplicates;
@@ -115,7 +116,7 @@ Shared locks carry random token, PID, hostname, and creation time. Live locks bl
 
 ## Selector/reminders and visible steering provenance
 
-Approved-habit reminders are off by default. There is no daily quota: every genuinely applicable eligible message may receive guidance. Enabling explicitly prepares private local multilingual vectors for eligible approved habit conditions and discloses one bounded configured-model applicability call per request. Package installation/update never downloads assets or enables reminders.
+Approved-habit reminders are off by default. There is no daily quota: every genuinely applicable eligible message may receive guidance. **Choose model for habit assessment** selects the authenticated Pi model used for the bounded applicability call and does not toggle reminders. Enabling reminders separately prepares private local multilingual vectors for eligible approved habit conditions and discloses one bounded configured-model applicability call per request. Package installation/update never downloads assets or enables reminders.
 
 Every enabled attempt embeds the request locally and ephemerally, validates the complete eligible condition-vector cache, and retrieves a bounded condition-only set. The judge receives only a bounded redacted request summary plus retrieved IDs/conditions; behavior, similarity, confidence/staleness, unretrieved habits, source evidence, and audit data are excluded. It must reject mere mention, quotation, negation, generic shared wording, hypothetical/future intent, low confidence, and ambiguity. There is no lexical-only or vector-only injection path. Missing/corrupt vectors/assets, auth, timeout, cancellation, malformed/partial output, or state drift produces no guidance.
 

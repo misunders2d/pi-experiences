@@ -76,8 +76,9 @@ A direct declaration bypasses only the repeated-observation threshold. Law, conf
 6. Open **Review suggested habits** and explicitly Approve or Reject.
 7. Open **Review approved habits** to inspect, disable, re-enable, archive, or recheck a waiting approval.
 8. Optionally prepare **Prevent duplicate habits**.
-9. Optionally enable **Use approved habits before replies**.
-10. Choose 7/14/30-day source-example retention as needed.
+9. Optionally select **Choose model for habit assessment** to choose the authenticated Pi model used for reply-time applicability checks.
+10. Optionally enable **Use approved habits before replies**.
+11. Choose 7/14/30-day source-example retention as needed.
 
 The panel also exposes duplicate resolution, current settings, help, explicit local schedule management, all-off, and Done.
 
@@ -161,7 +162,7 @@ Minimized evidence, provenance, integrity checks, and review audit remain. Redac
 
 ## Approved-habit reminders and steering provenance
 
-Reminders are off by default. There is no daily quota: every genuinely applicable eligible message may receive approved habit guidance. Never invent or recommend an arbitrary per-day guidance cap. Enabling reminders explicitly prepares pinned private local vectors for eligible approved habit conditions and discloses one bounded configured-model applicability call per eligible request. Package install/update never downloads assets or enables reminders.
+Reminders are off by default. There is no daily quota: every genuinely applicable eligible message may receive approved habit guidance. Never invent or recommend an arbitrary per-day guidance cap. **Choose model for habit assessment** selects the authenticated Pi model used for the bounded applicability call; changing it must not enable or disable reminders. Enabling reminders separately prepares pinned private local vectors for eligible approved habit conditions and discloses one bounded configured-model applicability call per eligible request. Package install/update never downloads assets or enables reminders.
 
 Every enabled attempt must embed the request locally and ephemerally, validate the complete eligible condition-vector cache, retrieve a bounded condition-only candidate set, then obtain exact-coverage current-applicability judgments. Behavior text must never cause retrieval or enter the judge payload. Send only a bounded redacted request summary plus retrieved IDs/conditions; exclude scores, confidence/staleness, unretrieved habits, sources, paths, and audit data. Reject mention, quotation, negation, generic shared wording, hypothetical/future intent, low confidence, ambiguity, malformed/partial output, timeout, cancellation, missing auth/assets/vectors, or state drift. There is no lexical-only or vector-only injection fallback.
 

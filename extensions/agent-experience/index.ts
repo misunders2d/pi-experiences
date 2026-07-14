@@ -16,6 +16,7 @@ import {
 	setAgentExperienceEnabled,
 	setAgentExperienceObservationRetentionDays,
 	setAgentExperienceSelectorEnabled,
+	setAgentExperienceSelectorModel,
 	setAgentExperienceSimpleOn,
 	setAgentExperienceTimerEnabled,
 } from "./src/paths.ts";
@@ -99,7 +100,20 @@ type SetupHabitAction = "Disable habit" | "Re-enable habit" | "Archive/hide habi
 const DETAIL_PANEL_CUSTOM_OPTIONS = { overlay: false } as const;
 
 type LiveModelSearchResult = { model?: string; exact?: true };
-type SetupAction = "save" | "model" | "analyze" | "review" | "duplicates" | "habits" | "embedding" | "retention" | "use" | "schedule" | "breakIn" | "status" | "help" | "off" | "done";
+type ModelPickerCopy = { title: string; searchTitle: string; exactTitle: string; exactPlaceholder: string };
+const HABIT_LEARNING_MODEL_PICKER: ModelPickerCopy = {
+	title: "Choose model for habit learning",
+	searchTitle: "Search habit-learning models",
+	exactTitle: "Enter exact habit-learning model id",
+	exactPlaceholder: "provider/model, e.g. openai-codex/gpt-5.5",
+};
+const HABIT_ASSESSMENT_MODEL_PICKER: ModelPickerCopy = {
+	title: "Choose model for habit assessment",
+	searchTitle: "Search habit-assessment models",
+	exactTitle: "Enter exact habit-assessment model id",
+	exactPlaceholder: "provider/model, e.g. openai-codex/gpt-5.4-mini",
+};
+type SetupAction = "save" | "model" | "assessmentModel" | "analyze" | "review" | "duplicates" | "habits" | "embedding" | "retention" | "use" | "schedule" | "breakIn" | "status" | "help" | "off" | "done";
 
 const RESET = "\x1b[0m";
 const PANEL_BG = "\x1b[48;5;235m";
@@ -172,12 +186,17 @@ function modelValueForSetup(config: { consolidation_model: string }): string {
 	return config.consolidation_model || "choose model";
 }
 
-function buildSetupSettingItems(config: { enabled: boolean; capture_enabled: boolean; consolidation_enabled: boolean; consolidation_model: string; selector_enabled: boolean; embedding_enabled?: boolean; observation_retention_days?: number; timer_enabled?: boolean; break_in_enabled?: boolean }): SettingItem[] {
+function assessmentModelValueForSetup(config: { selector_model: string }): string {
+	return config.selector_model || "choose model";
+}
+
+function buildSetupSettingItems(config: { enabled: boolean; capture_enabled: boolean; consolidation_enabled: boolean; consolidation_model: string; selector_enabled: boolean; selector_model: string; embedding_enabled?: boolean; observation_retention_days?: number; timer_enabled?: boolean; break_in_enabled?: boolean }): SettingItem[] {
 	const captureActive = config.enabled && config.capture_enabled;
 	const anythingEnabled = config.enabled || config.capture_enabled || config.consolidation_enabled || config.selector_enabled || config.embedding_enabled;
 	return [
 		{ id: "save", label: "Save chat examples locally", currentValue: checkboxValue(captureActive), values: ["[ ] OFF", "[x] ON"], description: "Space/Enter toggles local redacted example capture." },
-		{ id: "model", label: "Choose model for habit learning", currentValue: modelValueForSetup(config), values: [modelValueForSetup(config)], description: "Space/Enter opens live typeahead model search. Type 5.5, codex, glm, etc." },
+		{ id: "model", label: "Choose model for habit learning", currentValue: modelValueForSetup(config), values: [modelValueForSetup(config)], description: "Selects the model that turns saved examples into suggestions." },
+		{ id: "assessmentModel", label: "Choose model for habit assessment", currentValue: assessmentModelValueForSetup(config), values: [assessmentModelValueForSetup(config)], description: "Selects the model that checks whether approved habits apply before replies." },
 		{ id: "analyze", label: "Analyze saved examples now", currentValue: "open", values: ["open"], description: "Starts nonblocking analysis. No habits are auto-approved." },
 		{ id: "review", label: "Review suggested habits", currentValue: "open", values: ["open"], description: "Inspect each suggestion in a boxed panel, then approve/reject/back." },
 		{ id: "duplicates", label: "Resolve duplicate habits", currentValue: "open", values: ["open"], description: "Review semantically similar habits and choose merge/supersede/keep/archive." },
@@ -198,12 +217,12 @@ class SetupSettingsComponent implements Component {
 	private readonly box: Box;
 	private readonly list: SettingsList;
 
-	constructor(config: { enabled: boolean; capture_enabled: boolean; consolidation_enabled: boolean; consolidation_model: string; selector_enabled: boolean; embedding_enabled?: boolean; observation_retention_days?: number; timer_enabled?: boolean; break_in_enabled?: boolean }, done: (result: SetupAction | undefined) => void) {
+	constructor(config: { enabled: boolean; capture_enabled: boolean; consolidation_enabled: boolean; consolidation_model: string; selector_enabled: boolean; selector_model: string; embedding_enabled?: boolean; observation_retention_days?: number; timer_enabled?: boolean; break_in_enabled?: boolean }, done: (result: SetupAction | undefined) => void) {
 		this.box = new Box(2, 1, panelBg);
 		this.box.addChild(new Text(style("Agent Experience setup", FG_ACCENT, BOLD), 0, 0));
 		this.box.addChild(new Text(style("Space/Enter toggles checkbox rows or opens action rows. Esc closes.", FG_DIM), 0, 0));
 		this.box.addChild({ render: () => [""], invalidate() {} });
-		this.list = new SettingsList(buildSetupSettingItems(config), 14, setupSettingsTheme, (id) => done(id as SetupAction), () => done("done"), { enableSearch: false });
+		this.list = new SettingsList(buildSetupSettingItems(config), 15, setupSettingsTheme, (id) => done(id as SetupAction), () => done("done"), { enableSearch: false });
 		this.box.addChild(this.list);
 	}
 
@@ -279,13 +298,15 @@ class LiveModelSearchComponent implements Component, Focusable {
 	private readonly allModels: string[];
 	private readonly initialModels: string[];
 	private readonly currentModel: string;
+	private readonly title: string;
 	private readonly done: (result: LiveModelSearchResult | undefined) => void;
 	private focusedValue = false;
 
-	constructor(models: string[], initialModels: string[], currentModel: string, done: (result: LiveModelSearchResult | undefined) => void) {
+	constructor(models: string[], initialModels: string[], currentModel: string, title: string, done: (result: LiveModelSearchResult | undefined) => void) {
 		this.allModels = models;
 		this.initialModels = initialModels;
 		this.currentModel = currentModel;
+		this.title = title;
 		this.done = done;
 		this.matches = initialModels.length ? initialModels : modelSearchMatches(models, "", 25);
 		const currentIndex = this.matches.indexOf(currentModel);
@@ -308,7 +329,7 @@ class LiveModelSearchComponent implements Component, Focusable {
 		const w = Math.max(40, width);
 		const query = this.input.getValue().trim();
 		const lines = [
-			truncateLine("Choose model for habit learning", w),
+			truncateLine(this.title, w),
 			truncateLine(`Current model: ${this.currentModel}`, w),
 			truncateLine("Type to filter live. Example: 5.5, codex, glm. Enter selects. Ctrl+E exact id. Esc cancels.", w),
 			"",
@@ -945,6 +966,7 @@ async function buildStatusText(): Promise<{ text: string; enabled: boolean }> {
 		`Config file: ${path}${exists ? "" : " (not created; using defaults)"}`,
 		`Save chat examples locally: ${captureActive ? "ON" : "OFF"}${observations === undefined ? "" : ` (${plural(observations, "saved example")})`}`,
 		`Habit-learning model: ${config.consolidation_model}`,
+		`Habit-assessment model: ${config.selector_model}`,
 		`Analyze saved examples now: ${config.consolidation_enabled ? "available from setup" : "available when you choose it in setup"}`,
 		`Review suggested habits: ${summary.error ? `ledger unreadable (${summary.error})` : summary.ledger ? `${plural(reviewCount, "suggestion")} waiting, ${plural(summary.active, "approved habit")}${summary.approvedWaiting ? `, ${plural(summary.approvedWaiting, "approved habit")} waiting for activation` : ""}` : "no review list yet"}`,
 		`Prevent duplicate habits: ${duplicateStatus}`,
@@ -972,12 +994,13 @@ async function handleHelpSetup(ctx: ExtensionCommandContext, config: AgentExperi
 	notify(ctx, message, "info");
 }
 
-function buildSetupOptions(config: { enabled: boolean; capture_enabled: boolean; consolidation_enabled: boolean; consolidation_model: string; selector_enabled: boolean; embedding_enabled?: boolean; observation_retention_days?: number; timer_enabled?: boolean; break_in_enabled?: boolean }): string[] {
+function buildSetupOptions(config: { enabled: boolean; capture_enabled: boolean; consolidation_enabled: boolean; consolidation_model: string; selector_enabled: boolean; selector_model: string; embedding_enabled?: boolean; observation_retention_days?: number; timer_enabled?: boolean; break_in_enabled?: boolean }): string[] {
 	const captureActive = config.enabled && config.capture_enabled;
 	const anythingEnabled = config.enabled || config.capture_enabled || config.consolidation_enabled || config.selector_enabled || config.embedding_enabled;
 	return [
 		`${captureActive ? "[x]" : "[ ]"} Save chat examples locally`,
 		`Choose model for habit learning (${modelValueForSetup(config)})`,
+		`Choose model for habit assessment (${assessmentModelValueForSetup(config)})`,
 		"Analyze saved examples now",
 		"Review suggested habits",
 		"Resolve duplicate habits",
@@ -1014,7 +1037,8 @@ function setupHelpMessage(config: { enabled: boolean; capture_enabled: boolean; 
 		"Agent Experience setup help:",
 		"Use arrow keys to move. Press Space or Enter to toggle checkbox rows or open action rows. Choose Done to exit.",
 		"Save chat examples locally: turn this on first to start saving examples. It stores redacted completed user/assistant pairs under ~/.agents/experience. It does not store raw full prompts or injected text.",
-		"Choose model for habit learning: opens a model picker inside setup. You do not type a model command.",
+		"Choose model for habit learning: selects the model that reads saved examples and creates habit suggestions during Analyze.",
+		"Choose model for habit assessment: selects the model that checks whether already-approved habits apply to each request. Changing it does not enable or disable reminders.",
 		"Analyze saved examples now: runs from this setup menu, reads saved redacted examples, calls the chosen model once, and creates suggested habits for review.",
 		`Use approved habits before replies: compares each request privately against local approved-condition vectors, then asks ${config.selector_model} one bounded current-applicability question. Missing vectors, auth, timeouts, ambiguity, or malformed output produce no guidance.`,
 		"Automatic schedule: optional Linux systemd user timer at 03:30 system-local time with persistent catch-up. Setup shows exact paths and requires confirmation before install/enable; scheduled runs create suggestions only.",
@@ -1316,8 +1340,8 @@ async function inputSetup(ctx: ExtensionCommandContext, title: string, placehold
 	return typeof value === "string" ? value.trim() : undefined;
 }
 
-async function chooseSearchedModel(ctx: ExtensionCommandContext, models: string[]): Promise<string | undefined> {
-	const query = await inputSetup(ctx, "Search habit-learning models", "type provider/model text, e.g. gpt-5, codex, gemini");
+async function chooseSearchedModel(ctx: ExtensionCommandContext, models: string[], copy: ModelPickerCopy): Promise<string | undefined> {
+	const query = await inputSetup(ctx, copy.searchTitle, "type provider/model text, e.g. gpt-5, codex, gemini");
 	if (!query) return undefined;
 	const matches = modelSearchMatches(models, query, 25);
 	if (!matches.length) {
@@ -1325,19 +1349,19 @@ async function chooseSearchedModel(ctx: ExtensionCommandContext, models: string[
 		return undefined;
 	}
 	const choice = await chooseSetup(ctx, `Search results for “${redactText(query).slice(0, 40)}”`, [...matches, "Search again", "Back/cancel (no changes)"], false);
-	if (choice === "Search again") return chooseSearchedModel(ctx, models);
+	if (choice === "Search again") return chooseSearchedModel(ctx, models, copy);
 	if (!choice || choice === "Back/cancel (no changes)") return undefined;
 	return choice;
 }
 
-async function chooseLiveModel(ctx: ExtensionCommandContext, models: string[], recommended: string[], currentModel: string): Promise<string | undefined> {
+async function chooseLiveModel(ctx: ExtensionCommandContext, models: string[], recommended: string[], currentModel: string, copy: ModelPickerCopy): Promise<string | undefined> {
 	const ui = (ctx as { hasUI?: boolean; ui?: { custom?: ExtensionCommandContext["ui"]["custom"] } })?.ui;
 	if ((ctx as { hasUI?: boolean }).hasUI !== false && typeof ui?.custom === "function") {
-		const result = await ui.custom<LiveModelSearchResult | undefined>((_tui, _theme, _keybindings, done) => new LiveModelSearchComponent(models, recommended, currentModel, done), {
+		const result = await ui.custom<LiveModelSearchResult | undefined>((_tui, _theme, _keybindings, done) => new LiveModelSearchComponent(models, recommended, currentModel, copy.title, done), {
 			overlay: true,
 			overlayOptions: { width: "80%", minWidth: 60, maxHeight: "80%", anchor: "center", margin: 1 },
 		});
-		if (result?.exact) return inputSetup(ctx, "Enter exact habit-learning model id", "provider/model, e.g. openai-codex/gpt-5.5");
+		if (result?.exact) return inputSetup(ctx, copy.exactTitle, copy.exactPlaceholder);
 		return result?.model;
 	}
 	const options = [
@@ -1346,9 +1370,9 @@ async function chooseLiveModel(ctx: ExtensionCommandContext, models: string[], r
 		"Enter exact model id",
 		"Back/cancel (no changes)",
 	];
-	let choice = await chooseSetup(ctx, "Choose model for habit learning", options, false);
-	if (choice === "Search authenticated models") choice = await chooseSearchedModel(ctx, models);
-	if (choice === "Enter exact model id") choice = await inputSetup(ctx, "Enter exact habit-learning model id", "provider/model, e.g. openai-codex/gpt-5.5");
+	let choice = await chooseSetup(ctx, copy.title, options, false);
+	if (choice === "Search authenticated models") choice = await chooseSearchedModel(ctx, models, copy);
+	if (choice === "Enter exact model id") choice = await inputSetup(ctx, copy.exactTitle, copy.exactPlaceholder);
 	return choice;
 }
 
@@ -1386,7 +1410,7 @@ async function handleSetupModel(ctx: ExtensionCommandContext) {
 	}
 	const { config } = await readAgentExperienceConfig(getAgentExperiencePaths());
 	const recommended = recommendedTextModels(ctx, config.consolidation_model);
-	const choice = await chooseLiveModel(ctx, models, recommended, config.consolidation_model);
+	const choice = await chooseLiveModel(ctx, models, recommended, config.consolidation_model, HABIT_LEARNING_MODEL_PICKER);
 	if (!choice || choice === "Back/cancel (no changes)") return notify(ctx, "Habit-learning model unchanged.", "info");
 	if (!models.includes(choice) && !configuredModelAvailable(ctx, choice)) return notify(ctx, `Model is not available/authenticated: ${redactText(choice)}`, "warn");
 	if (config.timer_enabled) {
@@ -1395,6 +1419,26 @@ async function handleSetupModel(ctx: ExtensionCommandContext) {
 	}
 	const { path } = await setAgentExperienceConsolidationModel(choice);
 	return notify(ctx, [`Habit-learning model: ${choice}`, `Config file: ${path}`, "Analyze saved examples now is available inside /experience setup."].join("\n"), "info");
+}
+
+async function handleSetupAssessmentModel(ctx: ExtensionCommandContext) {
+	const models = availableTextModels(ctx);
+	if (models.length === 0) {
+		return notify(ctx, "No authenticated text models are available for habit assessment. Configure a Pi model first, then return to /experience setup.", "warn");
+	}
+	const { config } = await readAgentExperienceConfig(getAgentExperiencePaths());
+	const recommended = recommendedTextModels(ctx, config.selector_model);
+	const choice = await chooseLiveModel(ctx, models, recommended, config.selector_model, HABIT_ASSESSMENT_MODEL_PICKER);
+	if (!choice || choice === "Back/cancel (no changes)") return notify(ctx, "Habit-assessment model unchanged.", "info");
+	if (!models.includes(choice) && !configuredModelAvailable(ctx, choice)) return notify(ctx, `Model is not available/authenticated: ${redactText(choice)}`, "warn");
+	const auth = await configuredModelAuthenticated(ctx, choice);
+	if (!auth.ok) return notify(ctx, `Habit-assessment model unchanged because authentication failed. Detail: ${auth.reason}`, "warn");
+	const { path } = await setAgentExperienceSelectorModel(choice);
+	return notify(ctx, [
+		`Habit-assessment model: ${choice}`,
+		`Config file: ${path}`,
+		`Use approved habits before replies: unchanged (${config.selector_enabled ? "ON" : "OFF"}).`,
+	].join("\n"), "info");
 }
 
 async function acquireAnalyzeLock(root: string) {
@@ -2249,6 +2293,7 @@ async function handleSetup(ctx: ExtensionCommandContext, args: string[] = []) {
 			else if (choice === "Explain these settings") await handleHelpSetup(ctx, config);
 			else if (choice === "Turn all experience features off") await handleOff(ctx);
 			else if (choice.startsWith("Choose model for habit learning")) await handleSetupModel(ctx);
+			else if (choice.startsWith("Choose model for habit assessment")) await handleSetupAssessmentModel(ctx);
 			else if (choice === "Analyze saved examples now") { await handleAnalyzeNow(ctx); return; }
 			else if (choice.startsWith("Automatic schedule")) await handleSetupTimer(ctx);
 			else if (choice.includes("Break-in review prompts")) await handleSetupBreakIn(ctx);
@@ -2267,6 +2312,7 @@ async function handleSetup(ctx: ExtensionCommandContext, args: string[] = []) {
 			const { config: updated, path } = await setAgentExperienceCaptureActive(!(config.enabled && config.capture_enabled));
 			notify(ctx, [`Save chat examples locally: ${updated.enabled && updated.capture_enabled ? "ON" : "OFF"}`, `Config file: ${path}`].join("\n"), "info");
 		} else if (action === "model") await handleSetupModel(ctx);
+		else if (action === "assessmentModel") await handleSetupAssessmentModel(ctx);
 		else if (action === "analyze") { await handleAnalyzeNow(ctx); return; }
 		else if (action === "review") await handleReviewSetup(ctx);
 		else if (action === "duplicates") await handleDuplicateResolutionSetup(ctx);

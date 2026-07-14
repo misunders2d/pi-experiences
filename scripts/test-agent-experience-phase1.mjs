@@ -148,6 +148,7 @@ assert.match(notes.at(-1).message, /closed/);
 assert.deepEqual(notes.find((note) => note.level === 'select').options, [
   '[ ] Save chat examples locally',
   'Choose model for habit learning (openai-codex/gpt-5.5)',
+  'Choose model for habit assessment (openai-codex/gpt-5.4-mini)',
   'Analyze saved examples now',
   'Review suggested habits',
   'Resolve duplicate habits',
@@ -177,6 +178,7 @@ await commands.get('experience').handler('setup', ctx);
 assert.equal(existsSync(paths.root), false, 'setup help choice must not create state root');
 assert.ok(notes.some((note) => /Agent Experience setup help/.test(note.message)), 'setup help must show integrated help text');
 assert.ok(notes.some((note) => /Use approved habits before replies/.test(note.message)), 'setup help must explain guidance');
+assert.ok(notes.some((note) => /Choose model for habit assessment/.test(note.message)), 'setup help must distinguish the reply-time assessment model');
 await commands.get('experience').handler('setup help', ctx);
 assert.equal(existsSync(paths.root), false, 'setup help subcommand must not create state root');
 assert.match(notes.at(-1).message, /Agent Experience setup help/);

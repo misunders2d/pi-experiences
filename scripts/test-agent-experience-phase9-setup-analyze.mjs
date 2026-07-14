@@ -5,7 +5,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import agentExperienceExtension, { __buildAgentExperienceConsolidationSystemPromptForTest, __formatAgentExperienceAnalyzeFailureForTest, __getAgentExperienceDetailPanelOptionsForTest, __normalizeAgentExperienceConsolidationModelOutputForTest, __setAgentExperienceConsolidationAdapterForTest, __setAgentExperienceSelectorAdapterForTest, __setAgentExperienceSelectorEmbeddingAdapterForTest } from '../extensions/agent-experience/index.ts';
-import { getAgentExperiencePaths, readAgentExperienceConfig, setAgentExperienceCaptureActive, setAgentExperienceConsolidationEnabled, setAgentExperienceConsolidationModel, writeAgentExperienceConfig } from '../extensions/agent-experience/src/paths.ts';
+import { getAgentExperiencePaths, readAgentExperienceConfig, setAgentExperienceCaptureActive, setAgentExperienceConsolidationEnabled, setAgentExperienceConsolidationModel, setAgentExperienceSelectorModel, writeAgentExperienceConfig } from '../extensions/agent-experience/src/paths.ts';
 import { canonicalJson } from '../extensions/agent-experience/src/storage/checksum.ts';
 import { ensurePrivateRoot, resolvePrivatePath } from '../extensions/agent-experience/src/storage/private-root.ts';
 import { observationChecksumForTest, observationPairRefForTest } from '../extensions/agent-experience/src/storage/observations.ts';
@@ -181,6 +181,7 @@ ctx.ui.custom = async (factory) => {
   if (/Agent Experience setup/.test(initial)) {
     assert.match(initial, /\[x\] ON|\[ \] OFF/, 'setup panel must show checkbox-style ON/OFF rows');
     assert.match(initial, /Choose model for habit learning\s+openai-codex\/gpt-5\.5/, 'setup panel must show current habit-learning model instead of generic open');
+    assert.match(initial, /Choose model for habit assessment\s+openai-codex\/gpt-5\.4-mini/, 'setup panel must show the separate current habit-assessment model');
     assert.match(initial, /Space\/Enter toggles/, 'setup panel must advertise Space toggles');
     assert.match(initial, /Keep analyzed source examples\s+7 days/, 'setup panel must expose privacy retention without an advanced command');
     const next = setupChoices.shift();
@@ -205,6 +206,30 @@ await commands.get('experience').handler('setup', ctx);
 configResult = await readAgentExperienceConfig(paths);
 assert.equal(configResult.config.consolidation_model, 'openai-codex/gpt-5.5', 'live typeahead picker should save selected filtered model');
 delete ctx.ui.custom;
+
+configResult = await readAgentExperienceConfig(paths);
+assert.equal(configResult.config.selector_enabled, false);
+const learningModelBeforeAssessmentChoice = configResult.config.consolidation_model;
+setupChoices = ['Choose model for habit assessment (openai-codex/gpt-5.4-mini)', 'Search authenticated models', 'openrouter/openai/gpt-5', 'Done'];
+setupInputs = ['gpt-5'];
+await commands.get('experience').handler('setup', ctx);
+configResult = await readAgentExperienceConfig(paths);
+assert.equal(configResult.config.selector_model, 'openrouter/openai/gpt-5', 'habit-assessment picker must save an authenticated provider/model id');
+assert.equal(configResult.config.selector_enabled, false, 'changing assessment model must not enable reminders');
+assert.equal(configResult.config.consolidation_model, learningModelBeforeAssessmentChoice, 'changing assessment model must not change habit-learning model');
+assert.ok(notes.some((note) => /Habit-assessment model: openrouter\/openai\/gpt-5/.test(note.message || '')), 'assessment picker must report the saved model clearly');
+
+authHeadersAvailable = false;
+setupChoices = ['Choose model for habit assessment (openrouter/openai/gpt-5)', 'Enter exact model id', 'Done'];
+setupInputs = ['openai-codex/gpt-5.5'];
+await commands.get('experience').handler('setup', ctx);
+configResult = await readAgentExperienceConfig(paths);
+assert.equal(configResult.config.selector_model, 'openrouter/openai/gpt-5', 'failed assessment-model auth must leave config unchanged');
+assert.equal(configResult.config.selector_enabled, false, 'failed assessment-model auth must not toggle reminders');
+assert.ok(notes.some((note) => /Habit-assessment model unchanged because authentication failed/.test(note.message || '')), 'assessment-model auth failure must be visible');
+authHeadersAvailable = true;
+await setAgentExperienceSelectorModel('openai-codex/gpt-5.4-mini', paths);
+
 await setAgentExperienceConsolidationEnabled(false, paths);
 setupChoices = ['Analyze saved examples now', 'Done'];
 await commands.get('experience').handler('setup', ctx);
@@ -385,6 +410,7 @@ ctx.ui.custom = async (factory) => {
   }
   assert.match(rendered, /Agent Experience current settings/, 'show current settings should open an in-panel status view');
   assert.match(rendered, /Habit-learning model: openai-codex\/gpt-5\.5/, 'status panel should show current habit-learning model');
+  assert.match(rendered, /Habit-assessment model: openai-codex\/gpt-5\.5/, 'status panel should show current habit-assessment model');
   statusPanelSeen = true;
   component.handleInput('\r');
   return value;

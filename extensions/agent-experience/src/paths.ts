@@ -172,6 +172,17 @@ export async function setAgentExperienceConsolidationModel(model: string, paths 
 	return { config, path: paths.configPath };
 }
 
+export async function setAgentExperienceSelectorModel(model: string, paths = getAgentExperiencePaths()): Promise<{ config: AgentExperienceConfig; path: string }> {
+	const current = await readAgentExperienceConfig(paths);
+	const config = {
+		...DEFAULT_AGENT_EXPERIENCE_CONFIG,
+		...current.config,
+		selector_model: model,
+	};
+	await writeAgentExperienceConfig(config, paths);
+	return { config, path: paths.configPath };
+}
+
 export async function setAgentExperienceObservationRetentionDays(days: number, paths = getAgentExperiencePaths()): Promise<{ config: AgentExperienceConfig; path: string }> {
 	const normalized = Math.trunc(days);
 	if (![7, 14, 30].includes(normalized)) throw new Error("Saved-example retention must be 7, 14, or 30 days");
