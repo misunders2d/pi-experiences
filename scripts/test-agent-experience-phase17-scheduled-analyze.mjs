@@ -231,7 +231,10 @@ try {
   assert.equal(lifecycleNotes, 0, 'non-TUI starts do not consume receipts');
   assert.equal((await readScheduledAnalyzeReceipts(receiptRoot)).receipts.length, 1);
   await handlers.get('session_start')({ reason: 'reload' }, lifecycleCtx);
-  assert.equal(lifecycleNotes, 1, 'any live TUI start can surface a waiting scheduled result');
+  assert.equal(lifecycleNotes, 0, 'session_start must not consume before reload/startup rendering is visible');
+  assert.equal((await readScheduledAnalyzeReceipts(receiptRoot)).receipts.length, 1, 'startup receipt waits for a visible post-start boundary');
+  await handlers.get('agent_settled')({}, lifecycleCtx);
+  assert.equal(lifecycleNotes, 1, 'the next settled turn surfaces the waiting scheduled result');
   assert.equal((await readScheduledAnalyzeReceipts(receiptRoot)).receipts.length, 0);
   await writeScheduledAnalyzeReceipt(receiptRoot, { user_id: 'owner', status: 'failed', severity: 'warn', safe_code: 'runtime_incompatible' });
   await handlers.get('agent_settled')({}, lifecycleCtx);

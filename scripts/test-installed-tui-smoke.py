@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-import fcntl, os, pty, re, select, signal, struct, sys, termios, time
+import fcntl, json, os, pty, re, select, shutil, signal, struct, sys, termios, time, uuid
 from pathlib import Path
 if len(sys.argv)<3: raise SystemExit('usage: test-installed-tui-smoke.py INSTALLED_PACKAGE TRANSCRIPT')
 package=str(Path(sys.argv[1]).resolve()); transcript=Path(sys.argv[2]).resolve()
-state=Path(os.environ.get('AX_STATE_ROOT','/tmp/pi-experiences-042-tui-smoke-state')).resolve(); state.mkdir(parents=True,exist_ok=True)
+state=Path(os.environ.get('AX_STATE_ROOT','/tmp/pi-experiences-042-tui-smoke-state')).resolve(); shutil.rmtree(state,ignore_errors=True); state.mkdir(parents=True,exist_ok=True)
 work=state.parent/'pi-experiences-0.1.42-tui-work'; work.mkdir(parents=True,exist_ok=True)
+receipt_id=str(uuid.uuid4()); receipt_dir=state/'receipts'/'scheduled-analyze'/'pending'; receipt_dir.mkdir(parents=True,exist_ok=True)
+receipt_file=receipt_dir/f'20260717120000000-{receipt_id}.json'
+receipt_file.write_text(json.dumps({'schema_version':1,'id':receipt_id,'kind':'scheduled_analyze','user_id':'owner','created_at':'2026-07-17T12:00:00.000Z','status':'ok','severity':'info','checked':3,'total_unread':3,'new_suggestions':0,'has_more':False},separators=(',',':')))
 raw=bytearray(); csi=re.compile(rb'\x1b\[[0-?]*[ -/]*[@-~]'); osc=re.compile(rb'\x1b\][^\x07]*(?:\x07|\x1b\\)')
 def clean(data): return csi.sub(b'',osc.sub(b'',data)).replace(b'\r',b'\n').decode('utf-8','replace')
 def text(start=0): return clean(bytes(raw[start:]))
@@ -34,7 +37,9 @@ if pid==0:
     os.chdir(work); os.execvpe('pi',['pi','--no-extensions','--no-skills','-e',package],env)
 fcntl.ioctl(fd,termios.TIOCSWINSZ,struct.pack('HHHH',42,120,0,0))
 try:
-    drain(fd,2); mark=len(raw); send(fd,b'/experience setup\r',.5); wait(fd,r'Agent Experience setup',start=mark)
+    mark=len(raw); wait(fd,r'Scheduled Agent Experience Analyze update.*3 saved examples checked; 0 new suggestions created',timeout=8,start=mark)
+    assert not receipt_file.exists(), 'visible scheduled summary consumes its receipt once'
+    mark=len(raw); send(fd,b'/experience setup\r',.5); wait(fd,r'Agent Experience setup',start=mark)
     initial=text(mark)
     for label in ['Save chat examples locally','Choose model for habit learning','Choose model for habit assessment','Analyze saved examples now','Review suggested habits','Resolve duplicate habits','Review approved habits','Prevent duplicate habits','Keep analyzed source examples','Use approved habits before replies','Automatic schedule','Break-in review prompts','Show current settings','Explain these settings','Done']:
         assert label in initial, f'missing setup row: {label}'

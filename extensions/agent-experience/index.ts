@@ -2739,12 +2739,15 @@ function usage(topic = "") {
 export default function agentExperienceExtension(pi: ExtensionAPI) {
 	registerAgentExperienceConversationalTools(pi);
 
+	let scheduledReceiptInitialCheck: ReturnType<typeof setTimeout> | undefined;
 	let scheduledReceiptPoll: ReturnType<typeof setInterval> | undefined;
 	let scheduledReceiptCheck: Promise<void> | undefined;
 	let scheduledReceiptStopped = true;
 	const stopScheduledReceiptPolling = () => {
 		scheduledReceiptStopped = true;
+		if (scheduledReceiptInitialCheck) clearTimeout(scheduledReceiptInitialCheck);
 		if (scheduledReceiptPoll) clearInterval(scheduledReceiptPoll);
+		scheduledReceiptInitialCheck = undefined;
 		scheduledReceiptPoll = undefined;
 	};
 	const checkScheduledReceipts = async (ctx: ExtensionContext): Promise<void> => {
@@ -2780,10 +2783,18 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 	const startScheduledReceiptPolling = (ctx: ExtensionContext) => {
 		stopScheduledReceiptPolling();
 		scheduledReceiptStopped = false;
-		scheduledReceiptPoll = setInterval(() => {
+		const checkWhenIdle = () => {
 			if (typeof ctx.isIdle === "function" && !ctx.isIdle()) return;
 			void checkScheduledReceipts(ctx);
-		}, 30_000);
+		};
+		// session_start fires before reload/startup rendering is reliably visible.
+		// Never consume a receipt inside that hook: defer until the TUI has redrawn.
+		scheduledReceiptInitialCheck = setTimeout(() => {
+			scheduledReceiptInitialCheck = undefined;
+			checkWhenIdle();
+		}, 1_000);
+		scheduledReceiptInitialCheck.unref?.();
+		scheduledReceiptPoll = setInterval(checkWhenIdle, 30_000);
 		scheduledReceiptPoll.unref?.();
 	};
 
@@ -2792,7 +2803,6 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 		if (scope) breakInShutdown.delete(breakInScopeKey(scope));
 		if (ctx.mode !== "tui" || ctx.hasUI === false) return;
 		startScheduledReceiptPolling(ctx);
-		await checkScheduledReceipts(ctx);
 	});
 	const HABIT_GUIDANCE_CUSTOM_TYPE = "agent_experience.habit_guidance";
 	type PendingSteeringRun = {
