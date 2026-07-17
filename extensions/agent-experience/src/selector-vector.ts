@@ -199,17 +199,38 @@ export async function prepareSelectorConditionVectors(db: any, input: {
 	return { prepared: repairIds.length, cached: input.candidates.length - repairIds.length, total: input.candidates.length };
 }
 
+export interface SelectorPromptVectors {
+	currentVector: Float32Array;
+	contextVector?: Float32Array;
+}
+
+export async function embedSelectorPromptQueries(input: {
+	prompt: string;
+	contextualPrompt?: string;
+	embeddingAdapter: EmbeddingAdapter;
+	signal?: AbortSignal;
+}): Promise<SelectorPromptVectors> {
+	assertLocalSelectorAdapter(input.embeddingAdapter);
+	throwIfAborted(input.signal);
+	const texts = [selectorPromptEmbeddingInputV1(input.prompt)];
+	if (input.contextualPrompt?.trim()) texts.push(selectorPromptEmbeddingInputV1(input.contextualPrompt));
+	const vectors = await input.embeddingAdapter.embed(texts, { signal: input.signal });
+	throwIfAborted(input.signal);
+	if (!Array.isArray(vectors) || vectors.length !== texts.length || vectors.some((vector) => vector?.length !== input.embeddingAdapter.dimensions)) {
+		throw new Error("selector_prompt_embedding_invalid");
+	}
+	return {
+		currentVector: normalizedVector(vectors[0]),
+		contextVector: vectors[1] ? normalizedVector(vectors[1]) : undefined,
+	};
+}
+
 export async function embedSelectorPrompt(input: {
 	prompt: string;
 	embeddingAdapter: EmbeddingAdapter;
 	signal?: AbortSignal;
 }): Promise<Float32Array> {
-	assertLocalSelectorAdapter(input.embeddingAdapter);
-	throwIfAborted(input.signal);
-	const vectors = await input.embeddingAdapter.embed([selectorPromptEmbeddingInputV1(input.prompt)], { signal: input.signal });
-	throwIfAborted(input.signal);
-	if (!Array.isArray(vectors) || vectors.length !== 1 || vectors[0]?.length !== input.embeddingAdapter.dimensions) throw new Error("selector_prompt_embedding_invalid");
-	return normalizedVector(vectors[0]);
+	return (await embedSelectorPromptQueries(input)).currentVector;
 }
 
 export function retrieveSelectorCandidates(input: {
@@ -236,4 +257,21 @@ export function retrieveSelectorCandidates(input: {
 		.filter((item) => item.similarityBp >= floorBp)
 		.sort((left, right) => (right.similarityBp - left.similarityBp) || right.candidate.confidence_bp - left.candidate.confidence_bp || left.candidate.id.localeCompare(right.candidate.id))
 		.slice(0, topK);
+}
+
+export function unionRetrievedSelectorCandidates(input: {
+	primary: RetrievedSelectorCandidate[];
+	secondary?: RetrievedSelectorCandidate[];
+	topK?: number;
+}): RetrievedSelectorCandidate[] {
+	const topK = Math.max(1, Math.min(SELECTOR_VECTOR_RETRIEVAL_TOP_K, Math.trunc(input.topK ?? SELECTOR_VECTOR_RETRIEVAL_TOP_K)));
+	const seen = new Set<string>();
+	const union: RetrievedSelectorCandidate[] = [];
+	for (const item of [...input.primary, ...(input.secondary ?? [])]) {
+		if (seen.has(item.candidate.id)) continue;
+		seen.add(item.candidate.id);
+		union.push(item);
+		if (union.length >= topK) break;
+	}
+	return union;
 }

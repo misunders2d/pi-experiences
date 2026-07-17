@@ -143,7 +143,7 @@ __setAgentExperienceSelectorEmbeddingAdapterForTest(selectorEmbedding);
 __setAgentExperienceSelectorAdapterForTest({
   async select({ candidateIds, signal }) {
     assert.ok(signal instanceof AbortSignal);
-    return { schema_version: 2, judgments: candidateIds.map((id) => ({ id, applicable: true, confidence_bp: 9500, reason: 'current_applicability' })) };
+    return { schema_version: 3, judgments: candidateIds.map((id) => ({ id, applicable: true, confidence_bp: 9500, reason: 'current_applicability' })) };
   },
 });
 
@@ -397,6 +397,10 @@ await commands.get('experience').handler('setup', ctx);
 configResult = await readAgentExperienceConfig(paths);
 assert.equal(configResult.config.selector_enabled, true);
 assert.ok(notes.some((note) => /local vectors first|bounded openai-codex\/gpt-5\.5 applicability call/i.test(note.message || '')), 'enable flow must disclose mandatory local vectors plus one bounded judge call');
+assert.ok(notes.some((note) => /four prior visible user\/assistant messages.*300 characters each.*1,200 total/is.test(note.message || '')), 'enable flow must disclose bounded prior follow-up context');
+assert.ok(notes.some((note) => /current message remains the only trigger/i.test(note.message || '')), 'enable flow must disclose current-message causality');
+assert.ok(notes.some((note) => /Redaction is heuristic.*ordinary personal prose/is.test(note.message || '')), 'enable flow must disclose residual provider exposure');
+assert.ok(notes.some((note) => /Context, vectors, similarities, rationale, and transient guidance are not persisted/i.test(note.message || '')), 'enable flow must disclose context non-persistence');
 
 notes.length = 0;
 let statusPanelSeen = false;

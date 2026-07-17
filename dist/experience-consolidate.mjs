@@ -4095,6 +4095,9 @@ async function prepareSelectorConditionVectors(db, input) {
   return { prepared: repairIds.length, cached: input.candidates.length - repairIds.length, total: input.candidates.length };
 }
 
+// extensions/agent-experience/src/steering-context.ts
+init_redaction();
+
 // extensions/agent-experience/src/selector.ts
 function parseJson3(text) {
   try {

@@ -124,7 +124,7 @@ const phase6Embedding = {
 };
 function judgments(candidateIds, selectedIds = []) {
   const selected = new Set(selectedIds);
-  return { schema_version: 2, judgments: candidateIds.map((id) => selected.has(id)
+  return { schema_version: 3, judgments: candidateIds.map((id) => selected.has(id)
     ? { id, applicable: true, confidence_bp: 9500, reason: 'current_applicability' }
     : { id, applicable: false, confidence_bp: 9500, reason: 'not_currently_relevant' }) };
 }
@@ -172,7 +172,7 @@ try {
   assert.match(smartPrompt, /redacted/i, 'judge prompt should preserve only redacted request signal');
 
   assert.deepEqual(parseSelectorModelOutput(judgments(narrowedA.map((row) => row.id), ['active-1']), { candidateIds: narrowedA.map((row) => row.id), maxSelected: 3, minConfidenceBp: 7500 }), [{ id: 'active-1', confidence_bp: 9500 }]);
-  assert.throws(() => parseSelectorModelOutput({ schema_version: 2, judgments: [{ id: 'candidate-1', applicable: true, confidence_bp: 9000, reason: 'current_applicability' }] }, { candidateIds: narrowedA.map((row) => row.id), maxSelected: 3, minConfidenceBp: 7500 }), /coverage|Unknown/);
+  assert.throws(() => parseSelectorModelOutput({ schema_version: 3, judgments: [{ id: 'candidate-1', applicable: true, confidence_bp: 9000, reason: 'current_applicability' }] }, { candidateIds: narrowedA.map((row) => row.id), maxSelected: 3, minConfidenceBp: 7500 }), /coverage|Unknown/);
   assert.throws(() => parseSelectorModelOutput({ ...judgments(narrowedA.map((row) => row.id)), text: 'free text' }, { candidateIds: narrowedA.map((row) => row.id), maxSelected: 3, minConfidenceBp: 7500 }), /keys/);
 
   const injectedText = buildInjectionMessage(snapshot, [{ id: 'active-1', confidence_bp: 9000 }]);
@@ -203,7 +203,7 @@ try {
   storage.db.prepare("UPDATE selector_hit_log SET checksum = ? WHERE id = ?").run('c'.repeat(64), corrupt.id);
   assert.equal(isValidSelectorHitLog(storage.db.prepare("SELECT * FROM selector_hit_log WHERE id = ?").get(corrupt.id)), false, 'hit-log integrity remains independently verifiable without quota semantics');
 
-  const invalid = await runSelectorRuntime(storage.db, { userId: 'owner', prompt: 'debug tests', config, law, now: '2026-07-08T01:03:00.000Z', embeddingAdapter: phase6Embedding, adapter: { async select({ candidateIds }) { return { schema_version: 2, judgments: candidateIds.map((id) => ({ id: id === candidateIds[0] ? 'missing' : id, applicable: false, confidence_bp: 9000, reason: 'not_currently_relevant' })) }; } } });
+  const invalid = await runSelectorRuntime(storage.db, { userId: 'owner', prompt: 'debug tests', config, law, now: '2026-07-08T01:03:00.000Z', embeddingAdapter: phase6Embedding, adapter: { async select({ candidateIds }) { return { schema_version: 3, judgments: candidateIds.map((id) => ({ id: id === candidateIds[0] ? 'missing' : id, applicable: false, confidence_bp: 9000, reason: 'not_currently_relevant' })) }; } } });
   assert.equal(invalid.injected, false);
   assert.equal(invalid.reason, 'invalid_selector_output');
   const unavailable = await runSelectorRuntime(storage.db, { userId: 'owner', prompt: 'debug tests', config, law, now: '2026-07-08T01:04:00.000Z', embeddingAdapter: phase6Embedding });

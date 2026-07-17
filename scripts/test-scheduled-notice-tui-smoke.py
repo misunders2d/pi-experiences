@@ -3,8 +3,8 @@ import fcntl, json, os, pty, re, select, shutil, signal, struct, sys, termios, t
 from pathlib import Path
 if len(sys.argv)<3: raise SystemExit('usage: test-scheduled-notice-tui-smoke.py PACKAGE TRANSCRIPT')
 package=str(Path(sys.argv[1]).resolve()); transcript=Path(sys.argv[2]).resolve()
-state=Path(os.environ.get('AX_STATE_ROOT','/tmp/pi-experiences-044-notice-tui-state')).resolve(); shutil.rmtree(state,ignore_errors=True); state.mkdir(parents=True,exist_ok=True)
-work=state.parent/'pi-experiences-0.1.44-notice-tui-work'; work.mkdir(parents=True,exist_ok=True)
+state=Path(os.environ.get('AX_STATE_ROOT','/tmp/pi-experiences-045-notice-tui-state')).resolve(); shutil.rmtree(state,ignore_errors=True); state.mkdir(parents=True,exist_ok=True)
+work=state.parent/'pi-experiences-0.1.45-notice-tui-work'; work.mkdir(parents=True,exist_ok=True)
 receipt_dir=state/'receipts'/'scheduled-analyze'/'pending'; receipt_dir.mkdir(parents=True,exist_ok=True)
 def write_receipt(stamp,checked):
     receipt_id=str(uuid.uuid4()); path=receipt_dir/f'{stamp}-{receipt_id}.json'

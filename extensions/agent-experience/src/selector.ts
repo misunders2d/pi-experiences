@@ -7,12 +7,19 @@ import { runAtomicSemanticActivation } from "./semantic/service.ts";
 import type { EmbeddingAdapter, SemanticDedupePolicy } from "./semantic/types.ts";
 import type { AgentExperienceConfig } from "./config.ts";
 import {
-	embedSelectorPrompt,
+	embedSelectorPromptQueries,
 	readSelectorConditionVectors,
 	retrieveSelectorCandidates,
 	selectorConditionIdentityChecksum,
+	unionRetrievedSelectorCandidates,
 	type RetrievedSelectorCandidate,
 } from "./selector-vector.ts";
+import {
+	MAX_STEERING_CONTEXT_MESSAGES,
+	MAX_STEERING_CONTEXT_MESSAGE_CHARS,
+	MAX_STEERING_CONTEXT_TOTAL_CHARS,
+	type SteeringContextTurn,
+} from "./steering-context.ts";
 
 export interface SelectorModelAdapter {
 	select(input: { prompt: string; candidateIds: string[]; timeoutMs: number; model: string; signal?: AbortSignal }): Promise<unknown>;
@@ -38,6 +45,7 @@ export interface SelectorJudgment {
 
 const SELECTOR_JUDGMENT_REASONS = new Set([
 	"current_applicability",
+	"context_only_applicability",
 	"mere_mention",
 	"quoted_text",
 	"negated",
@@ -165,13 +173,40 @@ function boundedPromptSummary(prompt: string): string {
 	return summary;
 }
 
-export function buildSelectorPrompt(candidates: SelectorCandidate[], input: { prompt: string; maxHabits: number }): string {
+function boundedCondition(condition: string): string {
+	const text = redactText(condition).trim().replace(/\s+/g, " ").slice(0, 500);
+	if (containsUnredactedSensitiveText(text)) throw new Error("Selector condition contains unredacted sensitive text");
+	return text;
+}
+
+function boundedSelectorContextTurns(turns: SteeringContextTurn[] | undefined): SteeringContextTurn[] {
+	if (!turns?.length) return [];
+	if (!Array.isArray(turns) || turns.length > MAX_STEERING_CONTEXT_MESSAGES) throw new Error("Selector context is invalid");
+	const bounded = turns.map((turn) => {
+		if (!turn || (turn.role !== "user" && turn.role !== "assistant") || typeof turn.text !== "string") throw new Error("Selector context is invalid");
+		const text = redactText(turn.text).trim().replace(/\s+/g, " ").slice(0, MAX_STEERING_CONTEXT_MESSAGE_CHARS);
+		if (!text || containsUnredactedSensitiveText(text)) throw new Error("Selector context contains unredacted sensitive text");
+		return { role: turn.role, text };
+	});
+	if (bounded.reduce((total, turn) => total + turn.text.length, 0) > MAX_STEERING_CONTEXT_TOTAL_CHARS) throw new Error("Selector context is too large");
+	const redacted = redactJson(bounded);
+	if (containsUnredactedSensitiveText(redacted)) throw new Error("Selector context contains unredacted sensitive text");
+	return redacted;
+}
+
+function buildContextualRetrievalPrompt(prompt: string, contextTurns: SteeringContextTurn[]): string | undefined {
+	if (!contextTurns.length) return undefined;
+	return [...contextTurns.map((turn) => `${turn.role}: ${turn.text}`), `current_user: ${prompt}`].join("\n");
+}
+
+export function buildSelectorPrompt(candidates: SelectorCandidate[], input: { prompt: string; maxHabits: number; contextTurns?: SteeringContextTurn[] }): string {
 	const payload = {
-		schema_version: 2,
-		task: "judge_current_habit_applicability",
+		schema_version: 3,
+		task: "judge_current_habit_applicability_with_context",
 		max_selected: Math.max(0, Math.min(3, Math.trunc(input.maxHabits))),
-		user_request_summary: boundedPromptSummary(input.prompt),
-		candidates: candidates.map((candidate) => ({ id: candidate.id, condition: candidate.condition })),
+		current_user_request: boundedPromptSummary(input.prompt),
+		context_turns: boundedSelectorContextTurns(input.contextTurns),
+		candidates: candidates.map((candidate) => ({ id: candidate.id, condition: boundedCondition(candidate.condition) })),
 	};
 	const text = canonicalJson(redactJson(payload));
 	if (text.length > 12000) throw new Error("Selector prompt too large");
@@ -184,7 +219,7 @@ export function parseSelectorModelOutput(output: unknown, input: { candidateIds:
 	const keys = Object.keys(output as Record<string, unknown>).sort();
 	if (keys.join(",") !== "judgments,schema_version") throw new Error("Unsupported selector output keys");
 	const obj = output as { schema_version?: unknown; judgments?: unknown };
-	if (obj.schema_version !== 2) throw new Error("Unsupported selector schema version");
+	if (obj.schema_version !== 3) throw new Error("Unsupported selector schema version");
 	if (!Array.isArray(obj.judgments)) throw new Error("Invalid selector judgment list");
 	const candidateIds = input.candidateIds.map(String);
 	const allowed = new Set(candidateIds);
@@ -286,6 +321,7 @@ function revalidateSelectedCandidates(db: any, input: {
 export async function runSelectorRuntime(db: any, input: {
 	userId: string;
 	prompt: string;
+	contextTurns?: SteeringContextTurn[];
 	config: AgentExperienceConfig;
 	law: LawSnapshot;
 	now: string;
@@ -298,10 +334,20 @@ export async function runSelectorRuntime(db: any, input: {
 	const hash = promptHash(input.prompt);
 	if (!config.enabled || !config.selector_enabled) return noInjection("selector_disabled");
 	if (!input.embeddingAdapter) return noInjection("selector_vectors_unavailable");
-	const started = Date.now();
-	let promptVector: Float32Array;
+	let contextTurns: SteeringContextTurn[] = [];
 	try {
-		promptVector = await embedSelectorPrompt({ prompt: input.prompt, embeddingAdapter: input.embeddingAdapter, signal: input.signal });
+		contextTurns = boundedSelectorContextTurns(input.contextTurns);
+	} catch {
+		// Context is optional reference-resolution data. Invalid or sensitive context
+		// degrades to the unchanged current-message-only selector path.
+		contextTurns = [];
+	}
+	const contextualPrompt = buildContextualRetrievalPrompt(input.prompt, contextTurns);
+	const selectorMode = contextTurns.length ? "vector_judge_ctx" : "vector_judge";
+	const started = Date.now();
+	let promptVectors: Awaited<ReturnType<typeof embedSelectorPromptQueries>>;
+	try {
+		promptVectors = await embedSelectorPromptQueries({ prompt: input.prompt, contextualPrompt, embeddingAdapter: input.embeddingAdapter, signal: input.signal });
 	} catch (error: any) {
 		return noInjection(input.signal?.aborted ? "selector_cancelled" : "selector_vectors_unavailable");
 	}
@@ -323,7 +369,11 @@ export async function runSelectorRuntime(db: any, input: {
 	let retrieved: RetrievedSelectorCandidate[];
 	try {
 		const conditionVectors = readSelectorConditionVectors(db, { userId, candidates: eligible, embeddingAdapter: input.embeddingAdapter });
-		retrieved = retrieveSelectorCandidates({ candidates: eligible, conditionVectors, promptVector });
+		const primary = retrieveSelectorCandidates({ candidates: eligible, conditionVectors, promptVector: promptVectors.currentVector });
+		const secondary = promptVectors.contextVector
+			? retrieveSelectorCandidates({ candidates: eligible, conditionVectors, promptVector: promptVectors.contextVector })
+			: undefined;
+		retrieved = unionRetrievedSelectorCandidates({ primary, secondary });
 	} catch {
 		return noInjection("selector_vectors_unavailable");
 	}
@@ -333,7 +383,7 @@ export async function runSelectorRuntime(db: any, input: {
 	let raw: unknown;
 	try {
 		raw = await withAbortTimeout(config.selector_timeout_ms, input.signal, (signal) => input.adapter!.select({
-			prompt: buildSelectorPrompt(retrievedCandidates, { prompt: input.prompt, maxHabits: config.selector_max_habits }),
+			prompt: buildSelectorPrompt(retrievedCandidates, { prompt: input.prompt, contextTurns, maxHabits: config.selector_max_habits }),
 			candidateIds: retrievedCandidates.map((candidate) => candidate.id),
 			timeoutMs: config.selector_timeout_ms,
 			model: config.selector_model,
@@ -362,25 +412,25 @@ export async function runSelectorRuntime(db: any, input: {
 	try {
 		const selectedIds = new Set(selected.map((entry) => entry.id));
 		for (const candidate of selectedCandidates) {
-			insertSelectorHitLog(db, { userId, habitId: candidate.id, action: "inject", selected: true, reason: "selected", confidenceBp: candidate.confidence_bp, promptHash: hash, latencyMs: Date.now() - started, data: { selected_count: selected.length, model: modelLabel, mode: "vector_judge" }, createdAt: input.now });
+			insertSelectorHitLog(db, { userId, habitId: candidate.id, action: "inject", selected: true, reason: "selected", confidenceBp: candidate.confidence_bp, promptHash: hash, latencyMs: Date.now() - started, data: { selected_count: selected.length, model: modelLabel, mode: selectorMode }, createdAt: input.now });
 		}
 		for (const item of retrieved) {
 			if (selectedIds.has(item.candidate.id)) continue;
-			insertSelectorHitLog(db, { userId, habitId: item.candidate.id, action: "skip", selected: false, reason: "not_selected", confidenceBp: item.candidate.confidence_bp, promptHash: hash, latencyMs: Date.now() - started, data: { selected_count: selected.length, model: modelLabel, mode: "vector_judge" }, createdAt: input.now });
+			insertSelectorHitLog(db, { userId, habitId: item.candidate.id, action: "skip", selected: false, reason: "not_selected", confidenceBp: item.candidate.confidence_bp, promptHash: hash, latencyMs: Date.now() - started, data: { selected_count: selected.length, model: modelLabel, mode: selectorMode }, createdAt: input.now });
 		}
 		db.exec("COMMIT");
 	} catch {
 		try { db.exec("ROLLBACK"); } catch {}
 		return noInjection("hit_log_write_failed");
 	}
-	return { injected: true, reason: "selected", message, selected, candidates: selectedCandidates, latency_ms: Date.now() - started, mode: "vector_judge", model: modelLabel };
+	return { injected: true, reason: "selected", message, selected, candidates: selectedCandidates, latency_ms: Date.now() - started, mode: selectorMode, model: modelLabel };
 }
 
-export async function measureSelectorLatency(input: { adapter: SelectorModelAdapter; prompt: string; candidates: SelectorCandidate[]; iterations: number; timeoutMs: number; model: string }) {
+export async function measureSelectorLatency(input: { adapter: SelectorModelAdapter; prompt: string; contextTurns?: SteeringContextTurn[]; candidates: SelectorCandidate[]; iterations: number; timeoutMs: number; model: string }) {
 	const samples: number[] = [];
 	for (let index = 0; index < input.iterations; index += 1) {
 		const started = Date.now();
-		await withAbortTimeout(input.timeoutMs, undefined, (signal) => input.adapter.select({ prompt: buildSelectorPrompt(input.candidates, { prompt: input.prompt, maxHabits: 3 }), candidateIds: input.candidates.map((candidate) => candidate.id), timeoutMs: input.timeoutMs, model: input.model, signal }));
+		await withAbortTimeout(input.timeoutMs, undefined, (signal) => input.adapter.select({ prompt: buildSelectorPrompt(input.candidates, { prompt: input.prompt, contextTurns: input.contextTurns, maxHabits: 3 }), candidateIds: input.candidates.map((candidate) => candidate.id), timeoutMs: input.timeoutMs, model: input.model, signal }));
 		samples.push(Date.now() - started);
 	}
 	const sorted = samples.slice().sort((a, b) => a - b);

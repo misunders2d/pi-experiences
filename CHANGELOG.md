@@ -6,6 +6,26 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 ## [Unreleased]
 
+## [0.1.45] - 2026-07-17
+
+### Changed
+
+- Approved-habit steering can now resolve bounded follow-ups such as “yes, do that” and “make it two weeks” from up to four prior visible user/assistant messages in the current active branch.
+- Current-only and current-plus-context retrieval queries share one local embedding batch; current-only candidates retain priority and contextual retrieval only appends deduplicated candidates.
+- Habit assessment now uses strict schema v3 with `context_only_applicability`; the current user message remains the sole causal trigger, while prior context may only resolve an explicit reference, confirmation, continuation, modification, or rejection.
+
+### Privacy and safety
+
+- Context is role-filtered, redacted, capped at 300 characters per message and 1,200 total, snapshotted once per response, and never persisted with its vectors, hashes, similarities, rationale, or transient guidance.
+- System, developer, custom, tool, tool-result, thinking, tool-call, image-only, hidden, and stale-branch content cannot supply steering context. Invalid or sensitive context degrades to the unchanged current-only path.
+- Assistant text cannot independently trigger a habit; context-only relevance, topic changes, negation, ambiguity, malformed output, timeout, cancellation, and post-judge drift remain fail-closed.
+- Setup now discloses the exact prior-message caps, configured-provider exposure, current-message-only causality, heuristic redaction limit, and context non-persistence before reminder enablement.
+
+### Validation
+
+- Added phase-20 extraction, dual-batch retrieval, deterministic union, assistant-reference, user-continuation, context-only rejection, empty-context parity, degradation, non-persistence, and payload-bound regressions.
+- Extended host lifecycle coverage to prove context is extracted once and tool-loop callbacks cannot re-embed, rejudge, or replace the snapshotted context.
+
 ## [0.1.44] - 2026-07-17
 
 ### Fixed
@@ -67,7 +87,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 - Added synchronous submission-hook checks, deferred embedding/model assertions, and a packed Pi TUI smoke requiring submitted-message rendering within 1.5 seconds.
 
-[Unreleased]: https://github.com/misunders2d/pi-experiences/compare/v0.1.44...HEAD
+[Unreleased]: https://github.com/misunders2d/pi-experiences/compare/v0.1.45...HEAD
+[0.1.45]: https://github.com/misunders2d/pi-experiences/compare/v0.1.44...v0.1.45
 [0.1.44]: https://github.com/misunders2d/pi-experiences/compare/v0.1.43...v0.1.44
 [0.1.43]: https://github.com/misunders2d/pi-experiences/compare/v0.1.42...v0.1.43
 [0.1.42]: https://github.com/misunders2d/pi-experiences/compare/v0.1.41...v0.1.42

@@ -58,6 +58,7 @@ import { extractSingleFinalAssistantText } from "./src/capture/extract.ts";
 import { filterEligibleSelectorCandidates, promoteApprovedPendingCandidates, runSelectorRuntime, selectActiveSelectorSnapshot, type SelectorModelAdapter } from "./src/selector.ts";
 import { createPiSelectorModelAdapter } from "./src/selector-model.ts";
 import { prepareSelectorConditionVectors } from "./src/selector-vector.ts";
+import { extractSteeringContext, latestUserMessageBoundary, type SteeringContextTurn } from "./src/steering-context.ts";
 import { prepareActiveSelectorVectorsAfterChange } from "./src/selector-maintenance.ts";
 import { collectAgentExperienceMetrics, formatAgentExperienceMetrics } from "./src/metrics.ts";
 import type { AgentExperienceConfig } from "./src/config.ts";
@@ -970,7 +971,7 @@ async function buildStatusText(): Promise<{ text: string; enabled: boolean }> {
 		`Analyze saved examples now: ${config.consolidation_enabled ? "available from setup" : "available when you choose it in setup"}`,
 		`Review suggested habits: ${summary.error ? `ledger unreadable (${summary.error})` : summary.ledger ? `${plural(reviewCount, "suggestion")} waiting, ${plural(summary.active, "approved habit")}${summary.approvedWaiting ? `, ${plural(summary.approvedWaiting, "approved habit")} waiting for activation` : ""}` : "no review list yet"}`,
 		`Prevent duplicate habits: ${duplicateStatus}`,
-		`Use approved habits before replies: ${selectorActive ? `ON (private local vectors + bounded ${config.selector_model} applicability judge)` : config.selector_enabled ? "configured ON, inactive because Experience is OFF" : "OFF"}`,
+		`Use approved habits before replies: ${selectorActive ? `ON (private local vectors + bounded current/follow-up context to ${config.selector_model})` : config.selector_enabled ? "configured ON, inactive because Experience is OFF" : "OFF"}`,
 		`Automatic schedule: ${scheduleStatus}`,
 		`Break-in review prompts: ${config.break_in_enabled ? "ON (private TUI review-only)" : "OFF"}`,
 		`Next: ${nextStep}`,
@@ -1040,7 +1041,7 @@ function setupHelpMessage(config: { enabled: boolean; capture_enabled: boolean; 
 		"Choose model for habit learning: selects the model that reads saved examples and creates habit suggestions during Analyze.",
 		"Choose model for habit assessment: selects the model that checks whether already-approved habits apply to each request. Changing it does not enable or disable reminders.",
 		"Analyze saved examples now: runs from this setup menu, reads saved redacted examples, calls the chosen model once, and creates suggested habits for review.",
-		`Use approved habits before replies: compares each request privately against local approved-condition vectors, then asks ${config.selector_model} one bounded current-applicability question. Missing vectors, auth, timeouts, ambiguity, or malformed output produce no guidance.`,
+		`Use approved habits before replies: compares each request privately against local approved-condition vectors. For follow-ups, up to four prior visible user/assistant messages (300 redacted characters each) may help local retrieval and one bounded ${config.selector_model} applicability check. The current message remains the only trigger; context is ephemeral. Redaction is heuristic. Missing vectors, auth, timeouts, ambiguity, or malformed output produce no guidance.`,
 		"Automatic schedule: optional Linux systemd user timer at 03:30 system-local time with persistent catch-up. Setup shows exact paths and requires confirmation before install/enable; scheduled runs create suggestions only.",
 		"Break-in review prompts: explicit opt-in. After Analyze creates suggestions and Pi is safely idle, one private TUI prompt offers Review now, Later, or Turn break-in off. It makes no extra model call and never approves or applies anything.",
 		"Review suggested habits: opens the list of proposed habits for you to approve or reject. Nothing is auto-approved.",
@@ -1193,8 +1194,10 @@ async function handleSetupSelector(ctx: ExtensionCommandContext) {
 		return notify(ctx, [
 			"Approved-habit reminders can add only human-approved habits before a reply.",
 			"Every eligible request is embedded privately on this computer and compared only with approved habit conditions.",
-			"Retrieved conditions then receive one bounded configured-model applicability check. Habit behaviors, vector scores, and unretrieved habits are not sent to that check.",
-			"Missing local vectors, model auth, timeout, cancellation, malformed output, low confidence, or ambiguity produce no guidance.",
+			"For follow-ups, up to four prior visible user/assistant messages are redacted and capped at 300 characters each (1,200 total), then used ephemerally for a second local retrieval query and the configured-model reference check.",
+			"The current user message remains the only trigger. Prior context may resolve words like ‘yes’, ‘that’, or ‘continue’ but cannot independently activate a habit.",
+			"Retrieved conditions then receive one bounded configured-model applicability check. Habit behaviors, vector scores, and unretrieved habits are not sent to that check, and context/vectors/rationale are not persisted.",
+			"Redaction is heuristic, so ordinary personal prose outside recognized patterns may reach the configured assessment provider. Missing local vectors, model auth, timeout, cancellation, malformed output, low confidence, or ambiguity produce no guidance.",
 			"It never uses unreviewed suggestions and never approves habits by itself.",
 		].join("\n"), "info");
 	}
@@ -2092,6 +2095,12 @@ async function prepareAndEnableSelector(ctx: ExtensionCommandContext): Promise<v
 		notify(ctx, `Approved-habit reminders remain OFF because the bounded applicability model is not ready. Detail: ${auth.reason}`, "warn");
 		return;
 	}
+	notify(ctx, [
+		"Before enabling approved-habit reminders:",
+		"Each request is embedded locally. For follow-ups, up to four prior visible user/assistant messages are redacted and capped at 300 characters each (1,200 total).",
+		`The bounded current request, optional role-tagged follow-up context, and retrieved condition text may be sent to ${config.selector_model}. Redaction is heuristic; ordinary personal prose may remain.`,
+		"The current message remains the only trigger. Context, vectors, similarities, rationale, and transient guidance are not persisted.",
+	].join("\n"), "warn");
 	const choice = await chooseSetup(ctx, "Prepare approved-habit reminders", [
 		"Prepare private local vectors and enable reminders",
 		"Back/cancel (no changes)",
@@ -2143,7 +2152,7 @@ async function prepareAndEnableSelector(ctx: ExtensionCommandContext): Promise<v
 		"Use approved habits before replies: ON",
 		`Config file: ${path}`,
 		`Prepared ${plural(operation.value.total, "approved habit condition")} for private local vector retrieval.`,
-		`Each eligible request now uses local vectors first, then one bounded ${config.selector_model} applicability call. Failures produce no guidance.`,
+		`Each eligible request now uses local vectors first, then one bounded ${config.selector_model} applicability call with optional capped follow-up context. Failures produce no guidance.`,
 		"Unreviewed suggestions are never used and habits are never approved automatically.",
 	].join("\n"), "warn");
 }
@@ -2880,6 +2889,7 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 		guidance?: string;
 		markerCommitted: boolean;
 		userMessageCount?: number;
+		contextTurns?: SteeringContextTurn[];
 	};
 	const pendingSteeringRuns = new Map<string, PendingSteeringRun>();
 	const steeringScopeFromContext = (ctx: Pick<ExtensionContext, "sessionManager"> | { sessionManager?: ExtensionContext["sessionManager"] }): string | undefined => {
@@ -2982,22 +2992,24 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 		if (!steeringScope) return;
 		const state = pendingSteeringRuns.get(steeringScope);
 		if (!state) return;
-		const userMessages = event.messages.filter((message: any) => message?.role === "user");
-		const latestUser = userMessages.at(-1) as any;
-		const latestText = Array.isArray(latestUser?.content)
-			? latestUser.content.filter((part: any) => part?.type === "text").map((part: any) => String(part.text ?? "")).join("")
-			: String(latestUser?.content ?? "");
-		if (!latestUser || latestText !== state.prompt || (state.userMessageCount !== undefined && state.userMessageCount !== userMessages.length)) {
+		const boundary = latestUserMessageBoundary(event.messages);
+		if (!boundary || boundary.text !== state.prompt || (state.userMessageCount !== undefined && state.userMessageCount !== boundary.count)) {
 			// An armed turn may coexist briefly with an older context callback; leave
 			// it for its exact prompt. Completed state must stop at a changed user turn.
 			if (state.phase === "attempted") pendingSteeringRuns.delete(steeringScope);
 			return;
 		}
-		state.userMessageCount ??= userMessages.length;
+		state.userMessageCount ??= boundary.count;
 
 		if (state.phase === "armed") {
+			try {
+				state.contextTurns = extractSteeringContext(event.messages, boundary.index);
+			} catch {
+				// Optional context must never widen exposure or block current-only steering.
+				state.contextTurns = [];
+			}
 			// Mark attempted before awaiting anything. Retries/tool-loop contexts must
-			// never launch another selector call for this same user message.
+			// never launch another selector call or re-extract context for this message.
 			state.phase = "attempted";
 			if (ctx.mode !== "tui" || !steeringRendererReady || typeof pi.appendEntry !== "function") {
 				notifyDedupedDiagnostic(ctx, selectorDiagnosticsShown, {
@@ -3023,7 +3035,7 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 				const adapter = selectorModelAdapter ?? createPiSelectorModelAdapter(ctx);
 				const embeddingAdapter = await selectorRuntimeEmbeddingAdapter(storage.root);
 				const now = new Date().toISOString();
-				const result = await runSelectorRuntime(storage.db, { userId: storage.userId, prompt: state.prompt, config, law, now, adapter, embeddingAdapter, signal: ctx.signal });
+				const result = await runSelectorRuntime(storage.db, { userId: storage.userId, prompt: state.prompt, contextTurns: state.contextTurns, config, law, now, adapter, embeddingAdapter, signal: ctx.signal });
 				if (pendingSteeringRuns.get(steeringScope) !== state || !result.injected || !result.message) return;
 				try {
 					state.entry = buildHabitSteeringEntry({ candidates: result.candidates, selected: result.selected, createdAt: now });

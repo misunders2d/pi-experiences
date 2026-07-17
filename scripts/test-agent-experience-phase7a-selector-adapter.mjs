@@ -56,7 +56,7 @@ const phase7Embedding = {
 };
 function judgments(candidateIds, selectedIds = []) {
   const selected = new Set(selectedIds);
-  return { schema_version: 2, judgments: candidateIds.map((id) => selected.has(id)
+  return { schema_version: 3, judgments: candidateIds.map((id) => selected.has(id)
     ? { id, applicable: true, confidence_bp: 9500, reason: 'current_applicability' }
     : { id, applicable: false, confidence_bp: 9500, reason: 'not_currently_relevant' }) };
 }
@@ -100,20 +100,24 @@ const adapter = createPiSelectorModelAdapter({ modelRegistry: fakeRegistry() }, 
     assert.match(String(context.systemPrompt), /When I mention or ask about X.*broad current trigger/i, 'judge must explain broad current mention-or-ask triggers');
     assert.match(String(context.systemPrompt), /Plan my vacation for next summer.*current_applicability/i, 'judge must treat a current request about a future-dated subject as current applicability');
     assert.match(String(context.systemPrompt), /If I ask you to plan a trip next month.*hypothetical_or_future/i, 'judge must reserve future rejection for a future trigger');
+    assert.match(String(context.systemPrompt), /current_user_request is the sole causal trigger/i, 'current message must remain the only causal trigger');
+    assert.match(String(context.systemPrompt), /assistant text can never independently establish applicability/i, 'assistant context must only resolve current references');
+    assert.match(String(context.systemPrompt), /context_only_applicability/i, 'context-only relevance must have a strict non-applicable reason');
+    assert.match(String(context.systemPrompt), /schema_version.*3/i, 'judge protocol must require schema v3');
     assert.equal(String(context.messages[0].content).includes('answering selector adapter tests'), false, 'raw habit text is supplied by selector prompt only in runtime tests, not this direct adapter test');
-    return assistantText('{"schema_version":2,"judgments":[{"id":"active-1","applicable":true,"confidence_bp":9500,"reason":"current_applicability"}]}');
+    return assistantText('{"schema_version":3,"judgments":[{"id":"active-1","applicable":true,"confidence_bp":9500,"reason":"current_applicability"}]}');
   },
   now: () => 0,
 });
-const selected = await adapter.select({ prompt: '{"schema_version":2,"candidates":[{"id":"active-1"}]}', candidateIds: ['active-1'], timeoutMs: 1500, model: DEFAULT_SELECTOR_MODEL, signal: new AbortController().signal });
-assert.deepEqual(selected, { schema_version: 2, judgments: [{ id: 'active-1', applicable: true, confidence_bp: 9500, reason: 'current_applicability' }] });
+const selected = await adapter.select({ prompt: '{"schema_version":3,"candidates":[{"id":"active-1"}]}', candidateIds: ['active-1'], timeoutMs: 1500, model: DEFAULT_SELECTOR_MODEL, signal: new AbortController().signal });
+assert.deepEqual(selected, { schema_version: 3, judgments: [{ id: 'active-1', applicable: true, confidence_bp: 9500, reason: 'current_applicability' }] });
 assert.equal(adapterSuccessCalls.length, 1);
 
 await assert.rejects(() => adapter.select({ prompt: '{}', candidateIds: ['active-1'], timeoutMs: 1500, model: 'not-a-provider-model' }), /selector_model_unverified/);
 await assert.rejects(() => adapter.select({ prompt: '{}', candidateIds: ['active-1'], timeoutMs: 1500, model: 'openai/gpt-5.4-mini' }), /selector_model_unavailable/);
 assert.equal(adapterSuccessCalls.length, 1, 'invalid or unavailable configured model must fail before model call');
-const providerSwitch = createPiSelectorModelAdapter({ modelRegistry: fakeRegistry({ provider: 'zai', id: 'glm-5.2', model: { provider: 'zai', id: 'glm-5.2', api: 'test', maxTokens: 128000 } }) }, { complete: async () => assistantText('{"schema_version":2,"judgments":[]}') });
-assert.deepEqual(await providerSwitch.select({ prompt: '{}', candidateIds: [], timeoutMs: 1500, model: 'zai/glm-5.2' }), { schema_version: 2, judgments: [] });
+const providerSwitch = createPiSelectorModelAdapter({ modelRegistry: fakeRegistry({ provider: 'zai', id: 'glm-5.2', model: { provider: 'zai', id: 'glm-5.2', api: 'test', maxTokens: 128000 } }) }, { complete: async () => assistantText('{"schema_version":3,"judgments":[]}') });
+assert.deepEqual(await providerSwitch.select({ prompt: '{}', candidateIds: [], timeoutMs: 1500, model: 'zai/glm-5.2' }), { schema_version: 3, judgments: [] });
 
 const authBlocked = createPiSelectorModelAdapter({ modelRegistry: fakeRegistry({ auth: { ok: false, error: 'No API key found SECRET_TOKEN' } }) }, { complete: async () => { throw new Error('must not call'); } });
 await assert.rejects(async () => authBlocked.select({ prompt: '{}', candidateIds: [], timeoutMs: 1500, model: DEFAULT_SELECTOR_MODEL }), (error) => {
@@ -189,7 +193,7 @@ try {
   const malformed = await runSelectorRuntime(storage.db, {
     userId: 'owner', prompt: 'selector adapter tests', config, law,
     now: '2026-07-08T01:03:00.000Z', embeddingAdapter: phase7Embedding,
-    adapter: { async select({ candidateIds }) { return { schema_version: 2, judgments: candidateIds.map(() => ({ id: 'unknown', applicable: true, confidence_bp: 9500, reason: 'current_applicability' })) }; } },
+    adapter: { async select({ candidateIds }) { return { schema_version: 3, judgments: candidateIds.map(() => ({ id: 'unknown', applicable: true, confidence_bp: 9500, reason: 'current_applicability' })) }; } },
   });
   assert.equal(malformed.injected, false);
   assert.equal(malformed.reason, 'invalid_selector_output');
@@ -232,7 +236,8 @@ try {
   await setAgentExperienceSelectorEnabled(true);
   storage.db.prepare('DELETE FROM selector_hit_log').run();
   let hookAdapterCalls = 0;
-  __setAgentExperienceSelectorAdapterForTest({ async select({ candidateIds, signal }) { hookAdapterCalls += 1; assert.ok(signal instanceof AbortSignal); return judgments(candidateIds, candidateIds.includes('hook-active') ? ['hook-active'] : []); } });
+  const hookJudgePrompts = [];
+  __setAgentExperienceSelectorAdapterForTest({ async select({ candidateIds, prompt, signal }) { hookAdapterCalls += 1; hookJudgePrompts.push(prompt); assert.ok(signal instanceof AbortSignal); return judgments(candidateIds, candidateIds.includes('hook-active') ? ['hook-active'] : []); } });
   const hookCtx = { ...ctx, modelRegistry: fakeRegistry() };
   const hookResult = handlers.get('before_agent_start')({ prompt: 'hook adapter prompt', systemPrompt: 'base' }, hookCtx);
   assert.equal(hookResult, undefined, 'before_agent_start must synchronously arm steering without model work');
@@ -245,6 +250,28 @@ try {
   assert.match(contextResult.messages.at(-1).content, /Do: use production adapter guidance/);
   await handlers.get('context')({ messages: hookMessages }, hookCtx);
   assert.equal(hookAdapterCalls, 1, 'tool-loop/retry context must reuse one assessment');
+
+  handlers.get('before_agent_start')({ prompt: 'yes, do that', systemPrompt: 'base' }, hookCtx);
+  const contextualMessages = [
+    { role: 'assistant', content: [{ type: 'text', text: 'I can execute the hook adapter prompt action.' }] },
+    { role: 'custom', customType: 'agent_experience.habit_guidance', content: 'custom guidance must stay out', display: false },
+    { role: 'toolResult', content: [{ type: 'text', text: 'tool result must stay out' }] },
+    { role: 'user', content: [{ type: 'text', text: 'yes, do that' }] },
+  ];
+  const contextualResult = await handlers.get('context')({ messages: contextualMessages }, hookCtx);
+  assert.equal(hookAdapterCalls, 2, 'context-aware follow-up must still call judge exactly once');
+  assert.equal(contextualResult.messages.at(-1).customType, 'agent_experience.habit_guidance');
+  const contextualJudgePayload = JSON.parse(hookJudgePrompts[1]);
+  assert.deepEqual(contextualJudgePayload.context_turns, [{ role: 'assistant', text: 'I can execute the hook adapter prompt action.' }]);
+  assert.equal(contextualJudgePayload.current_user_request, 'yes, do that');
+  assert.doesNotMatch(hookJudgePrompts[1], /custom guidance|tool result/);
+  const changedToolLoopMessages = contextualMessages.map((message, index) => index === 0
+    ? { role: 'assistant', content: [{ type: 'text', text: 'Changed assistant context must not be re-read.' }] }
+    : message);
+  const changedToolLoopResult = await handlers.get('context')({ messages: changedToolLoopMessages }, hookCtx);
+  assert.equal(hookAdapterCalls, 2, 'tool-loop context must reuse the snapshotted assessment and context');
+  assert.equal(changedToolLoopResult.messages.at(-1).customType, 'agent_experience.habit_guidance');
+  assert.doesNotMatch(hookJudgePrompts[1], /Changed assistant context/);
 
   const noLedgerRoot = join(temp, 'no-ledger-state');
   process.env.AX_STATE_ROOT = noLedgerRoot;

@@ -97,7 +97,7 @@ function habitData(condition, behavior, lawHash) {
 function judgments(candidateIds, applicable = []) {
   const selected = new Set(applicable);
   return {
-    schema_version: 2,
+    schema_version: 3,
     judgments: candidateIds.map((id) => selected.has(id)
       ? { id, applicable: true, confidence_bp: 9500, reason: 'current_applicability' }
       : { id, applicable: false, confidence_bp: 9500, reason: 'not_currently_relevant' }),
@@ -139,9 +139,10 @@ try {
   assert.doesNotMatch(judgePrompt, /home\/private|user@example\.invalid|Give concise|review and validation|confidence|staleness|similarity/i);
   assert.match(judgePrompt, /redacted/i);
   assert.deepEqual(parseSelectorModelOutput(judgments(['status'], ['status']), { candidateIds: ['status'], maxSelected: 3, minConfidenceBp: 7500 }), [{ id: 'status', confidence_bp: 9500 }]);
-  assert.throws(() => parseSelectorModelOutput({ schema_version: 2, judgments: [] }, { candidateIds: ['status'], maxSelected: 3, minConfidenceBp: 7500 }), /coverage/i);
-  assert.throws(() => parseSelectorModelOutput({ schema_version: 2, judgments: [{ id: 'status', applicable: true, confidence_bp: 9500, reason: 'hypothetical_or_future' }] }, { candidateIds: ['status'], maxSelected: 3, minConfidenceBp: 7500 }), /Inconsistent/i);
-  assert.throws(() => parseSelectorModelOutput({ schema_version: 2, judgments: [{ id: 'status', applicable: false, confidence_bp: 7000, reason: 'not_currently_relevant' }] }, { candidateIds: ['status'], maxSelected: 3, minConfidenceBp: 7500 }), /confidence/i);
+  assert.throws(() => parseSelectorModelOutput({ schema_version: 2, judgments: [{ id: 'status', applicable: true, confidence_bp: 9500, reason: 'current_applicability' }] }, { candidateIds: ['status'], maxSelected: 3, minConfidenceBp: 7500 }), /schema version/i, 'schema-v2 judge output must fail closed after schema-v3 migration');
+  assert.throws(() => parseSelectorModelOutput({ schema_version: 3, judgments: [] }, { candidateIds: ['status'], maxSelected: 3, minConfidenceBp: 7500 }), /coverage/i);
+  assert.throws(() => parseSelectorModelOutput({ schema_version: 3, judgments: [{ id: 'status', applicable: true, confidence_bp: 9500, reason: 'hypothetical_or_future' }] }, { candidateIds: ['status'], maxSelected: 3, minConfidenceBp: 7500 }), /Inconsistent/i);
+  assert.throws(() => parseSelectorModelOutput({ schema_version: 3, judgments: [{ id: 'status', applicable: false, confidence_bp: 7000, reason: 'not_currently_relevant' }] }, { candidateIds: ['status'], maxSelected: 3, minConfidenceBp: 7500 }), /confidence/i);
 
   const config = { ...DEFAULT_AGENT_EXPERIENCE_CONFIG, enabled: true, selector_enabled: true, selector_min_confidence_bp: 7500, selector_max_habits: 3, selector_staleness_max: 0.8 };
   let judgeCalls = 0;
