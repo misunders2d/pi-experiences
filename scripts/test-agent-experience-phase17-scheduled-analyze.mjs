@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -224,23 +224,101 @@ try {
   process.env.AX_STATE_ROOT = receiptRoot;
   await writeScheduledAnalyzeReceipt(receiptRoot, { user_id: 'owner', status: 'ok', severity: 'info', checked: 1, new_suggestions: 0 });
   const handlers = new Map();
-  agentExperienceExtension({ registerCommand() {}, registerTool() {}, on(event, handler) { handlers.set(event, handler); } });
-  let lifecycleNotes = 0;
-  const lifecycleCtx = { mode: 'tui', hasUI: true, isIdle: () => true, ui: { notify() { lifecycleNotes += 1; } } };
+  const entryRenderers = new Map();
+  const transcriptEntries = [];
+  const activeSessionEntries = [];
+  agentExperienceExtension({
+    registerCommand() {},
+    registerTool() {},
+    on(event, handler) { handlers.set(event, handler); },
+    registerEntryRenderer(type, renderer) { entryRenderers.set(type, renderer); },
+    appendEntry(type, data) {
+      transcriptEntries.push({ type, data });
+      activeSessionEntries.push({ type: 'custom', customType: type, data });
+    },
+  });
+  const lifecycleCtx = { mode: 'tui', hasUI: true, isIdle: () => true, sessionManager: { getBranch: () => activeSessionEntries }, ui: { notify() {} } };
   await handlers.get('session_start')({ reason: 'startup' }, { ...lifecycleCtx, mode: 'json' });
-  assert.equal(lifecycleNotes, 0, 'non-TUI starts do not consume receipts');
+  assert.equal(transcriptEntries.length, 0, 'non-TUI starts do not consume receipts');
   assert.equal((await readScheduledAnalyzeReceipts(receiptRoot)).receipts.length, 1);
   await handlers.get('session_start')({ reason: 'reload' }, lifecycleCtx);
-  assert.equal(lifecycleNotes, 0, 'session_start must not consume before reload/startup rendering is visible');
-  assert.equal((await readScheduledAnalyzeReceipts(receiptRoot)).receipts.length, 1, 'startup receipt waits for a visible post-start boundary');
+  assert.equal(transcriptEntries.length, 0, 'session_start must not consume before reload/startup rendering is visible');
+  const pendingBeforeAppend = await readScheduledAnalyzeReceipts(receiptRoot);
+  assert.equal(pendingBeforeAppend.receipts.length, 1, 'startup receipt waits for a visible post-start boundary');
+  const retryFile = pendingBeforeAppend.files[0];
+  const retryPath = join(receiptRoot, 'receipts', 'scheduled-analyze', 'pending', retryFile);
+  const retryBody = await readFile(retryPath);
   await handlers.get('agent_settled')({}, lifecycleCtx);
-  assert.equal(lifecycleNotes, 1, 'the next settled turn surfaces the waiting scheduled result');
+  assert.equal(transcriptEntries.length, 1, 'the next settled turn appends the waiting scheduled result durably');
+  assert.equal(transcriptEntries[0].type, 'agent_experience.scheduled_analyze_notice');
+  assert.deepEqual(Object.keys(transcriptEntries[0].data).sort(), ['created_at', 'delivery_key', 'level', 'message', 'schema_version']);
+  assert.match(transcriptEntries[0].data.delivery_key, /^[0-9a-f]{64}$/);
+  assert.match(transcriptEntries[0].data.message, /Scheduled Agent Experience Analyze update/);
+  assert.equal(entryRenderers.has(transcriptEntries[0].type), true, 'durable notice has a registered TUI renderer');
   assert.equal((await readScheduledAnalyzeReceipts(receiptRoot)).receipts.length, 0);
+  await writeFile(retryPath, retryBody, { mode: 0o600 });
+  await handlers.get('agent_settled')({}, lifecycleCtx);
+  assert.equal(transcriptEntries.length, 1, 'a retained receipt with an already-appended delivery key is deleted without a duplicate entry');
+  assert.equal((await readScheduledAnalyzeReceipts(receiptRoot)).receipts.length, 0, 'idempotent retry cleans the retained receipt');
   await writeScheduledAnalyzeReceipt(receiptRoot, { user_id: 'owner', status: 'failed', severity: 'warn', safe_code: 'runtime_incompatible' });
   await handlers.get('agent_settled')({}, lifecycleCtx);
-  assert.equal(lifecycleNotes, 2, 'a receipt created after session start is shown after the next settled turn');
-  assert.equal((await readScheduledAnalyzeReceipts(receiptRoot)).receipts.length, 0, 'visible late receipt is consumed once');
+  assert.equal(transcriptEntries.length, 2, 'a receipt created after session start is appended after the next settled turn');
+  assert.equal(transcriptEntries[1].data.level, 'warn');
+  assert.equal((await readScheduledAnalyzeReceipts(receiptRoot)).receipts.length, 0, 'durably appended late receipt is consumed once');
   await handlers.get('session_shutdown')({}, lifecycleCtx);
+  await writeScheduledAnalyzeReceipt(receiptRoot, { user_id: 'owner', status: 'ok', severity: 'info', checked: 9, new_suggestions: 0 });
+  await handlers.get('agent_settled')({}, lifecycleCtx);
+  assert.equal(transcriptEntries.length, 2, 'stopped session never appends through a stale session API');
+  assert.equal((await readScheduledAnalyzeReceipts(receiptRoot)).receipts.length, 1, 'stopped session leaves the receipt pending');
+
+  const unavailableRendererRoot = join(temp, 'unavailable-notice-renderer');
+  process.env.AX_STATE_ROOT = unavailableRendererRoot;
+  await writeScheduledAnalyzeReceipt(unavailableRendererRoot, { user_id: 'owner', status: 'ok', severity: 'info', checked: 2, new_suggestions: 0 });
+  const unavailableHandlers = new Map();
+  agentExperienceExtension({ registerCommand() {}, registerTool() {}, appendEntry() { throw new Error('must not append without renderer'); }, on(event, handler) { unavailableHandlers.set(event, handler); } });
+  await unavailableHandlers.get('session_start')({ reason: 'reload' }, lifecycleCtx);
+  await unavailableHandlers.get('agent_settled')({}, lifecycleCtx);
+  assert.equal((await readScheduledAnalyzeReceipts(unavailableRendererRoot)).receipts.length, 1, 'missing durable renderer leaves receipt pending');
+  await unavailableHandlers.get('session_shutdown')({}, lifecycleCtx);
+
+  const appendFailureRoot = join(temp, 'notice-append-failure');
+  process.env.AX_STATE_ROOT = appendFailureRoot;
+  await writeScheduledAnalyzeReceipt(appendFailureRoot, { user_id: 'owner', status: 'ok', severity: 'info', checked: 3, new_suggestions: 0 });
+  const appendFailureHandlers = new Map();
+  agentExperienceExtension({
+    registerCommand() {},
+    registerTool() {},
+    registerEntryRenderer() {},
+    appendEntry() { throw new Error('transcript unavailable'); },
+    on(event, handler) { appendFailureHandlers.set(event, handler); },
+  });
+  await appendFailureHandlers.get('session_start')({ reason: 'reload' }, lifecycleCtx);
+  await appendFailureHandlers.get('agent_settled')({}, lifecycleCtx);
+  assert.equal((await readScheduledAnalyzeReceipts(appendFailureRoot)).receipts.length, 1, 'durable append failure leaves receipt pending');
+  await appendFailureHandlers.get('session_shutdown')({}, lifecycleCtx);
+
+  const unreadableNoticeRoot = join(temp, 'unreadable-notice-dedupe');
+  process.env.AX_STATE_ROOT = unreadableNoticeRoot;
+  const unreadableDir = join(unreadableNoticeRoot, 'receipts', 'scheduled-analyze', 'pending');
+  await mkdir(unreadableDir, { recursive: true });
+  await writeFile(join(unreadableDir, '20260717120200000-00000000-0000-4000-8000-000000000001.json'), '{invalid', { mode: 0o600 });
+  const unreadableHandlers = new Map();
+  const unreadableEntries = [];
+  agentExperienceExtension({
+    registerCommand() {},
+    registerTool() {},
+    registerEntryRenderer() {},
+    appendEntry(type, data) { unreadableEntries.push({ type: 'custom', customType: type, data }); },
+    on(event, handler) { unreadableHandlers.set(event, handler); },
+  });
+  const unreadableCtx = { ...lifecycleCtx, sessionManager: { getBranch: () => unreadableEntries } };
+  await unreadableHandlers.get('session_start')({ reason: 'reload' }, unreadableCtx);
+  await unreadableHandlers.get('agent_settled')({}, unreadableCtx);
+  assert.equal(unreadableEntries.length, 1, 'retained unreadable receipt appends one durable warning');
+  await unreadableHandlers.get('agent_settled')({}, unreadableCtx);
+  assert.equal(unreadableEntries.length, 1, 'retained unreadable receipt does not accumulate duplicate durable warnings');
+  assert.equal((await readScheduledAnalyzeReceipts(unreadableNoticeRoot)).unreadable, 1, 'unreadable receipt remains for safe recovery');
+  await unreadableHandlers.get('session_shutdown')({}, unreadableCtx);
   delete process.env.AX_STATE_ROOT;
 
   console.log('agent-experience phase17 scheduled Analyze checks passed');

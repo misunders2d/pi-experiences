@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { chmod, lstat, mkdir, open, readdir, readFile, rename, rm } from "node:fs/promises";
 import { constants } from "node:fs";
 import { basename } from "node:path";
@@ -182,11 +182,11 @@ export async function writeScheduledAnalyzeReceipt(root: string, input: Omit<Sch
 	}, { waitMs: 2_000 });
 }
 
-export async function readScheduledAnalyzeReceipts(root: string): Promise<{ receipts: ScheduledAnalyzeReceipt[]; files: string[]; unreadable: number }> {
+export async function readScheduledAnalyzeReceipts(root: string): Promise<{ receipts: ScheduledAnalyzeReceipt[]; files: string[]; unreadable: number; unreadableFiles: string[] }> {
 	const dir = pendingDir(root);
 	const receipts: ScheduledAnalyzeReceipt[] = [];
 	const files: string[] = [];
-	let unreadable = 0;
+	const unreadableFiles: string[] = [];
 	for (const file of await listReceiptFiles(root)) {
 		try {
 			const path = resolvePrivatePath(dir, file);
@@ -196,10 +196,10 @@ export async function readScheduledAnalyzeReceipts(root: string): Promise<{ rece
 			receipts.push(receipt);
 			files.push(file);
 		} catch {
-			unreadable += 1;
+			unreadableFiles.push(file);
 		}
 	}
-	return { receipts, files, unreadable };
+	return { receipts, files, unreadable: unreadableFiles.length, unreadableFiles };
 }
 
 export function formatScheduledAnalyzeReceiptSummary(data: { receipts: ScheduledAnalyzeReceipt[]; unreadable: number }): string | undefined {
@@ -301,7 +301,11 @@ export async function deleteScheduledAnalyzeReceiptFiles(root: string, files: st
 	}, { waitMs: 2_000 });
 }
 
-export async function consumeScheduledAnalyzeReceipts(root: string, userId: string, notify: (message: string, level: "info" | "warn") => void | Promise<void>, options: { holdEligibleForBreakIn?: boolean } = {}): Promise<{ shown: boolean; deleted: number; held: ScheduledAnalyzeReceiptRecord[] }> {
+function scheduledAnalyzeNoticeDeliveryKey(receipts: ScheduledAnalyzeReceipt[], unreadableFiles: string[]): string {
+	return createHash("sha256").update(canonicalJson({ receipt_ids: receipts.map((receipt) => receipt.id).sort(), unreadable_files: [...unreadableFiles].sort() })).digest("hex");
+}
+
+export async function consumeScheduledAnalyzeReceipts(root: string, userId: string, notify: (message: string, level: "info" | "warn", deliveryKey: string) => void | Promise<void>, options: { holdEligibleForBreakIn?: boolean } = {}): Promise<{ shown: boolean; deleted: number; held: ScheduledAnalyzeReceiptRecord[] }> {
 	const pending = await readScheduledAnalyzeReceipts(root);
 	const selected: ScheduledAnalyzeReceiptRecord[] = pending.receipts.map((receipt, index) => ({ receipt, file: pending.files[index] })).filter((item) => item.receipt.user_id === userId);
 	const prompted = selected.filter((item) => item.receipt.break_in_delivery?.state === "prompted");
@@ -314,7 +318,7 @@ export async function consumeScheduledAnalyzeReceipts(root: string, userId: stri
 	const message = formatScheduledAnalyzeReceiptSummary({ receipts: visible.map((item) => item.receipt), unreadable: pending.unreadable });
 	if (message) {
 		const level = visible.some((item) => item.receipt.severity === "warn") || pending.unreadable ? "warn" : "info";
-		await notify(message, level);
+		await notify(message, level, scheduledAnalyzeNoticeDeliveryKey(selected.map((item) => item.receipt), pending.unreadableFiles));
 	}
 	const held: ScheduledAnalyzeReceiptRecord[] = [...queued];
 	for (const item of freshHeld) {

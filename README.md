@@ -444,7 +444,7 @@ The package never installs a timer during npm/Pi installation. From `/experience
 - no host-runtime import, model authentication, or model call when no unread saved examples exist;
 - the same bounded observation validation, Analyze lock, consolidation lock, watermark, suggestion, duplicate, and law gates as manual Analyze;
 - suggestions only—never automatic approval, merge, activation, law mutation, or conversation interruption;
-- a bounded private sanitized receipt queue, summarized once in an open private Pi TUI session or the next eligible TUI session;
+- a bounded private sanitized receipt queue, summarized once as a durable TUI-only transcript entry in an open private Pi session or the next eligible TUI session; the entry never enters model context;
 - no Hub, remote scheduler, desktop notification, postinstall hook, or package-update activation.
 
 Setup can inspect, repair/rewrite, disable, or remove the package-owned user units. Because the rendered service pins absolute Node and package CLI paths, rerun setup after a Node/package-path change if status reports that the schedule needs repair. For local diagnostics, use `journalctl --user -u pi-experiences-agent-experience-analyze.service`; journal output contains only sanitized status codes.

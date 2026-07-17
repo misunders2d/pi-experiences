@@ -2736,8 +2736,67 @@ function usage(topic = "") {
 	].join("\n");
 }
 
+const SCHEDULED_ANALYZE_NOTICE_ENTRY_TYPE = "agent_experience.scheduled_analyze_notice";
+const SCHEDULED_ANALYZE_NOTICE_ENTRY_SCHEMA_VERSION = 1;
+const SCHEDULED_ANALYZE_NOTICE_MAX_CHARS = 1_200;
+
+type ScheduledAnalyzeNoticeEntryData = {
+	schema_version: 1;
+	created_at: string;
+	delivery_key: string;
+	level: "info" | "warn";
+	message: string;
+};
+
+function validateScheduledAnalyzeNoticeEntry(value: unknown): ScheduledAnalyzeNoticeEntryData {
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid scheduled Analyze notice entry");
+	const raw = value as Record<string, unknown>;
+	if (Object.keys(raw).sort().join(",") !== "created_at,delivery_key,level,message,schema_version") throw new Error("Invalid scheduled Analyze notice entry fields");
+	if (raw.schema_version !== SCHEDULED_ANALYZE_NOTICE_ENTRY_SCHEMA_VERSION) throw new Error("Invalid scheduled Analyze notice entry version");
+	if (raw.level !== "info" && raw.level !== "warn") throw new Error("Invalid scheduled Analyze notice level");
+	if (typeof raw.created_at !== "string" || !Number.isFinite(Date.parse(raw.created_at)) || new Date(raw.created_at).toISOString() !== raw.created_at) throw new Error("Invalid scheduled Analyze notice timestamp");
+	if (typeof raw.delivery_key !== "string" || !/^[0-9a-f]{64}$/.test(raw.delivery_key)) throw new Error("Invalid scheduled Analyze notice delivery key");
+	if (typeof raw.message !== "string" || !raw.message.startsWith("Scheduled Agent Experience Analyze update:") || raw.message.length > SCHEDULED_ANALYZE_NOTICE_MAX_CHARS || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(raw.message)) throw new Error("Invalid scheduled Analyze notice message");
+	if (redactText(raw.message) !== raw.message) throw new Error("Scheduled Analyze notice message is not sanitized");
+	return { schema_version: 1, created_at: raw.created_at, delivery_key: raw.delivery_key, level: raw.level, message: raw.message };
+}
+
+function buildScheduledAnalyzeNoticeEntry(message: string, level: "info" | "warn", deliveryKey: string): ScheduledAnalyzeNoticeEntryData {
+	return validateScheduledAnalyzeNoticeEntry({ schema_version: 1, created_at: new Date().toISOString(), delivery_key: deliveryKey, level, message });
+}
+
+function renderScheduledAnalyzeNoticeEntry(value: unknown, theme: { fg(name: string, text: string): string }) {
+	try {
+		const entry = validateScheduledAnalyzeNoticeEntry(value);
+		return new Text(theme.fg(entry.level === "warn" ? "warning" : "success", entry.message), 0, 0);
+	} catch {
+		return new Text(theme.fg("warning", "Scheduled Agent Experience Analyze update unavailable."), 0, 0);
+	}
+}
+
+function scheduledAnalyzeNoticeExistsInActiveBranch(ctx: ExtensionContext, deliveryKey: string): boolean {
+	return ctx.sessionManager.getBranch().some((entry) => {
+		if (entry.type !== "custom" || entry.customType !== SCHEDULED_ANALYZE_NOTICE_ENTRY_TYPE) return false;
+		try {
+			return validateScheduledAnalyzeNoticeEntry(entry.data).delivery_key === deliveryKey;
+		} catch {
+			return false;
+		}
+	});
+}
+
 export default function agentExperienceExtension(pi: ExtensionAPI) {
 	registerAgentExperienceConversationalTools(pi);
+
+	let scheduledReceiptRendererReady = false;
+	try {
+		if (typeof pi.registerEntryRenderer === "function" && typeof pi.appendEntry === "function") {
+			pi.registerEntryRenderer<ScheduledAnalyzeNoticeEntryData>(SCHEDULED_ANALYZE_NOTICE_ENTRY_TYPE, (entry, _options, theme) => renderScheduledAnalyzeNoticeEntry(entry.data, theme));
+			scheduledReceiptRendererReady = true;
+		}
+	} catch {
+		scheduledReceiptRendererReady = false;
+	}
 
 	let scheduledReceiptInitialCheck: ReturnType<typeof setTimeout> | undefined;
 	let scheduledReceiptPoll: ReturnType<typeof setInterval> | undefined;
@@ -2751,7 +2810,7 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 		scheduledReceiptPoll = undefined;
 	};
 	const checkScheduledReceipts = async (ctx: ExtensionContext): Promise<void> => {
-		if (ctx.mode !== "tui" || ctx.hasUI === false || scheduledReceiptStopped) return;
+		if (ctx.mode !== "tui" || ctx.hasUI === false || scheduledReceiptStopped || !scheduledReceiptRendererReady) return;
 		if (scheduledReceiptCheck) return scheduledReceiptCheck;
 		const run = (async () => {
 			const scope = breakInScopeFromContext(ctx);
@@ -2759,7 +2818,11 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 			try {
 				const { config } = await readAgentExperienceConfig(paths);
 				const holdEligibleForBreakIn = !!scope && config.enabled && config.break_in_enabled;
-				const consumed = await consumeScheduledAnalyzeReceipts(paths.root, getConfiguredUserId(), (message, level) => ctx.ui.notify(message, level), { holdEligibleForBreakIn });
+				const consumed = await consumeScheduledAnalyzeReceipts(paths.root, getConfiguredUserId(), (message, level, deliveryKey) => {
+					if (scheduledReceiptStopped) throw new Error("scheduled_receipt_delivery_cancelled");
+					if (scheduledAnalyzeNoticeExistsInActiveBranch(ctx, deliveryKey)) return;
+					pi.appendEntry(SCHEDULED_ANALYZE_NOTICE_ENTRY_TYPE, buildScheduledAnalyzeNoticeEntry(message, level, deliveryKey));
+				}, { holdEligibleForBreakIn });
 				if (scope) {
 					for (const record of consumed.held) {
 						const queued = breakInQueue.enqueue({
@@ -2784,16 +2847,21 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 		stopScheduledReceiptPolling();
 		scheduledReceiptStopped = false;
 		const checkWhenIdle = () => {
-			if (typeof ctx.isIdle === "function" && !ctx.isIdle()) return;
+			if (typeof ctx.isIdle === "function" && !ctx.isIdle()) return false;
 			void checkScheduledReceipts(ctx);
+			return true;
+		};
+		const scheduleInitialCheck = () => {
+			if (scheduledReceiptStopped) return;
+			scheduledReceiptInitialCheck = setTimeout(() => {
+				scheduledReceiptInitialCheck = undefined;
+				if (!checkWhenIdle()) scheduleInitialCheck();
+			}, 1_000);
+			scheduledReceiptInitialCheck.unref?.();
 		};
 		// session_start fires before reload/startup rendering is reliably visible.
-		// Never consume a receipt inside that hook: defer until the TUI has redrawn.
-		scheduledReceiptInitialCheck = setTimeout(() => {
-			scheduledReceiptInitialCheck = undefined;
-			checkWhenIdle();
-		}, 1_000);
-		scheduledReceiptInitialCheck.unref?.();
+		// Retry the initial check until Pi is idle, then append a durable transcript entry.
+		scheduleInitialCheck();
 		scheduledReceiptPoll = setInterval(checkWhenIdle, 30_000);
 		scheduledReceiptPoll.unref?.();
 	};

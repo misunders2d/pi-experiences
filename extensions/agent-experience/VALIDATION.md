@@ -27,7 +27,7 @@ npm audit --omit=dev
 14. token-lock stale/dead/malformed/ownership recovery;
 15. conversational draft/confirm, direct declaration, numbered review, privacy, stale-state, and no-orphan semantic failure;
 16. source/import bundling and generated CLI drift;
-17. scheduled Analyze no-work/model-call gating, outer/inner lock discipline, sanitized bounded receipts, one-time TUI delivery, fixed local systemd rendering, injected systemctl lifecycle, and config-state preservation.
+17. scheduled Analyze no-work/model-call gating, outer/inner lock discipline, sanitized bounded receipts, durable TUI-only transcript delivery across startup/reload, idempotent retained/unreadable receipt handling, stale-session and renderer/append failure retention, fixed local systemd rendering, injected systemctl lifecycle, and config-state preservation.
 
 The suite must perform no real systemd mutation, hosted embedding request, model download, or live scheduled model call. Phase 17 uses fake systemctl/model adapters and temporary unit/state roots.
 

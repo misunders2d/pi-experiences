@@ -6,6 +6,15 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 ## [Unreleased]
 
+### Fixed
+
+- Scheduled Analyze summaries now use durable TUI-only transcript entries instead of temporary notifications, so results remain visible after reload/startup without entering model context.
+- Receipts remain pending unless the durable entry renderer is registered and the transcript append succeeds; stable delivery keys prevent retained receipts from accumulating duplicate transcript notices.
+
+### Validation
+
+- Added durable-entry lifecycle, idempotent retry, unreadable-receipt deduplication, stale-session, missing-renderer, append-failure, and real installed-TUI visibility regressions.
+
 ## [0.1.43] - 2026-07-17
 
 ### Fixed

@@ -4411,7 +4411,7 @@ function safeScheduledAnalyzeErrorCode(error) {
 }
 
 // extensions/agent-experience/src/schedule/receipts.ts
-import { randomUUID as randomUUID5 } from "node:crypto";
+import { createHash as createHash3, randomUUID as randomUUID5 } from "node:crypto";
 import { chmod as chmod4, lstat as lstat10, mkdir as mkdir7, open as open4, readdir as readdir4, readFile as readFile9, rename as rename5, rm as rm5 } from "node:fs/promises";
 import { constants as constants3 } from "node:fs";
 init_checksum();
