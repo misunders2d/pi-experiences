@@ -6,6 +6,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 ## [Unreleased]
 
+## [0.1.44] - 2026-07-17
+
 ### Fixed
 
 - Scheduled Analyze summaries now use durable TUI-only transcript entries instead of temporary notifications, so results remain visible after reload/startup without entering model context.
@@ -65,7 +67,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 - Added synchronous submission-hook checks, deferred embedding/model assertions, and a packed Pi TUI smoke requiring submitted-message rendering within 1.5 seconds.
 
-[Unreleased]: https://github.com/misunders2d/pi-experiences/compare/v0.1.43...HEAD
+[Unreleased]: https://github.com/misunders2d/pi-experiences/compare/v0.1.44...HEAD
+[0.1.44]: https://github.com/misunders2d/pi-experiences/compare/v0.1.43...v0.1.44
 [0.1.43]: https://github.com/misunders2d/pi-experiences/compare/v0.1.42...v0.1.43
 [0.1.42]: https://github.com/misunders2d/pi-experiences/compare/v0.1.41...v0.1.42
 [0.1.41]: https://github.com/misunders2d/pi-experiences/compare/v0.1.40...v0.1.41

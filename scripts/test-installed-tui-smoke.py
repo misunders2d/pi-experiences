@@ -3,8 +3,8 @@ import fcntl, os, pty, re, select, shutil, signal, struct, sys, termios, time
 from pathlib import Path
 if len(sys.argv)<3: raise SystemExit('usage: test-installed-tui-smoke.py INSTALLED_PACKAGE TRANSCRIPT')
 package=str(Path(sys.argv[1]).resolve()); transcript=Path(sys.argv[2]).resolve()
-state=Path(os.environ.get('AX_STATE_ROOT','/tmp/pi-experiences-043-tui-smoke-state')).resolve(); shutil.rmtree(state,ignore_errors=True); state.mkdir(parents=True,exist_ok=True)
-work=state.parent/'pi-experiences-0.1.43-tui-work'; work.mkdir(parents=True,exist_ok=True)
+state=Path(os.environ.get('AX_STATE_ROOT','/tmp/pi-experiences-044-tui-smoke-state')).resolve(); shutil.rmtree(state,ignore_errors=True); state.mkdir(parents=True,exist_ok=True)
+work=state.parent/'pi-experiences-0.1.44-tui-work'; work.mkdir(parents=True,exist_ok=True)
 raw=bytearray(); csi=re.compile(rb'\x1b\[[0-?]*[ -/]*[@-~]'); osc=re.compile(rb'\x1b\][^\x07]*(?:\x07|\x1b\\)')
 def clean(data): return csi.sub(b'',osc.sub(b'',data)).replace(b'\r',b'\n').decode('utf-8','replace')
 def text(start=0): return clean(bytes(raw[start:]))
@@ -46,7 +46,7 @@ try:
     down(fd,2); mark=len(raw); enter(fd); wait(fd,r'Choose model for habit assessment',start=mark); escape(fd); drain(fd,.5)
     # Empty-path notices can be clipped by the immediate setup redraw; match distinctive prefixes.
     down(fd,4); mark=len(raw); enter(fd); wait(fd,r'No review l',start=mark); drain(fd,.5)
-    down(fd,5); mark=len(raw); enter(fd); wait(fd,r'No habit ledger|No duplicate habits',start=mark); drain(fd,.5)
+    down(fd,5); mark=len(raw); enter(fd); wait(fd,r'No habit le|No duplicate hab',start=mark); drain(fd,.5)
     down(fd,6); mark=len(raw); enter(fd); wait(fd,r'No approved habits',start=mark); drain(fd,.5)
     # Local duplicate-prevention explanation: no download or service prompt.
     down(fd,7); mark=len(raw); enter(fd); wait(fd,r'Explain duplicate prevention',start=mark); mark=len(raw); enter(fd); wait(fd,r'Duplicate prevention compares only normalized',start=mark); drain(fd,.5)
