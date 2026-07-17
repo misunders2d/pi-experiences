@@ -33,7 +33,7 @@ export const DEFAULT_AGENT_EXPERIENCE_CONFIG: AgentExperienceConfig = Object.fre
 	break_in_enabled: false,
 	selector_mode: "instant",
 	selector_model: "openai-codex/gpt-5.4-mini",
-	selector_timeout_ms: 5000,
+	selector_timeout_ms: 20000,
 	selector_min_confidence_bp: 7500,
 	selector_min_overlap_score: 1,
 	selector_max_habits: 3,

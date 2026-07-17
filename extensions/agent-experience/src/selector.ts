@@ -13,6 +13,7 @@ import {
 	selectorConditionIdentityChecksum,
 	unionRetrievedSelectorCandidates,
 	type RetrievedSelectorCandidate,
+	type SelectorRetrievalMode,
 } from "./selector-vector.ts";
 import {
 	MAX_STEERING_CONTEXT_MESSAGES,
@@ -194,9 +195,27 @@ function boundedSelectorContextTurns(turns: SteeringContextTurn[] | undefined): 
 	return redacted;
 }
 
-function buildContextualRetrievalPrompt(prompt: string, contextTurns: SteeringContextTurn[]): string | undefined {
+export const SELECTOR_CONTEXT_RETRIEVAL_MAX_UTF8_BYTES = 120;
+
+function utf8Prefix(value: string, maxBytes: number): string {
+	let bytes = 0;
+	let output = "";
+	for (const character of value) {
+		const width = Buffer.byteLength(character, "utf8");
+		if (bytes + width > maxBytes) break;
+		output += character;
+		bytes += width;
+	}
+	return output.trimEnd();
+}
+
+export function buildContextualRetrievalPrompt(prompt: string, contextTurns: SteeringContextTurn[]): string | undefined {
 	if (!contextTurns.length) return undefined;
-	return [...contextTurns.map((turn) => `${turn.role}: ${turn.text}`), `current_user: ${prompt}`].join("\n");
+	// Retrieval gets a compact local-only prefix: current request first, then
+	// newest context. The full bounded chronological context still reaches the
+	// mandatory applicability judge.
+	const text = [`current_user: ${prompt}`, ...[...contextTurns].reverse().map((turn) => `${turn.role}: ${turn.text}`)].join("\n");
+	return utf8Prefix(text, SELECTOR_CONTEXT_RETRIEVAL_MAX_UTF8_BYTES) || undefined;
 }
 
 export function buildSelectorPrompt(candidates: SelectorCandidate[], input: { prompt: string; maxHabits: number; contextTurns?: SteeringContextTurn[] }): string {
@@ -290,6 +309,53 @@ function noInjection(reason: string, extra: Record<string, unknown> = {}) {
 	return { injected: false, reason, message: undefined, ...extra };
 }
 
+const AUDITABLE_SELECTOR_FAILURES = new Set([
+	"selector_vectors_unavailable",
+	"selector_unavailable",
+	"selector_timeout",
+	"selector_model_call_failed",
+	"selector_model_unavailable",
+	"selector_model_auth_unavailable",
+	"selector_model_invalid_json",
+	"selector_model_empty_response",
+	"selector_model_truncated_response",
+	"selector_model_unverified",
+	"invalid_selector_output",
+]);
+
+function tryInsertSelectorFailureLog(db: any, input: {
+	userId: string;
+	reason: string;
+	stage: string;
+	mode: string;
+	model: string;
+	createdAt: string;
+	latencyMs: number;
+	retrievalMode?: SelectorRetrievalMode;
+}): void {
+	if (!AUDITABLE_SELECTOR_FAILURES.has(input.reason)) return;
+	try {
+		insertSelectorHitLog(db, {
+			userId: input.userId,
+			habitId: null,
+			action: "diagnostic",
+			selected: false,
+			reason: input.reason,
+			latencyMs: input.latencyMs,
+			promptHash: "omitted",
+			data: {
+				stage: input.stage,
+				mode: input.mode,
+				model: input.model,
+				...(input.retrievalMode ? { retrieval_mode: input.retrievalMode } : {}),
+			},
+			createdAt: input.createdAt,
+		});
+	} catch {
+		// Diagnostics are best-effort and must never alter the original fail-closed result.
+	}
+}
+
 function revalidateSelectedCandidates(db: any, input: {
 	userId: string;
 	selected: SelectorJudgment[];
@@ -333,7 +399,6 @@ export async function runSelectorRuntime(db: any, input: {
 	const config = input.config;
 	const hash = promptHash(input.prompt);
 	if (!config.enabled || !config.selector_enabled) return noInjection("selector_disabled");
-	if (!input.embeddingAdapter) return noInjection("selector_vectors_unavailable");
 	let contextTurns: SteeringContextTurn[] = [];
 	try {
 		contextTurns = boundedSelectorContextTurns(input.contextTurns);
@@ -345,11 +410,17 @@ export async function runSelectorRuntime(db: any, input: {
 	const contextualPrompt = buildContextualRetrievalPrompt(input.prompt, contextTurns);
 	const selectorMode = contextTurns.length ? "vector_judge_ctx" : "vector_judge";
 	const started = Date.now();
+	if (!input.embeddingAdapter) {
+		tryInsertSelectorFailureLog(db, { userId, reason: "selector_vectors_unavailable", stage: "embedding_adapter", mode: selectorMode, model: config.selector_model, createdAt: input.now, latencyMs: Date.now() - started });
+		return noInjection("selector_vectors_unavailable");
+	}
 	let promptVectors: Awaited<ReturnType<typeof embedSelectorPromptQueries>>;
 	try {
 		promptVectors = await embedSelectorPromptQueries({ prompt: input.prompt, contextualPrompt, embeddingAdapter: input.embeddingAdapter, signal: input.signal });
-	} catch (error: any) {
-		return noInjection(input.signal?.aborted ? "selector_cancelled" : "selector_vectors_unavailable");
+	} catch {
+		const reason = input.signal?.aborted ? "selector_cancelled" : "selector_vectors_unavailable";
+		if (reason !== "selector_cancelled") tryInsertSelectorFailureLog(db, { userId, reason, stage: "prompt_vectors", mode: selectorMode, model: config.selector_model, createdAt: input.now, latencyMs: Date.now() - started });
+		return noInjection(reason);
 	}
 	let law: LawSnapshot;
 	try {
@@ -375,10 +446,14 @@ export async function runSelectorRuntime(db: any, input: {
 			: undefined;
 		retrieved = unionRetrievedSelectorCandidates({ primary, secondary });
 	} catch {
+		tryInsertSelectorFailureLog(db, { userId, reason: "selector_vectors_unavailable", stage: "candidate_vectors", mode: selectorMode, model: config.selector_model, createdAt: input.now, latencyMs: Date.now() - started, retrievalMode: promptVectors.retrievalMode });
 		return noInjection("selector_vectors_unavailable");
 	}
 	if (!retrieved.length) return noInjection("no_vector_candidates");
-	if (!input.adapter) return noInjection("selector_unavailable");
+	if (!input.adapter) {
+		tryInsertSelectorFailureLog(db, { userId, reason: "selector_unavailable", stage: "judge_adapter", mode: selectorMode, model: config.selector_model, createdAt: input.now, latencyMs: Date.now() - started, retrievalMode: promptVectors.retrievalMode });
+		return noInjection("selector_unavailable");
+	}
 	const retrievedCandidates = retrieved.map((item) => item.candidate);
 	let raw: unknown;
 	try {
@@ -390,13 +465,16 @@ export async function runSelectorRuntime(db: any, input: {
 			signal,
 		}));
 	} catch (error: any) {
-		const reason = String(error?.message || "selector_unavailable");
-		return noInjection(/^selector_[a-z_]+$/.test(reason) ? reason : "selector_unavailable");
+		const rawReason = String(error?.message || "selector_unavailable");
+		const reason = /^selector_[a-z_]+$/.test(rawReason) ? rawReason : "selector_unavailable";
+		if (reason !== "selector_cancelled") tryInsertSelectorFailureLog(db, { userId, reason, stage: "judge_call", mode: selectorMode, model: config.selector_model, createdAt: input.now, latencyMs: Date.now() - started, retrievalMode: promptVectors.retrievalMode });
+		return noInjection(reason);
 	}
 	let selected: SelectorJudgment[];
 	try {
 		selected = parseSelectorModelOutput(raw, { candidateIds: retrievedCandidates.map((candidate) => candidate.id), maxSelected: config.selector_max_habits, minConfidenceBp: config.selector_min_confidence_bp });
 	} catch {
+		tryInsertSelectorFailureLog(db, { userId, reason: "invalid_selector_output", stage: "judge_parse", mode: selectorMode, model: config.selector_model, createdAt: input.now, latencyMs: Date.now() - started, retrievalMode: promptVectors.retrievalMode });
 		return noInjection("invalid_selector_output");
 	}
 	if (!selected.length) return noInjection("empty_selection");
@@ -412,11 +490,11 @@ export async function runSelectorRuntime(db: any, input: {
 	try {
 		const selectedIds = new Set(selected.map((entry) => entry.id));
 		for (const candidate of selectedCandidates) {
-			insertSelectorHitLog(db, { userId, habitId: candidate.id, action: "inject", selected: true, reason: "selected", confidenceBp: candidate.confidence_bp, promptHash: hash, latencyMs: Date.now() - started, data: { selected_count: selected.length, model: modelLabel, mode: selectorMode }, createdAt: input.now });
+			insertSelectorHitLog(db, { userId, habitId: candidate.id, action: "inject", selected: true, reason: "selected", confidenceBp: candidate.confidence_bp, promptHash: hash, latencyMs: Date.now() - started, data: { selected_count: selected.length, model: modelLabel, mode: selectorMode, retrieval_mode: promptVectors.retrievalMode }, createdAt: input.now });
 		}
 		for (const item of retrieved) {
 			if (selectedIds.has(item.candidate.id)) continue;
-			insertSelectorHitLog(db, { userId, habitId: item.candidate.id, action: "skip", selected: false, reason: "not_selected", confidenceBp: item.candidate.confidence_bp, promptHash: hash, latencyMs: Date.now() - started, data: { selected_count: selected.length, model: modelLabel, mode: selectorMode }, createdAt: input.now });
+			insertSelectorHitLog(db, { userId, habitId: item.candidate.id, action: "skip", selected: false, reason: "not_selected", confidenceBp: item.candidate.confidence_bp, promptHash: hash, latencyMs: Date.now() - started, data: { selected_count: selected.length, model: modelLabel, mode: selectorMode, retrieval_mode: promptVectors.retrievalMode }, createdAt: input.now });
 		}
 		db.exec("COMMIT");
 	} catch {

@@ -201,7 +201,7 @@ assert.equal(readResult.config.selector_enabled, false, 'setup/on must not enabl
 assert.equal(readResult.config.embedding_enabled, false, 'setup/on must not enable embeddings');
 assert.equal(readResult.config.consolidation_enabled, false, 'setup/on must not enable consolidation/timer trap');
 assert.equal(readResult.config.timer_enabled, false, 'setup/on must not enable timers');
-assert.equal(readResult.config.selector_timeout_ms, 5000, 'selector timeout must default to the package smart-mode ceiling');
+assert.equal(readResult.config.selector_timeout_ms, 20000, 'selector timeout must default to the bounded judge ceiling');
 assert.equal('selector_daily_budget' in readResult.config, false, 'selector guidance must have no daily quota');
 assert.equal(readResult.config.law_path, 'law.md', 'law path must default to state-root law.md, not cwd docs');
 assert.equal(readResult.config.selector_min_confidence_bp, 7500, 'selector min confidence must default to 7500bp');

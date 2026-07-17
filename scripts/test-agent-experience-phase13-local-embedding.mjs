@@ -6,6 +6,7 @@ import { Readable } from 'node:stream';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { parseAgentExperienceConfig } from '../extensions/agent-experience/src/config.ts';
+import { buildContextualRetrievalPrompt, SELECTOR_CONTEXT_RETRIEVAL_MAX_UTF8_BYTES } from '../extensions/agent-experience/src/selector.ts';
 import { cosineBp, effectiveFieldSimilarityBp, habitBehaviorEmbeddingInputV1, habitConditionEmbeddingInputV1 } from '../extensions/agent-experience/src/semantic/core.ts';
 import { createEmbeddingAdapterFromConfig, semanticPolicyFromConfig } from '../extensions/agent-experience/src/semantic/config.ts';
 import { createLocalEmbeddingAdapter } from '../extensions/agent-experience/src/semantic/local-adapter.ts';
@@ -143,6 +144,28 @@ try {
     assert.equal(expectedDuplicates, 9);
     assert.equal(routedExpectedDuplicates, 8, 'precision-first field rule must route eight of nine representative paraphrases');
     assert.ok(strongExpectedDuplicates >= 5, 'strong threshold must remain reserved for closely aligned multilingual paraphrases');
+
+    // Real tokenizer/worker regression: old contextual input breaks the whole
+    // batch; selector-only compact input preserves the strict worker contract.
+    const currentRequest = "reloaded just in case. let's still plan the summer vacation";
+    const longContextTurns = [
+      {role:'assistant',text:'First prior response about diagnostics and selector behavior. '.repeat(6)},
+      {role:'assistant',text:'Second prior response about local embeddings and bounded context. '.repeat(6)},
+      {role:'assistant',text:'Третий предыдущий ответ о летнем отпуске и проверке контекста. '.repeat(6)},
+      {role:'assistant',text:'Newest prior response keeps the current request as the only trigger. '.repeat(6)},
+    ];
+    const oldContextualInput = [...longContextTurns.map((turn) => `${turn.role}: ${turn.text}`), `current_user: ${currentRequest}`].join('\n');
+    await assert.rejects(() => adapter.embed([currentRequest, oldContextualInput]), /128_tokens/);
+    const compactContextualInput = buildContextualRetrievalPrompt(currentRequest, longContextTurns);
+    assert.ok(Buffer.byteLength(compactContextualInput, 'utf8') <= SELECTOR_CONTEXT_RETRIEVAL_MAX_UTF8_BYTES);
+    assert.ok(compactContextualInput.startsWith(`current_user: ${currentRequest}`));
+    const compactVectors = await adapter.embed([currentRequest, compactContextualInput]);
+    assert.equal(compactVectors.length, 2);
+    assert.ok(compactVectors.every((vector) => vector.length === 384));
+    const multilingualCompact = buildContextualRetrievalPrompt('да, продолжай', [{role:'assistant',text:'Составь подробный план летнего отпуска. '.repeat(20)}]);
+    assert.ok(Buffer.byteLength(multilingualCompact, 'utf8') <= SELECTOR_CONTEXT_RETRIEVAL_MAX_UTF8_BYTES);
+    assert.equal((await adapter.embed(['да, продолжай', multilingualCompact])).length, 2);
+
     await assert.rejects(() => adapter.embed([`when text is too long\n${'token '.repeat(300)}`]), /128_tokens/);
     assert.equal(adapter.isWorkerActive(), true);
     await new Promise((resolve) => setTimeout(resolve, 250));

@@ -199,9 +199,19 @@ export async function prepareSelectorConditionVectors(db: any, input: {
 	return { prepared: repairIds.length, cached: input.candidates.length - repairIds.length, total: input.candidates.length };
 }
 
+export type SelectorRetrievalMode = "current_only" | "current_plus_context_compact" | "current_only_after_context_failure";
+
 export interface SelectorPromptVectors {
 	currentVector: Float32Array;
 	contextVector?: Float32Array;
+	retrievalMode: SelectorRetrievalMode;
+}
+
+function validatedPromptVectors(vectors: Float32Array[], expected: number, dimensions: number): Float32Array[] {
+	if (!Array.isArray(vectors) || vectors.length !== expected || vectors.some((vector) => vector?.length !== dimensions)) {
+		throw new Error("selector_prompt_embedding_invalid");
+	}
+	return vectors;
 }
 
 export async function embedSelectorPromptQueries(input: {
@@ -212,17 +222,29 @@ export async function embedSelectorPromptQueries(input: {
 }): Promise<SelectorPromptVectors> {
 	assertLocalSelectorAdapter(input.embeddingAdapter);
 	throwIfAborted(input.signal);
-	const texts = [selectorPromptEmbeddingInputV1(input.prompt)];
-	if (input.contextualPrompt?.trim()) texts.push(selectorPromptEmbeddingInputV1(input.contextualPrompt));
-	const vectors = await input.embeddingAdapter.embed(texts, { signal: input.signal });
-	throwIfAborted(input.signal);
-	if (!Array.isArray(vectors) || vectors.length !== texts.length || vectors.some((vector) => vector?.length !== input.embeddingAdapter.dimensions)) {
-		throw new Error("selector_prompt_embedding_invalid");
+	const currentText = selectorPromptEmbeddingInputV1(input.prompt);
+	const contextualText = input.contextualPrompt?.trim() ? selectorPromptEmbeddingInputV1(input.contextualPrompt) : undefined;
+	if (!contextualText) {
+		const vectors = validatedPromptVectors(await input.embeddingAdapter.embed([currentText], { signal: input.signal }), 1, input.embeddingAdapter.dimensions);
+		throwIfAborted(input.signal);
+		return { currentVector: normalizedVector(vectors[0]), retrievalMode: "current_only" };
 	}
-	return {
-		currentVector: normalizedVector(vectors[0]),
-		contextVector: vectors[1] ? normalizedVector(vectors[1]) : undefined,
-	};
+	try {
+		const vectors = validatedPromptVectors(await input.embeddingAdapter.embed([currentText, contextualText], { signal: input.signal }), 2, input.embeddingAdapter.dimensions);
+		throwIfAborted(input.signal);
+		return {
+			currentVector: normalizedVector(vectors[0]),
+			contextVector: normalizedVector(vectors[1]),
+			retrievalMode: "current_plus_context_compact",
+		};
+	} catch {
+		throwIfAborted(input.signal);
+		// Context is optional retrieval assistance. Retry the strict current query
+		// once; the applicability judge remains mandatory and still sees context.
+		const vectors = validatedPromptVectors(await input.embeddingAdapter.embed([currentText], { signal: input.signal }), 1, input.embeddingAdapter.dimensions);
+		throwIfAborted(input.signal);
+		return { currentVector: normalizedVector(vectors[0]), retrievalMode: "current_only_after_context_failure" };
+	}
 }
 
 export async function embedSelectorPrompt(input: {

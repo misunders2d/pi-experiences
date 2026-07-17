@@ -188,7 +188,12 @@ try {
   assert.equal(timeout.injected, false);
   assert.match(timeout.reason, /timeout/);
   assert.equal(aborted, true, 'timeout must abort adapter signal');
-  assert.equal(storage.db.prepare('SELECT COUNT(*) AS count FROM selector_hit_log').get().count, beforeTimeoutLogs, 'timeout no-injection must not write skip logs');
+  assert.equal(storage.db.prepare('SELECT COUNT(*) AS count FROM selector_hit_log').get().count, beforeTimeoutLogs + 1, 'timeout must write one sanitized diagnostic, never a skip log');
+  const timeoutLog = storage.db.prepare("SELECT action, reason, prompt_hash, data_json FROM selector_hit_log WHERE created_at = ?").get('2026-07-08T01:02:00.000Z');
+  assert.equal(timeoutLog.action, 'diagnostic');
+  assert.equal(timeoutLog.reason, 'selector_timeout');
+  assert.equal(timeoutLog.prompt_hash, 'omitted');
+  assert.deepEqual(JSON.parse(timeoutLog.data_json), { mode: 'vector_judge', model: config.selector_model, retrieval_mode: 'current_only', stage: 'judge_call' });
 
   const malformed = await runSelectorRuntime(storage.db, {
     userId: 'owner', prompt: 'selector adapter tests', config, law,

@@ -6,9 +6,12 @@ import { join } from 'node:path';
 import { DEFAULT_AGENT_EXPERIENCE_CONFIG } from '../extensions/agent-experience/src/config.ts';
 import { lawSnapshotForTest } from '../extensions/agent-experience/src/review.ts';
 import {
+  buildContextualRetrievalPrompt,
   buildSelectorPrompt,
+  isValidSelectorHitLog,
   parseSelectorModelOutput,
   runSelectorRuntime,
+  SELECTOR_CONTEXT_RETRIEVAL_MAX_UTF8_BYTES,
   selectActiveSelectorSnapshot,
 } from '../extensions/agent-experience/src/selector.ts';
 import {
@@ -136,14 +139,62 @@ assert.equal(bounded.length, MAX_STEERING_CONTEXT_MESSAGES);
 assert.deepEqual(bounded.map((turn) => Number(turn.text.split(':')[0])), [3, 4, 5, 6]);
 assert.equal(bounded.every((turn) => turn.text.length <= MAX_STEERING_CONTEXT_MESSAGE_CHARS), true);
 
+// Context retrieval is compact, current-first, newest-first, and Unicode-safe.
+const compactContext = buildContextualRetrievalPrompt('ok', [
+  { role: 'user', text: `OLDEST_MARKER ${'x'.repeat(100)}` },
+  { role: 'assistant', text: `NEWEST_MARKER летний отпуск ${'я'.repeat(100)}` },
+]);
+assert.ok(compactContext.startsWith('current_user: ok\nassistant: NEWEST_MARKER'));
+assert.doesNotMatch(compactContext, /OLDEST_MARKER/);
+assert.ok(Buffer.byteLength(compactContext, 'utf8') <= SELECTOR_CONTEXT_RETRIEVAL_MAX_UTF8_BYTES);
+assert.doesNotMatch(compactContext, /�/);
+
 // Dual embeddings use one adapter batch; empty context keeps one query.
 const directEmbedding = fakeEmbeddingAdapter();
 const oneQuery = await embedSelectorPromptQueries({ prompt: 'yes, do that', embeddingAdapter: directEmbedding });
 assert.equal(oneQuery.contextVector, undefined);
+assert.equal(oneQuery.retrievalMode, 'current_only');
 assert.equal(directEmbedding.batches.at(-1).length, 1);
-const twoQueries = await embedSelectorPromptQueries({ prompt: 'yes, do that', contextualPrompt: 'assistant: publish the package\ncurrent_user: yes, do that', embeddingAdapter: directEmbedding });
+const twoQueries = await embedSelectorPromptQueries({ prompt: 'yes, do that', contextualPrompt: 'current_user: yes, do that\nassistant: publish the package', embeddingAdapter: directEmbedding });
 assert.ok(twoQueries.contextVector);
+assert.equal(twoQueries.retrievalMode, 'current_plus_context_compact');
 assert.equal(directEmbedding.batches.at(-1).length, 2);
+
+const fallbackBatches = [];
+const fallbackEmbedding = {
+  ...fakeEmbeddingAdapter(),
+  async embed(texts, { signal } = {}) {
+    if (signal?.aborted) throw signal.reason || new Error('aborted');
+    fallbackBatches.push([...texts]);
+    if (fallbackBatches.length === 1) throw new Error('local_embedding_input_exceeds_128_tokens');
+    return texts.map(vectorFor);
+  },
+};
+const fallbackQuery = await embedSelectorPromptQueries({ prompt: 'publish the package', contextualPrompt: 'context', embeddingAdapter: fallbackEmbedding });
+assert.equal(fallbackQuery.retrievalMode, 'current_only_after_context_failure');
+assert.equal(fallbackQuery.contextVector, undefined);
+assert.deepEqual(fallbackBatches.map((batch) => batch.length), [2, 1]);
+
+const cancellation = new AbortController();
+let cancellationCalls = 0;
+const cancellationEmbedding = {
+  ...fakeEmbeddingAdapter(),
+  async embed() {
+    cancellationCalls += 1;
+    cancellation.abort(new Error('selector_cancelled'));
+    throw new Error('local_embedding_aborted');
+  },
+};
+await assert.rejects(() => embedSelectorPromptQueries({ prompt: 'publish the package', contextualPrompt: 'context', embeddingAdapter: cancellationEmbedding, signal: cancellation.signal }), /selector_cancelled/);
+assert.equal(cancellationCalls, 1, 'cancellation must never retry');
+
+let failedEmbeddingCalls = 0;
+const failedEmbedding = {
+  ...fakeEmbeddingAdapter(),
+  async embed() { failedEmbeddingCalls += 1; throw new Error(`private prompt must not persist ${failedEmbeddingCalls}`); },
+};
+await assert.rejects(() => embedSelectorPromptQueries({ prompt: 'publish the package', contextualPrompt: 'context', embeddingAdapter: failedEmbedding }), /private prompt/);
+assert.equal(failedEmbeddingCalls, 2, 'non-cancellation fallback is bounded to one retry');
 
 // Union is deterministic: primary entry and order win; secondary-only appends.
 const candidate = (id) => ({ id, condition: id, behavior: id, confidence_bp: 9000 });
@@ -186,7 +237,98 @@ try {
   embedding.batches.length = 0;
   const config = { ...DEFAULT_AGENT_EXPERIENCE_CONFIG, enabled: true, selector_enabled: true, selector_min_confidence_bp: 7500, selector_max_habits: 3, selector_staleness_max: 0.8 };
 
+  const missingAdapter = await runSelectorRuntime(storage.db, {
+    userId: 'owner', prompt: 'Publish the package release now.', contextTurns: [{ role: 'assistant', text: 'context' }],
+    config, law, now: '2026-07-17T00:29:00.000Z',
+    adapter: { async select() { throw new Error('judge must not run'); } },
+  });
+  assert.equal(missingAdapter.reason, 'selector_vectors_unavailable');
+  const missingAdapterLog = storage.db.prepare("SELECT * FROM selector_hit_log WHERE action = 'diagnostic' AND created_at = ?").get('2026-07-17T00:29:00.000Z');
+  assert.deepEqual(JSON.parse(missingAdapterLog.data_json), { mode: 'vector_judge_ctx', model: config.selector_model, stage: 'embedding_adapter' });
+  assert.equal(isValidSelectorHitLog(missingAdapterLog), true);
+
+  // One failed contextual batch retries current-only once; judge remains mandatory.
+  const runtimeFallbackBatches = [];
+  let runtimeFallbackJudgeCalls = 0;
+  const runtimeFallbackEmbedding = {
+    ...fakeEmbeddingAdapter(),
+    async embed(texts, { signal } = {}) {
+      if (signal?.aborted) throw signal.reason || new Error('aborted');
+      runtimeFallbackBatches.push([...texts]);
+      if (runtimeFallbackBatches.length === 1) throw new Error('local_embedding_input_exceeds_128_tokens');
+      return texts.map(vectorFor);
+    },
+  };
+  const runtimeFallback = await runSelectorRuntime(storage.db, {
+    userId: 'owner', prompt: 'Publish the package release now.',
+    contextTurns: [{ role: 'assistant', text: 'Context remains available to the mandatory judge.' }],
+    config, law, now: '2026-07-17T00:30:00.000Z', embeddingAdapter: runtimeFallbackEmbedding,
+    adapter: { async select({ candidateIds, prompt }) {
+      runtimeFallbackJudgeCalls += 1;
+      assert.equal(JSON.parse(prompt).context_turns.length, 1);
+      return judgments(candidateIds, ['release']);
+    } },
+  });
+  assert.equal(runtimeFallback.injected, true);
+  assert.equal(runtimeFallbackJudgeCalls, 1);
+  assert.deepEqual(runtimeFallbackBatches.map((batch) => batch.length), [2, 1]);
+  const fallbackLog = storage.db.prepare("SELECT * FROM selector_hit_log WHERE reason = 'selected' ORDER BY created_at DESC LIMIT 1").get();
+  assert.equal(JSON.parse(fallbackLog.data_json).retrieval_mode, 'current_only_after_context_failure');
+
+  // Failed current-only retry emits only a sanitized durable diagnostic.
+  let runtimeFailureCalls = 0;
+  const runtimeFailureEmbedding = {
+    ...fakeEmbeddingAdapter(),
+    async embed() { runtimeFailureCalls += 1; throw new Error('private prompt and raw worker failure'); },
+  };
+  const failedRuntime = await runSelectorRuntime(storage.db, {
+    userId: 'owner', prompt: 'Publish private-example@example.invalid package.',
+    contextTurns: [{ role: 'assistant', text: 'Secret context must not persist.' }],
+    config, law, now: '2026-07-17T00:31:00.000Z', embeddingAdapter: runtimeFailureEmbedding,
+    adapter: { async select() { throw new Error('judge must not run'); } },
+  });
+  assert.equal(failedRuntime.injected, false);
+  assert.equal(failedRuntime.reason, 'selector_vectors_unavailable');
+  assert.equal(runtimeFailureCalls, 2);
+  const failureLog = storage.db.prepare("SELECT * FROM selector_hit_log WHERE action = 'diagnostic' AND created_at = ?").get('2026-07-17T00:31:00.000Z');
+  assert.equal(failureLog.reason, 'selector_vectors_unavailable');
+  assert.equal(failureLog.prompt_hash, 'omitted');
+  assert.equal(isValidSelectorHitLog(failureLog), true);
+  assert.deepEqual(JSON.parse(failureLog.data_json), { mode: 'vector_judge_ctx', model: config.selector_model, stage: 'prompt_vectors' });
+  assert.doesNotMatch(JSON.stringify(failureLog), /private-example|Secret context|raw worker|similarity|\[[0-9]/i);
+
+  // Cancellation never retries and never creates a failure diagnostic.
+  const cancelledBefore = storage.db.prepare("SELECT COUNT(*) AS count FROM selector_hit_log WHERE action = 'diagnostic'").get().count;
+  const cancelledController = new AbortController();
+  cancelledController.abort(new Error('selector_cancelled'));
+  let cancelledRuntimeCalls = 0;
+  const cancelledRuntimeEmbedding = {
+    ...fakeEmbeddingAdapter(),
+    async embed() { cancelledRuntimeCalls += 1; throw new Error('must not run'); },
+  };
+  const cancelledRuntime = await runSelectorRuntime(storage.db, {
+    userId: 'owner', prompt: 'Publish the package.', contextTurns: [{ role: 'assistant', text: 'context' }],
+    config, law, now: '2026-07-17T00:32:00.000Z', embeddingAdapter: cancelledRuntimeEmbedding,
+    adapter: { async select() { throw new Error('must not run'); } }, signal: cancelledController.signal,
+  });
+  assert.equal(cancelledRuntime.reason, 'selector_cancelled');
+  assert.equal(cancelledRuntimeCalls, 0);
+  assert.equal(storage.db.prepare("SELECT COUNT(*) AS count FROM selector_hit_log WHERE action = 'diagnostic'").get().count, cancelledBefore);
+
+  // Invalid model output is diagnosable without retaining request or context.
+  const invalidOutput = await runSelectorRuntime(storage.db, {
+    userId: 'owner', prompt: 'Publish the package release now.', contextTurns: [{ role: 'assistant', text: 'Private context marker.' }],
+    config, law, now: '2026-07-17T00:33:00.000Z', embeddingAdapter: embedding,
+    adapter: { async select() { return {}; } },
+  });
+  assert.equal(invalidOutput.reason, 'invalid_selector_output');
+  const invalidLog = storage.db.prepare("SELECT * FROM selector_hit_log WHERE action = 'diagnostic' AND created_at = ?").get('2026-07-17T00:33:00.000Z');
+  assert.equal(invalidLog.reason, 'invalid_selector_output');
+  assert.equal(isValidSelectorHitLog(invalidLog), true);
+  assert.doesNotMatch(JSON.stringify(invalidLog), /Publish the package|Private context marker|similarity|\[[0-9]/i);
+
   // Required proof: assistant proposed action absent from user history; current user adopts it.
+  embedding.batches.length = 0;
   let judgeCalls = 0;
   const assistantFollowUp = await runSelectorRuntime(storage.db, {
     userId: 'owner',

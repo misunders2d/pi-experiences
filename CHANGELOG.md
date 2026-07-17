@@ -6,6 +6,20 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 ## [Unreleased]
 
+### Fixed
+
+- Oversized optional follow-up context can no longer invalidate the current-request embedding and silently suppress an otherwise applicable approved habit.
+- Contextual retrieval now uses a compact current-first, newest-context-first query within the local model's bounded input budget. Any non-cancellation dual-batch failure retries current-only embedding exactly once; cancellation and current-only failures remain fail-closed, and the model judge remains mandatory.
+- Increased the default bounded selector timeout from 5 to 20 seconds while preserving explicit user configuration.
+
+### Privacy and audit
+
+- Selector failures now create sanitized audit rows containing only closed reason/stage/mode/model/retrieval-mode values. Prompt/context text, derivatives, vectors, similarities, raw errors, judge rationale, and transient guidance remain excluded.
+
+### Validation
+
+- Added compact-query ordering/Unicode/byte-bound, one-retry, cancellation, mandatory-judge, current-only failure, sanitized-diagnostic, and real pinned-tokenizer/worker regressions, including the reproduced over-128-token contextual failure.
+
 ## [0.1.45] - 2026-07-17
 
 ### Changed

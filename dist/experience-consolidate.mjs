@@ -76,7 +76,7 @@ var init_config = __esm({
       break_in_enabled: false,
       selector_mode: "instant",
       selector_model: "openai-codex/gpt-5.4-mini",
-      selector_timeout_ms: 5e3,
+      selector_timeout_ms: 2e4,
       selector_min_confidence_bp: 7500,
       selector_min_overlap_score: 1,
       selector_max_habits: 3,
