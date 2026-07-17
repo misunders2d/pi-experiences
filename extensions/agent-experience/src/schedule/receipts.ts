@@ -38,6 +38,7 @@ const SAFE_CODES = new Set([
 	"config_gate_denied",
 	"consolidation_locked",
 	"lock_io_error",
+	"runtime_incompatible",
 	"model_auth_unavailable",
 	"model_not_found",
 	"model_call_failed",
@@ -216,7 +217,14 @@ export function formatScheduledAnalyzeReceiptSummary(data: { receipts: Scheduled
 	if (noWork) lines.push(`${noWork} scheduled run${noWork === 1 ? "" : "s"} found no unread saved examples; no model call was made.`);
 	if (locked) lines.push(`${locked} scheduled run${locked === 1 ? "" : "s"} skipped because Analyze was already running.`);
 	if (disabled) lines.push(`${disabled} scheduled run${disabled === 1 ? "" : "s"} skipped because the configured gates were off.`);
-	if (failed.length) lines.push(`${failed.length} scheduled run${failed.length === 1 ? "" : "s"} failed safely. Open /experience setup to inspect or retry.`);
+	if (failed.length) {
+		lines.push(`${failed.length} scheduled run${failed.length === 1 ? "" : "s"} failed safely.`);
+		const codes = new Set(failed.map((receipt) => receipt.safe_code).filter(Boolean));
+		if (codes.has("runtime_incompatible")) lines.push("The background Pi runtime changed and is incompatible with this scheduler version. Update or repair Pi Experiences before retrying.");
+		else if (codes.has("model_auth_unavailable")) lines.push("The selected habit-learning model is not authenticated for background use. Open /experience setup and repair the automatic schedule.");
+		else if (codes.has("model_not_found")) lines.push("The selected habit-learning model is unavailable to the background scheduler. Open /experience setup and choose or repair the model.");
+		else lines.push("Open /experience setup to inspect or retry.");
+	}
 	if (data.unreadable) lines.push(`${data.unreadable} private receipt${data.unreadable === 1 ? " is" : "s are"} unreadable and was retained for safe recovery.`);
 	if (overflowed) lines.push("Older informational receipts were compacted because the private receipt queue reached its bound.");
 	if (suggestions) lines.push("Next: /experience setup → Review suggested habits. Nothing was approved automatically.");

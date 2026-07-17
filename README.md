@@ -444,14 +444,14 @@ The package never installs a timer during npm/Pi installation. From `/experience
 - no host-runtime import, model authentication, or model call when no unread saved examples exist;
 - the same bounded observation validation, Analyze lock, consolidation lock, watermark, suggestion, duplicate, and law gates as manual Analyze;
 - suggestions only—never automatic approval, merge, activation, law mutation, or conversation interruption;
-- a bounded private sanitized receipt queue, summarized once in the next eligible Pi TUI session;
+- a bounded private sanitized receipt queue, summarized once in an open private Pi TUI session or the next eligible TUI session;
 - no Hub, remote scheduler, desktop notification, postinstall hook, or package-update activation.
 
 Setup can inspect, repair/rewrite, disable, or remove the package-owned user units. Because the rendered service pins absolute Node and package CLI paths, rerun setup after a Node/package-path change if status reports that the schedule needs repair. For local diagnostics, use `journalctl --user -u pi-experiences-agent-experience-analyze.service`; journal output contains only sanitized status codes.
 
 ### Optional break-in review prompts
 
-`/experience setup` can explicitly enable private TUI break-in prompts. Default is off. After a manual Analyze batch creates new suggestions, the prompt waits until Pi is idle; scheduled results wait for the next eligible private TUI session. Each Analyze batch prompts at most once with exactly **Review now**, **Later**, or **Turn break-in off**.
+`/experience setup` can explicitly enable private TUI break-in prompts. Default is off. After a manual Analyze batch creates new suggestions, the prompt waits until Pi is idle; scheduled results are detected during an open private TUI session or at the next eligible private TUI start. Each Analyze batch prompts at most once with exactly **Review now**, **Later**, or **Turn break-in off**.
 
 Break-in is review-only. It makes no extra model call and never approves, rejects, merges, activates, or applies a habit. `Review now` only opens the existing review UI, where every decision still requires human action. `Later` ends that batch reminder while leaving suggestions in Review. Missing session scope, UI, idle state, readable review state, or safe lifecycle suppresses/defer the prompt. Tool execution, compaction, streaming, queued messages, headless modes, and session shutdown cannot open it. Only bounded sanitized metadata is retained; no suggestion text, source references, prompts, model output, credentials, or private paths enter the break-in queue.
 

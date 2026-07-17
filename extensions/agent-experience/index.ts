@@ -1215,7 +1215,7 @@ async function handleSetupBreakIn(ctx: ExtensionCommandContext) {
 		"Break-in review prompts are private TUI reminders after Analyze creates new suggestions and Pi is safely idle.",
 		"Each Analyze batch can prompt once with Review now, Later, or Turn break-in off.",
 		"They make no extra model call and never approve, reject, merge, activate, or apply anything automatically.",
-		"Scheduled Analyze remains headless; its sanitized result waits for the next eligible private TUI session.",
+		"Scheduled Analyze remains headless; its sanitized result is detected during an open eligible private TUI session or at the next eligible TUI start.",
 	].join("\n"), "info");
 	if (config.break_in_enabled) {
 		await setAgentExperienceBreakInEnabled(false, paths);
@@ -1260,7 +1260,7 @@ async function handleSetupTimer(ctx: ExtensionCommandContext) {
 			`It runs Analyze at 03:30 in the computer's current local timezone (${status.timezone}) and catches up once after sleep/offline time (Persistent=true).`,
 			"It calls the selected model only when unread saved examples exist.",
 			"It creates suggestions only. It never approves habits, interrupts a conversation, or sends a desktop/remote notification.",
-			"A sanitized success/failure summary is retained privately and shown once in the next eligible Pi TUI session.",
+			"A sanitized success/failure summary is retained privately and shown once in an open eligible Pi TUI session or at the next eligible TUI start.",
 			"No timer is installed or changed until you select an action and confirm it.",
 		].join("\n"), "info");
 	}
@@ -2739,31 +2739,60 @@ function usage(topic = "") {
 export default function agentExperienceExtension(pi: ExtensionAPI) {
 	registerAgentExperienceConversationalTools(pi);
 
-	pi.on("session_start", async (event, ctx) => {
+	let scheduledReceiptPoll: ReturnType<typeof setInterval> | undefined;
+	let scheduledReceiptCheck: Promise<void> | undefined;
+	let scheduledReceiptStopped = true;
+	const stopScheduledReceiptPolling = () => {
+		scheduledReceiptStopped = true;
+		if (scheduledReceiptPoll) clearInterval(scheduledReceiptPoll);
+		scheduledReceiptPoll = undefined;
+	};
+	const checkScheduledReceipts = async (ctx: ExtensionContext): Promise<void> => {
+		if (ctx.mode !== "tui" || ctx.hasUI === false || scheduledReceiptStopped) return;
+		if (scheduledReceiptCheck) return scheduledReceiptCheck;
+		const run = (async () => {
+			const scope = breakInScopeFromContext(ctx);
+			const paths = getAgentExperiencePaths();
+			try {
+				const { config } = await readAgentExperienceConfig(paths);
+				const holdEligibleForBreakIn = !!scope && config.enabled && config.break_in_enabled;
+				const consumed = await consumeScheduledAnalyzeReceipts(paths.root, getConfiguredUserId(), (message, level) => ctx.ui.notify(message, level), { holdEligibleForBreakIn });
+				if (scope) {
+					for (const record of consumed.held) {
+						const queued = breakInQueue.enqueue({
+							origin: "scheduled",
+							batchId: `scheduled:${record.receipt.id}`,
+							scope,
+							suggestionCount: record.receipt.new_suggestions || 1,
+							receipt: { file: record.file, id: record.receipt.id },
+						});
+						if (queued.overflowed) ctx.ui.notify("An older break-in reminder expired because the private in-memory queue reached its bound. Suggestions remain in Review.", "warning");
+					}
+					if (consumed.held.length) scheduleBreakInPrompt(ctx, "session-start");
+				}
+			} catch {
+				console.warn("Agent Experience scheduled receipt remains pending because it could not be shown or consumed safely.");
+			}
+		})();
+		scheduledReceiptCheck = run;
+		try { await run; } finally { if (scheduledReceiptCheck === run) scheduledReceiptCheck = undefined; }
+	};
+	const startScheduledReceiptPolling = (ctx: ExtensionContext) => {
+		stopScheduledReceiptPolling();
+		scheduledReceiptStopped = false;
+		scheduledReceiptPoll = setInterval(() => {
+			if (typeof ctx.isIdle === "function" && !ctx.isIdle()) return;
+			void checkScheduledReceipts(ctx);
+		}, 30_000);
+		scheduledReceiptPoll.unref?.();
+	};
+
+	pi.on("session_start", async (_event, ctx) => {
 		const scope = breakInScopeFromContext(ctx);
 		if (scope) breakInShutdown.delete(breakInScopeKey(scope));
-		if (ctx.mode !== "tui" || !["startup", "new", "resume"].includes(event.reason)) return;
-		const paths = getAgentExperiencePaths();
-		try {
-			const { config } = await readAgentExperienceConfig(paths);
-			const holdEligibleForBreakIn = !!scope && config.enabled && config.break_in_enabled;
-			const consumed = await consumeScheduledAnalyzeReceipts(paths.root, getConfiguredUserId(), (message, level) => ctx.ui.notify(message, level), { holdEligibleForBreakIn });
-			if (scope) {
-				for (const record of consumed.held) {
-					const queued = breakInQueue.enqueue({
-						origin: "scheduled",
-						batchId: `scheduled:${record.receipt.id}`,
-						scope,
-						suggestionCount: record.receipt.new_suggestions || 1,
-						receipt: { file: record.file, id: record.receipt.id },
-					});
-					if (queued.overflowed) ctx.ui.notify("An older break-in reminder expired because the private in-memory queue reached its bound. Suggestions remain in Review.", "warning");
-				}
-				if (consumed.held.length) scheduleBreakInPrompt(ctx, "session-start");
-			}
-		} catch {
-			console.warn("Agent Experience scheduled receipt remains pending because it could not be shown or consumed safely.");
-		}
+		if (ctx.mode !== "tui" || ctx.hasUI === false) return;
+		startScheduledReceiptPolling(ctx);
+		await checkScheduledReceipts(ctx);
 	});
 	const HABIT_GUIDANCE_CUSTOM_TYPE = "agent_experience.habit_guidance";
 	type PendingSteeringRun = {
@@ -3069,10 +3098,12 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 		if (steeringScope) pendingSteeringRuns.delete(steeringScope);
 		const breakScope = breakInScopeFromContext(ctx);
 		if (breakScope) breakInAgentActive.delete(breakInScopeKey(breakScope));
+		await checkScheduledReceipts(ctx);
 		await maybePromptBreakInReview(ctx, "agent-settled");
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {
+		stopScheduledReceiptPolling();
 		const steeringScope = steeringScopeFromContext(ctx);
 		if (steeringScope) pendingSteeringRuns.delete(steeringScope);
 		await closeSelectorLocalEmbeddingAdapter().catch(() => undefined);

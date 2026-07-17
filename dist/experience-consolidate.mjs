@@ -3799,16 +3799,24 @@ async function loadStandalonePiRuntime(piRuntimeRoot) {
   } catch {
     throw new Error("pi_runtime_compat_import_failed");
   }
-  if (typeof codingAgent?.AuthStorage?.create !== "function" || typeof codingAgent?.ModelRegistry?.create !== "function") {
-    throw new Error("pi_runtime_root_missing_coding_agent_api");
-  }
   if (typeof compat?.completeSimple !== "function") throw new Error("pi_runtime_compat_missing_api");
-  return { AuthStorage: codingAgent.AuthStorage, ModelRegistry: codingAgent.ModelRegistry, completeSimple: compat.completeSimple };
+  if (typeof codingAgent?.ModelRuntime?.create === "function" && typeof codingAgent?.ModelRegistry === "function") {
+    return {
+      createModelRegistry: async () => new codingAgent.ModelRegistry(await codingAgent.ModelRuntime.create()),
+      completeSimple: compat.completeSimple
+    };
+  }
+  if (typeof codingAgent?.AuthStorage?.create === "function" && typeof codingAgent?.ModelRegistry?.create === "function") {
+    return {
+      createModelRegistry: async () => codingAgent.ModelRegistry.create(codingAgent.AuthStorage.create()),
+      completeSimple: compat.completeSimple
+    };
+  }
+  throw new Error("pi_runtime_root_missing_coding_agent_api");
 }
 async function createStandaloneConsolidationModelAdapter(options) {
   const runtime = await loadStandalonePiRuntime(options.piRuntimeRoot);
-  const authStorage = runtime.AuthStorage.create();
-  const modelRegistry = runtime.ModelRegistry.create(authStorage);
+  const modelRegistry = await runtime.createModelRegistry();
   return createPiConsolidationModelAdapter(
     { modelRegistry, signal: options.signal },
     { complete: runtime.completeSimple, purpose: "agent-experience-scheduled-habit-learning" }
@@ -4393,6 +4401,7 @@ async function runScheduledAnalyzeCore(input) {
 }
 function safeScheduledAnalyzeErrorCode(error) {
   const raw = String(error?.message || error);
+  if (/pi_runtime|coding_agent_api|runtime_compat/i.test(raw)) return "runtime_incompatible";
   if (/auth|api.?key|credential/i.test(raw)) return "model_auth_unavailable";
   if (/model_(?:unavailable|not_found)|model is not available/i.test(raw)) return "model_not_found";
   if (/model_output|invalid_json|truncated|schema|proposal|source_ref/i.test(raw)) return "model_output_invalid";
@@ -4414,6 +4423,7 @@ var SAFE_CODES = /* @__PURE__ */ new Set([
   "config_gate_denied",
   "consolidation_locked",
   "lock_io_error",
+  "runtime_incompatible",
   "model_auth_unavailable",
   "model_not_found",
   "model_call_failed",

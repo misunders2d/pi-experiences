@@ -152,8 +152,9 @@ export async function runScheduledAnalyzeCore(input: {
 	}
 }
 
-export function safeScheduledAnalyzeErrorCode(error: unknown): "model_auth_unavailable" | "model_not_found" | "model_call_failed" | "model_output_invalid" | "lock_io_error" | "storage_io_error" {
+export function safeScheduledAnalyzeErrorCode(error: unknown): "runtime_incompatible" | "model_auth_unavailable" | "model_not_found" | "model_call_failed" | "model_output_invalid" | "lock_io_error" | "storage_io_error" {
 	const raw = String((error as any)?.message || error);
+	if (/pi_runtime|coding_agent_api|runtime_compat/i.test(raw)) return "runtime_incompatible";
 	if (/auth|api.?key|credential/i.test(raw)) return "model_auth_unavailable";
 	if (/model_(?:unavailable|not_found)|model is not available/i.test(raw)) return "model_not_found";
 	if (/model_output|invalid_json|truncated|schema|proposal|source_ref/i.test(raw)) return "model_output_invalid";

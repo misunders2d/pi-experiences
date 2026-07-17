@@ -6,6 +6,18 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 ## [Unreleased]
 
+## [0.1.42] - 2026-07-17
+
+### Fixed
+
+- Scheduled Analyze now supports the current Pi runtime API while retaining compatibility with the previous standalone runtime interface.
+- Scheduled success and failure receipts are checked throughout an open private TUI session and after settled turns, closing the boot catch-up race where a receipt could arrive just after session startup and remain unseen.
+- Background runtime incompatibility is classified and explained separately instead of appearing as a generic model-call failure.
+
+### Validation
+
+- Added current-runtime and legacy-runtime compatibility regressions, late-receipt lifecycle coverage, and a real standalone authenticated model-call probe.
+
 ## [0.1.41] - 2026-07-14
 
 ### Fixed
@@ -34,6 +46,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 - Added synchronous submission-hook checks, deferred embedding/model assertions, and a packed Pi TUI smoke requiring submitted-message rendering within 1.5 seconds.
 
-[Unreleased]: https://github.com/misunders2d/pi-experiences/compare/v0.1.41...HEAD
+[Unreleased]: https://github.com/misunders2d/pi-experiences/compare/v0.1.42...HEAD
+[0.1.42]: https://github.com/misunders2d/pi-experiences/compare/v0.1.41...v0.1.42
 [0.1.41]: https://github.com/misunders2d/pi-experiences/compare/v0.1.40...v0.1.41
 [0.1.40]: https://github.com/misunders2d/pi-experiences/compare/v0.1.39...v0.1.40

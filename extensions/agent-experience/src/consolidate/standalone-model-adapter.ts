@@ -8,9 +8,10 @@ import { redactText } from "../storage/redaction.ts";
 
 const PI_CODING_AGENT_PACKAGE = "@earendil-works/pi-coding-agent";
 
+type PiModelRegistry = Pick<ExtensionContext, "modelRegistry">["modelRegistry"];
+
 type StandaloneRuntime = {
-	AuthStorage: { create: () => unknown };
-	ModelRegistry: { create: (authStorage: unknown) => Pick<ExtensionContext, "modelRegistry">["modelRegistry"] };
+	createModelRegistry: () => Promise<PiModelRegistry>;
 	completeSimple: typeof completeSimple;
 };
 
@@ -34,11 +35,20 @@ export async function loadStandalonePiRuntime(piRuntimeRoot: string | undefined)
 	let compat: any;
 	try { codingAgent = await import(codingAgentUrl); } catch { throw new Error("pi_runtime_root_import_failed"); }
 	try { compat = await import(compatUrl); } catch { throw new Error("pi_runtime_compat_import_failed"); }
-	if (typeof codingAgent?.AuthStorage?.create !== "function" || typeof codingAgent?.ModelRegistry?.create !== "function") {
-		throw new Error("pi_runtime_root_missing_coding_agent_api");
-	}
 	if (typeof compat?.completeSimple !== "function") throw new Error("pi_runtime_compat_missing_api");
-	return { AuthStorage: codingAgent.AuthStorage, ModelRegistry: codingAgent.ModelRegistry, completeSimple: compat.completeSimple };
+	if (typeof codingAgent?.ModelRuntime?.create === "function" && typeof codingAgent?.ModelRegistry === "function") {
+		return {
+			createModelRegistry: async () => new codingAgent.ModelRegistry(await codingAgent.ModelRuntime.create()),
+			completeSimple: compat.completeSimple,
+		};
+	}
+	if (typeof codingAgent?.AuthStorage?.create === "function" && typeof codingAgent?.ModelRegistry?.create === "function") {
+		return {
+			createModelRegistry: async () => codingAgent.ModelRegistry.create(codingAgent.AuthStorage.create()),
+			completeSimple: compat.completeSimple,
+		};
+	}
+	throw new Error("pi_runtime_root_missing_coding_agent_api");
 }
 
 export async function validateStandaloneConsolidationModel(configured: string, piRuntimeRoot: string): Promise<{ ok: true } | { ok: false; reason: string }> {
@@ -46,8 +56,7 @@ export async function validateStandaloneConsolidationModel(configured: string, p
 	if (!parsed) return { ok: false, reason: "invalid provider/model id" };
 	try {
 		const runtime = await loadStandalonePiRuntime(piRuntimeRoot);
-		const authStorage = runtime.AuthStorage.create();
-		const modelRegistry = runtime.ModelRegistry.create(authStorage);
+		const modelRegistry = await runtime.createModelRegistry();
 		const model = modelRegistry.find(parsed.provider, parsed.modelId);
 		if (!model) return { ok: false, reason: "model is unavailable to the standalone scheduler" };
 		if (!modelRegistry.hasConfiguredAuth(model)) return { ok: false, reason: "model authentication is not configured" };
@@ -61,8 +70,7 @@ export async function validateStandaloneConsolidationModel(configured: string, p
 
 export async function createStandaloneConsolidationModelAdapter(options: { piRuntimeRoot: string; signal?: AbortSignal }): Promise<ConsolidationModelAdapter> {
 	const runtime = await loadStandalonePiRuntime(options.piRuntimeRoot);
-	const authStorage = runtime.AuthStorage.create();
-	const modelRegistry = runtime.ModelRegistry.create(authStorage);
+	const modelRegistry = await runtime.createModelRegistry();
 	return createPiConsolidationModelAdapter(
 		{ modelRegistry, signal: options.signal } as Pick<ExtensionContext, "modelRegistry" | "signal">,
 		{ complete: runtime.completeSimple, purpose: "agent-experience-scheduled-habit-learning" },
