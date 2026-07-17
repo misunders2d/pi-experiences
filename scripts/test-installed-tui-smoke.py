@@ -3,8 +3,8 @@ import fcntl, json, os, pty, re, select, shutil, signal, struct, sys, termios, t
 from pathlib import Path
 if len(sys.argv)<3: raise SystemExit('usage: test-installed-tui-smoke.py INSTALLED_PACKAGE TRANSCRIPT')
 package=str(Path(sys.argv[1]).resolve()); transcript=Path(sys.argv[2]).resolve()
-state=Path(os.environ.get('AX_STATE_ROOT','/tmp/pi-experiences-042-tui-smoke-state')).resolve(); shutil.rmtree(state,ignore_errors=True); state.mkdir(parents=True,exist_ok=True)
-work=state.parent/'pi-experiences-0.1.42-tui-work'; work.mkdir(parents=True,exist_ok=True)
+state=Path(os.environ.get('AX_STATE_ROOT','/tmp/pi-experiences-043-tui-smoke-state')).resolve(); shutil.rmtree(state,ignore_errors=True); state.mkdir(parents=True,exist_ok=True)
+work=state.parent/'pi-experiences-0.1.43-tui-work'; work.mkdir(parents=True,exist_ok=True)
 receipt_id=str(uuid.uuid4()); receipt_dir=state/'receipts'/'scheduled-analyze'/'pending'; receipt_dir.mkdir(parents=True,exist_ok=True)
 receipt_file=receipt_dir/f'20260717120000000-{receipt_id}.json'
 receipt_file.write_text(json.dumps({'schema_version':1,'id':receipt_id,'kind':'scheduled_analyze','user_id':'owner','created_at':'2026-07-17T12:00:00.000Z','status':'ok','severity':'info','checked':3,'total_unread':3,'new_suggestions':0,'has_more':False},separators=(',',':')))
