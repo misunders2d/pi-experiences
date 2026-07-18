@@ -10,10 +10,12 @@ import { insertPendingReview } from '../extensions/agent-experience/src/consolid
 import { generateHabitsReport, lawSnapshotForTest, readConfiguredLawSnapshot } from '../extensions/agent-experience/src/review.ts';
 import {
   buildInjectionMessage,
+  buildSelectorJudgeAliases,
   buildSelectorPrompt,
   insertSelectorHitLog,
   isValidSelectorHitLog,
   filterEligibleSelectorCandidates,
+  mapSelectorJudgmentsToOriginalIds,
   measureSelectorLatency,
   parseSelectorModelOutput,
   promoteApprovedPendingCandidates,
@@ -129,6 +131,13 @@ function judgments(candidateIds, selectedIds = []) {
     : { id, applicable: false, confidence_bp: 9500, reason: 'not_currently_relevant' }) };
 }
 
+function aliasForCondition(prompt, pattern) {
+  const match = JSON.parse(prompt).candidates.find((candidate) => pattern.test(candidate.condition));
+  assert.ok(match, `expected aliased candidate matching ${pattern}`);
+  assert.match(match.id, /^c[1-9][0-9]*$/);
+  return match.id;
+}
+
 const temp = await mkdtemp(join(tmpdir(), 'agent-experience-phase6-'));
 process.env.AX_STATE_ROOT = join(temp, 'state');
 const root = await ensurePrivateRoot(process.env.AX_STATE_ROOT);
@@ -171,6 +180,16 @@ try {
   assert.doesNotMatch(smartPrompt, /sergey@example\.invalid|\/home\/misunderstood\/private-file|use concise summaries|ask before broad changes/i, 'judge prompt must redact request and exclude behavior');
   assert.match(smartPrompt, /redacted/i, 'judge prompt should preserve only redacted request signal');
 
+  const longOriginalId = `habit-user-declared-${'a'.repeat(40)}`;
+  const aliasPacket = buildSelectorJudgeAliases([{ ...narrowedA[0], id: longOriginalId }, narrowedA[1]]);
+  assert.deepEqual(aliasPacket.candidateIds, ['c1', 'c2']);
+  assert.throws(() => buildSelectorJudgeAliases([narrowedA[0], narrowedA[0]]), /Invalid selector candidates/);
+  const aliasPrompt = buildSelectorPrompt(aliasPacket.candidates, { prompt: 'status', maxHabits: 3 });
+  assert.doesNotMatch(aliasPrompt, new RegExp(longOriginalId));
+  const selectedAliases = parseSelectorModelOutput(judgments(aliasPacket.candidateIds, ['c1']), { candidateIds: aliasPacket.candidateIds, maxSelected: 3, minConfidenceBp: 7500 });
+  assert.deepEqual(mapSelectorJudgmentsToOriginalIds(selectedAliases, aliasPacket.originalIdByAlias), [{ id: longOriginalId, confidence_bp: 9500 }]);
+  assert.throws(() => parseSelectorModelOutput(judgments([longOriginalId], [longOriginalId]), { candidateIds: aliasPacket.candidateIds, maxSelected: 3, minConfidenceBp: 7500 }), /coverage|Unknown/);
+
   assert.deepEqual(parseSelectorModelOutput(judgments(narrowedA.map((row) => row.id), ['active-1']), { candidateIds: narrowedA.map((row) => row.id), maxSelected: 3, minConfidenceBp: 7500 }), [{ id: 'active-1', confidence_bp: 9500 }]);
   assert.throws(() => parseSelectorModelOutput({ schema_version: 3, judgments: [{ id: 'candidate-1', applicable: true, confidence_bp: 9000, reason: 'current_applicability' }] }, { candidateIds: narrowedA.map((row) => row.id), maxSelected: 3, minConfidenceBp: 7500 }), /coverage|Unknown/);
   assert.throws(() => parseSelectorModelOutput({ ...judgments(narrowedA.map((row) => row.id)), text: 'free text' }, { candidateIds: narrowedA.map((row) => row.id), maxSelected: 3, minConfidenceBp: 7500 }), /keys/);
@@ -183,11 +202,12 @@ try {
 
   const config = { ...DEFAULT_AGENT_EXPERIENCE_CONFIG, enabled: true, selector_enabled: true, selector_min_confidence_bp: 7500, selector_max_habits: 3, selector_staleness_max: 0.8 };
   let adapterCalls = 0;
-  const adapter = { async select({ candidateIds }) { adapterCalls += 1; return judgments(candidateIds, candidateIds.includes('active-1') ? ['active-1'] : []); } };
+  const adapter = { async select({ candidateIds, prompt }) { adapterCalls += 1; assert.deepEqual(candidateIds, JSON.parse(prompt).candidates.map((candidate) => candidate.id)); return judgments(candidateIds, [aliasForCondition(prompt, /answering status questions/i)]); } };
   const selected = await runSelectorRuntime(storage.db, { userId: 'owner', prompt: 'status summary please', config, law, now: '2026-07-08T01:00:00.000Z', adapter, embeddingAdapter: phase6Embedding });
   assert.equal(selected.injected, true);
   assert.equal(selected.mode, 'vector_judge');
   assert.equal(selected.model, config.selector_model);
+  assert.deepEqual(selected.selected, [{ id: 'active-1', confidence_bp: 9500 }], 'runtime must restore original habit ids immediately after strict alias parsing');
   assert.equal(adapterCalls, 1, 'every successful selection must use the bounded applicability judge after local vectors');
   assert.equal(storage.db.prepare("SELECT COUNT(*) AS count FROM selector_hit_log WHERE user_id = ? AND action = 'inject' AND selected = 1").get('owner').count, 1);
   const second = await runSelectorRuntime(storage.db, { userId: 'owner', prompt: 'status again', config, law, now: '2026-07-08T01:01:00.000Z', adapter, embeddingAdapter: phase6Embedding });
@@ -249,7 +269,7 @@ try {
   readConfig = await readAgentExperienceConfig(getAgentExperiencePaths());
   assert.equal(readConfig.config.selector_enabled, true);
   let hookSelectorCalls = 0;
-  __setAgentExperienceSelectorAdapterForTest({ async select({ candidateIds }) { hookSelectorCalls += 1; operations.push('assess'); return judgments(candidateIds, candidateIds.includes('hook-active') ? ['hook-active'] : []); } });
+  __setAgentExperienceSelectorAdapterForTest({ async select({ candidateIds, prompt }) { hookSelectorCalls += 1; operations.push('assess'); return judgments(candidateIds, [aliasForCondition(prompt, /hook prompt/i)]); } });
   const beforeStatus = storage.db.prepare("SELECT status FROM habits WHERE id = 'hook-active'").get().status;
   const embeddingsBeforeHook = phase6EmbeddingCalls;
   const hookResult = handlers.get('before_agent_start')({ prompt: 'hook prompt please', systemPrompt: 'base system prompt' }, ctx);

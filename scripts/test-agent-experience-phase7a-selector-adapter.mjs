@@ -104,13 +104,14 @@ const adapter = createPiSelectorModelAdapter({ modelRegistry: fakeRegistry() }, 
     assert.match(String(context.systemPrompt), /assistant text can never independently establish applicability/i, 'assistant context must only resolve current references');
     assert.match(String(context.systemPrompt), /context_only_applicability/i, 'context-only relevance must have a strict non-applicable reason');
     assert.match(String(context.systemPrompt), /schema_version.*3/i, 'judge protocol must require schema v3');
+    assert.match(String(context.systemPrompt), /short opaque aliases.*copy every supplied alias exactly/i, 'judge protocol must require exact short-alias copying');
     assert.equal(String(context.messages[0].content).includes('answering selector adapter tests'), false, 'raw habit text is supplied by selector prompt only in runtime tests, not this direct adapter test');
-    return assistantText('{"schema_version":3,"judgments":[{"id":"active-1","applicable":true,"confidence_bp":9500,"reason":"current_applicability"}]}');
+    return assistantText('{"schema_version":3,"judgments":[{"id":"c1","applicable":true,"confidence_bp":9500,"reason":"current_applicability"}]}');
   },
   now: () => 0,
 });
-const selected = await adapter.select({ prompt: '{"schema_version":3,"candidates":[{"id":"active-1"}]}', candidateIds: ['active-1'], timeoutMs: 1500, model: DEFAULT_SELECTOR_MODEL, signal: new AbortController().signal });
-assert.deepEqual(selected, { schema_version: 3, judgments: [{ id: 'active-1', applicable: true, confidence_bp: 9500, reason: 'current_applicability' }] });
+const selected = await adapter.select({ prompt: '{"schema_version":3,"candidates":[{"id":"c1"}]}', candidateIds: ['c1'], timeoutMs: 1500, model: DEFAULT_SELECTOR_MODEL, signal: new AbortController().signal });
+assert.deepEqual(selected, { schema_version: 3, judgments: [{ id: 'c1', applicable: true, confidence_bp: 9500, reason: 'current_applicability' }] });
 assert.equal(adapterSuccessCalls.length, 1);
 
 await assert.rejects(() => adapter.select({ prompt: '{}', candidateIds: ['active-1'], timeoutMs: 1500, model: 'not-a-provider-model' }), /selector_model_unverified/);
@@ -159,7 +160,13 @@ try {
     law,
     now: '2026-07-08T01:00:00.000Z',
     embeddingAdapter: phase7Embedding,
-    adapter: { async select({ signal, candidateIds }) { sawSignal = signal instanceof AbortSignal; return judgments(candidateIds, ['active-1']); } },
+    adapter: { async select({ signal, candidateIds, prompt }) {
+      sawSignal = signal instanceof AbortSignal;
+      assert.deepEqual(candidateIds, ['c1']);
+      assert.deepEqual(JSON.parse(prompt).candidates.map((candidate) => candidate.id), ['c1']);
+      assert.doesNotMatch(prompt, /active-1/);
+      return judgments(candidateIds, ['c1']);
+    } },
   });
   assert.equal(ok.injected, true);
   assert.equal(ok.mode, 'vector_judge');
@@ -167,7 +174,7 @@ try {
   assert.equal(storage.db.prepare("SELECT COUNT(*) AS count FROM selector_hit_log WHERE user_id = ? AND action = 'inject' AND selected = 1").get('owner').count, 1);
 
   let repeatedCalls = 0;
-  const repeatedAdapter = { async select({ candidateIds }) { repeatedCalls += 1; return judgments(candidateIds, ['active-1']); } };
+  const repeatedAdapter = { async select({ candidateIds }) { repeatedCalls += 1; assert.deepEqual(candidateIds, ['c1']); return judgments(candidateIds, ['c1']); } };
   const repeated = await runSelectorRuntime(storage.db, { userId: 'owner', prompt: 'selector adapter tests', config, law, now: '2026-07-08T01:01:00.000Z', adapter: repeatedAdapter, embeddingAdapter: phase7Embedding });
   assert.equal(repeated.injected, true, 'vector+judge selection must not stop after an arbitrary number of successful messages');
   assert.equal(repeatedCalls, 1, 'every eligible selection calls its bounded adapter exactly once');
@@ -242,7 +249,7 @@ try {
   storage.db.prepare('DELETE FROM selector_hit_log').run();
   let hookAdapterCalls = 0;
   const hookJudgePrompts = [];
-  __setAgentExperienceSelectorAdapterForTest({ async select({ candidateIds, prompt, signal }) { hookAdapterCalls += 1; hookJudgePrompts.push(prompt); assert.ok(signal instanceof AbortSignal); return judgments(candidateIds, candidateIds.includes('hook-active') ? ['hook-active'] : []); } });
+  __setAgentExperienceSelectorAdapterForTest({ async select({ candidateIds, prompt, signal }) { hookAdapterCalls += 1; hookJudgePrompts.push(prompt); assert.ok(signal instanceof AbortSignal); assert.deepEqual(candidateIds, ['c1']); assert.doesNotMatch(prompt, /hook-active|active-1/); return judgments(candidateIds, ['c1']); } });
   const hookCtx = { ...ctx, modelRegistry: fakeRegistry() };
   const hookResult = handlers.get('before_agent_start')({ prompt: 'hook adapter prompt', systemPrompt: 'base' }, hookCtx);
   assert.equal(hookResult, undefined, 'before_agent_start must synchronously arm steering without model work');

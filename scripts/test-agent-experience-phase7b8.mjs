@@ -141,7 +141,7 @@ try {
   await prepareSelectorConditionVectors(storage.db, { userId: 'owner', candidates: eligible, embeddingAdapter, now: '2026-07-08T01:30:00.000Z' });
   let adapterCalls = 0;
   const legacyModeConfig = { ...DEFAULT_AGENT_EXPERIENCE_CONFIG, enabled: true, selector_enabled: true, selector_mode: 'instant', selector_min_confidence_bp: 7500, selector_min_overlap_score: 2, selector_staleness_max: 0.8 };
-  const judged = await runSelectorRuntime(storage.db, { userId: 'owner', prompt: 'phase seven selector questions', config: legacyModeConfig, law, now: '2026-07-08T02:00:00.000Z', embeddingAdapter, adapter: { async select({ candidateIds }) { adapterCalls += 1; return { schema_version: 3, judgments: candidateIds.map((id) => id === 'active-good' ? { id, applicable: true, confidence_bp: 9000, reason: 'current_applicability' } : { id, applicable: false, confidence_bp: 9000, reason: 'not_currently_relevant' }) }; } } });
+  const judged = await runSelectorRuntime(storage.db, { userId: 'owner', prompt: 'phase seven selector questions', config: legacyModeConfig, law, now: '2026-07-08T02:00:00.000Z', embeddingAdapter, adapter: { async select({ candidateIds, prompt }) { adapterCalls += 1; assert.deepEqual(candidateIds, ['c1']); assert.doesNotMatch(prompt, /active-good/); return { schema_version: 3, judgments: candidateIds.map((id) => ({ id, applicable: true, confidence_bp: 9000, reason: 'current_applicability' })) }; } } });
   assert.equal(judged.injected, true);
   assert.equal(judged.mode, 'vector_judge', 'legacy instant mode must not restore lexical-only selection');
   assert.equal(adapterCalls, 1, 'mandatory judge runs after vectors even when legacy config says instant');
@@ -151,7 +151,7 @@ try {
   assert.equal(silent.reason, 'no_vector_candidates');
   assert.equal(adapterCalls, 1);
   assert.equal(storage.db.prepare("SELECT COUNT(*) AS count FROM selector_hit_log WHERE user_id = ? AND action = 'inject' AND selected = 1").get('owner').count, 1);
-  const configuredModel = await runSelectorRuntime(storage.db, { userId: 'owner', prompt: 'phase seven selector questions', config: { ...legacyModeConfig, selector_mode: 'smart', selector_model: 'zai/glm-5.2' }, law, now: '2026-07-08T02:03:00.000Z', embeddingAdapter, adapter: { async select({ model, candidateIds }) { adapterCalls += 1; assert.equal(model, 'zai/glm-5.2'); return { schema_version: 3, judgments: candidateIds.map((id) => id === 'active-good' ? { id, applicable: true, confidence_bp: 9000, reason: 'current_applicability' } : { id, applicable: false, confidence_bp: 9000, reason: 'not_currently_relevant' }) }; } } });
+  const configuredModel = await runSelectorRuntime(storage.db, { userId: 'owner', prompt: 'phase seven selector questions', config: { ...legacyModeConfig, selector_mode: 'smart', selector_model: 'zai/glm-5.2' }, law, now: '2026-07-08T02:03:00.000Z', embeddingAdapter, adapter: { async select({ model, candidateIds }) { adapterCalls += 1; assert.equal(model, 'zai/glm-5.2'); assert.deepEqual(candidateIds, ['c1']); return { schema_version: 3, judgments: candidateIds.map((id) => ({ id, applicable: true, confidence_bp: 9000, reason: 'current_applicability' })) }; } } });
   assert.equal(configuredModel.injected, true);
   assert.equal(configuredModel.mode, 'vector_judge');
   assert.equal(adapterCalls, 2);

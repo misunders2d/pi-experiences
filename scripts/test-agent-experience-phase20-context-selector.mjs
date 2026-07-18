@@ -100,6 +100,21 @@ function judgments(candidateIds, applicable = [], reasonById = {}) {
   };
 }
 
+const conditionPatternByOriginalId = {
+  release: /package release/i,
+  vacation: /summer vacation plan/i,
+  status: /status progress/i,
+};
+
+function aliasForOriginalId(prompt, originalId) {
+  const pattern = conditionPatternByOriginalId[originalId];
+  assert.ok(pattern, `missing condition pattern for ${originalId}`);
+  const match = JSON.parse(prompt).candidates.find((candidate) => pattern.test(candidate.condition));
+  assert.ok(match, `expected aliased candidate for ${originalId}`);
+  assert.match(match.id, /^c[1-9][0-9]*$/);
+  return match.id;
+}
+
 // Pure boundary/extraction: only visible prior user/assistant text survives.
 const messages = [
   { role: 'system', content: 'system must not enter context' },
@@ -266,7 +281,7 @@ try {
     adapter: { async select({ candidateIds, prompt }) {
       runtimeFallbackJudgeCalls += 1;
       assert.equal(JSON.parse(prompt).context_turns.length, 1);
-      return judgments(candidateIds, ['release']);
+      return judgments(candidateIds, [aliasForOriginalId(prompt, 'release')]);
     } },
   });
   assert.equal(runtimeFallback.injected, true);
@@ -327,6 +342,18 @@ try {
   assert.equal(isValidSelectorHitLog(invalidLog), true);
   assert.doesNotMatch(JSON.stringify(invalidLog), /Publish the package|Private context marker|similarity|\[[0-9]/i);
 
+  const originalIdOutput = await runSelectorRuntime(storage.db, {
+    userId: 'owner', prompt: 'Publish the package release now.', contextTurns: [{ role: 'assistant', text: 'Context.' }],
+    config, law, now: '2026-07-17T00:34:00.000Z', embeddingAdapter: embedding,
+    adapter: { async select({ candidateIds }) {
+      return { schema_version: 3, judgments: candidateIds.map((id, index) => ({ id: index === 0 ? 'release' : id, applicable: false, confidence_bp: 9500, reason: 'not_currently_relevant' })) };
+    } },
+  });
+  assert.equal(originalIdOutput.reason, 'invalid_selector_output', 'original long ids must never be accepted as an alias fallback');
+  const originalIdLog = storage.db.prepare("SELECT * FROM selector_hit_log WHERE action = 'diagnostic' AND created_at = ?").get('2026-07-17T00:34:00.000Z');
+  assert.equal(originalIdLog.reason, 'invalid_selector_output');
+  assert.doesNotMatch(JSON.stringify(originalIdLog), /release|Context\./i, 'alias failures must retain only sanitized diagnostics');
+
   // Required proof: assistant proposed action absent from user history; current user adopts it.
   embedding.batches.length = 0;
   let judgeCalls = 0;
@@ -341,13 +368,15 @@ try {
       assert.equal(payload.schema_version, 3);
       assert.equal(payload.current_user_request, 'yes, do that');
       assert.deepEqual(payload.context_turns, [{ role: 'assistant', text: 'I can publish the package after validation.' }]);
-      assert.ok(candidateIds.includes('release'));
-      assert.doesNotMatch(prompt, /Verify artifacts before publication/);
-      return judgments(candidateIds, ['release']);
+      const releaseAlias = aliasForOriginalId(prompt, 'release');
+      assert.ok(candidateIds.includes(releaseAlias));
+      assert.doesNotMatch(prompt, /Verify artifacts before publication|"release"/);
+      return judgments(candidateIds, [releaseAlias]);
     } },
   });
   assert.equal(assistantFollowUp.injected, true);
   assert.equal(assistantFollowUp.mode, 'vector_judge_ctx');
+  assert.deepEqual(assistantFollowUp.selected, [{ id: 'release', confidence_bp: 9500 }], 'accepted alias must map back to original habit id before downstream use');
   assert.equal(judgeCalls, 1);
   assert.equal(embedding.batches.length, 1);
   assert.equal(embedding.batches[0].length, 2, 'current-only and contextual queries must share one local embedding batch');
@@ -368,7 +397,7 @@ try {
     userId: 'owner', prompt: 'make it two weeks',
     contextTurns: [{ role: 'user', text: 'Create a summer vacation plan for July.' }],
     config, law, now: '2026-07-17T01:02:00.000Z', embeddingAdapter: embedding,
-    adapter: { async select({ candidateIds }) { assert.ok(candidateIds.includes('vacation')); return judgments(candidateIds, ['vacation']); } },
+    adapter: { async select({ candidateIds, prompt }) { const alias = aliasForOriginalId(prompt, 'vacation'); assert.ok(candidateIds.includes(alias)); return judgments(candidateIds, [alias]); } },
   });
   assert.equal(userFollowUp.injected, true);
   assert.equal(userFollowUp.mode, 'vector_judge_ctx');
@@ -382,7 +411,7 @@ try {
     let calls = 0;
     const result = await runSelectorRuntime(storage.db, {
       userId: 'owner', prompt, contextTurns, config, law, now, embeddingAdapter: embedding,
-      adapter: { async select({ candidateIds }) { calls += 1; assert.ok(candidateIds.includes(selectedId)); return judgments(candidateIds, [selectedId]); } },
+      adapter: { async select({ candidateIds, prompt: judgePrompt }) { calls += 1; const alias = aliasForOriginalId(judgePrompt, selectedId); assert.ok(candidateIds.includes(alias)); return judgments(candidateIds, [alias]); } },
     });
     assert.equal(result.injected, true, `${prompt} must resolve through bounded context`);
     assert.equal(result.mode, 'vector_judge_ctx');
@@ -417,7 +446,7 @@ try {
   const degraded = await runSelectorRuntime(storage.db, {
     userId: 'owner', prompt: 'Publish the package release now.', contextTurns: invalidContext,
     config, law, now: '2026-07-17T01:05:00.000Z', embeddingAdapter: embedding,
-    adapter: { async select({ candidateIds, prompt }) { assert.deepEqual(JSON.parse(prompt).context_turns, []); return judgments(candidateIds, ['release']); } },
+    adapter: { async select({ candidateIds, prompt }) { assert.deepEqual(JSON.parse(prompt).context_turns, []); return judgments(candidateIds, [aliasForOriginalId(prompt, 'release')]); } },
   });
   assert.equal(degraded.injected, true);
   assert.equal(degraded.mode, 'vector_judge');
@@ -428,7 +457,7 @@ try {
     const result = await runSelectorRuntime(storage.db, {
       userId: 'owner', prompt: 'Publish the package release now.', contextTurns,
       config, law, now: `2026-07-17T01:06:0${parity.length}.000Z`, embeddingAdapter: embedding,
-      adapter: { async select({ candidateIds, prompt }) { assert.deepEqual(JSON.parse(prompt).context_turns, []); return judgments(candidateIds, ['release']); } },
+      adapter: { async select({ candidateIds, prompt }) { assert.deepEqual(JSON.parse(prompt).context_turns, []); return judgments(candidateIds, [aliasForOriginalId(prompt, 'release')]); } },
     });
     parity.push({ injected: result.injected, mode: result.mode, ids: result.selected.map((entry) => entry.id) });
   }

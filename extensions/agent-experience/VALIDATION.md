@@ -74,12 +74,12 @@ Build and inspect the exact tarball:
 
 ```bash
 npm pack --dry-run
-npm pack --json --pack-destination /tmp/pi-experiences-045-pack
+npm pack --json --pack-destination /tmp/pi-experiences-046-pack
 ```
 
 The tarball must include:
 
-- `package.json` version `0.1.45` and Node floor `>=22.19.0`;
+- `package.json` version `0.1.46` and Node floor `>=22.19.0`;
 - `CHANGELOG.md` with a verified entry for the release;
 - wildcard Pi peer dependencies;
 - extension source, `steering-note.ts`, and public skill;
@@ -92,7 +92,7 @@ The tarball must include:
 Fresh installation must use the exact generated tarball and disable lifecycle scripts:
 
 ```bash
-npm install --ignore-scripts --legacy-peer-deps /tmp/pi-experiences-045-pack/pi-experiences-0.1.45.tgz
+npm install --ignore-scripts --legacy-peer-deps /tmp/pi-experiences-046-pack/pi-experiences-0.1.46.tgz
 ```
 
 Use a dedicated disposable `/tmp/*smoke*` prefix. Verify package version, CLI help/status, extension import, skill loading, package-relative worker resolution, and file allowlist from that installed copy—not the source checkout.
@@ -106,7 +106,7 @@ Run Pi's actual skill loader against the installed package and require zero diag
 Use the packed/fresh-installed package with:
 
 ```bash
-AX_STATE_ROOT=/tmp/pi-experiences-045-tui-smoke-state
+AX_STATE_ROOT=/tmp/pi-experiences-046-tui-smoke-state
 ```
 
 Launch the real Pi TUI in a disposable Pi config/package root that references the installed tarball copy, not this repository. Exercise every major `/experience setup` section:
@@ -163,13 +163,14 @@ Release evidence must include:
 - `before_agent_start` returns synchronously without embedding/model work; the packed TUI smoke requires the submitted message to re-render within 1.5 seconds, then verifies order: triggering user message → one post-render assessment → one `agent_experience.habit_steering` entry → assistant response;
 - collapsed rendering identifies every exact selected condition; expanded/malformed rendering stays safe; no-selection emits no marker;
 - every enabled selection embeds the request locally and ephemerally, validates all eligible condition-vector cache rows, and uses no lexical-only or vector-only fallback;
-- the strict schema-v3 judge receives only a bounded redacted current request, at most four role-tagged prior visible user/assistant messages, and retrieved IDs/conditions; it covers every candidate exactly, rejects schema-v2 output, context-only applicability, mention/quotation/negation/generic wording and possible later triggers, but treats a present request about a future-dated subject (for example planning next summer) as current applicability;
+- the strict schema-v3 judge receives only a bounded redacted current request, at most four role-tagged prior visible user/assistant messages, and retrieved conditions labeled with deterministic short process-local aliases; it covers every alias exactly, rejects schema-v2, unknown/missing/duplicate/rewritten/original-ID output, context-only applicability, mention/quotation/negation/generic wording and possible later triggers, maps accepted aliases back before all downstream use, and treats a present request about a future-dated subject (for example planning next summer) as current applicability;
 - current message remains the sole trigger: assistant/user context may resolve an explicit follow-up such as “yes, do that” or “make it two weeks,” while assistant-only relevance, unrelated topic changes, negation, low confidence, ambiguity, malformed/partial output, timeout, cancellation, missing auth, and state drift fail closed;
 - context extraction excludes system/developer/custom/tool/tool-result/thinking/tool-call/image-only/hidden entries, applies 4-message/300-character/1,200-total redacted caps, snapshots once per response, and degrades invalid context to the current-only path;
 - contextual retrieval is current-first/newest-context-first and Unicode-safe within 120 UTF-8 bytes while the judge keeps the full bounded context; current-only and compact-context vectors normally use one local embedding batch, primary order wins, duplicate IDs retain the primary result, and secondary-only candidates append within the unchanged cap; empty context preserves current-only behavior;
 - confirmed lexical false positives stay silent, while status/code/release/decision, multilingual, and contextual true positives pass vector retrieval plus judgment;
 - missing/corrupt vectors fail before the judge, setup repairs complete condition caches, and post-activation maintenance failure never rolls back approved habit state;
 - any non-cancellation compact-context batch failure retries current-only embedding exactly once; cancellation never retries, current-only failure remains fail-closed, and the mandatory judge runs exactly once after successful fallback;
+- long internal habit IDs never enter runtime judge prompts or adapter candidate lists; aliases and their exact map remain ephemeral, while returned selections, post-judge revalidation, steering provenance, and selected/skipped logs use restored original IDs; latency probes use the same alias protocol;
 - selector guidance has no daily quota; repeated eligible messages continue receiving guidance, while hit logs remain audit/provenance only and persist no prompt/context text, derivative, vector, similarity, raw error, or judge rationale/confidence; sanitized failure rows contain only closed reason/stage/mode/model/retrieval-mode values;
 - durable provenance stores approved wording/count/time only and never enters LLM context; separate transient guidance enters only the marked response;
 - tool-loop context receives the same snapshotted context/result/guidance without duplicate extraction, embedding, assessment, or markers; no-selection and provenance-failure tombstones also prevent retries, and a new user message cannot inherit old steering;

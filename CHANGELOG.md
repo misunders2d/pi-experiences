@@ -6,19 +6,24 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 ## [Unreleased]
 
+## [0.1.46] - 2026-07-18
+
 ### Fixed
 
 - Oversized optional follow-up context can no longer invalidate the current-request embedding and silently suppress an otherwise applicable approved habit.
 - Contextual retrieval now uses a compact current-first, newest-context-first query within the local model's bounded input budget. Any non-cancellation dual-batch failure retries current-only embedding exactly once; cancellation and current-only failures remain fail-closed, and the model judge remains mandatory.
 - Increased the default bounded selector timeout from 5 to 20 seconds while preserving explicit user configuration.
+- The applicability judge now receives deterministic short candidate aliases instead of long internal habit IDs, preventing otherwise valid judgments from failing when a model rewrites an identifier. Exact complete alias coverage remains mandatory, and unknown, missing, duplicate, or original-ID output still fails closed.
 
 ### Privacy and audit
 
 - Selector failures now create sanitized audit rows containing only closed reason/stage/mode/model/retrieval-mode values. Prompt/context text, derivatives, vectors, similarities, raw errors, judge rationale, and transient guidance remain excluded.
+- Candidate aliases and their exact original-ID map are process-local and ephemeral. Accepted aliases are mapped back before state revalidation, guidance construction, returned results, and selected/skipped audit handling.
 
 ### Validation
 
 - Added compact-query ordering/Unicode/byte-bound, one-retry, cancellation, mandatory-judge, current-only failure, sanitized-diagnostic, and real pinned-tokenizer/worker regressions, including the reproduced over-128-token contextual failure.
+- Added long-ID aliasing, exact alias-copy, original-ID rejection, downstream restoration, skip-log identity, latency-probe, and copied-state judge regressions.
 
 ## [0.1.45] - 2026-07-17
 
@@ -101,7 +106,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 - Added synchronous submission-hook checks, deferred embedding/model assertions, and a packed Pi TUI smoke requiring submitted-message rendering within 1.5 seconds.
 
-[Unreleased]: https://github.com/misunders2d/pi-experiences/compare/v0.1.45...HEAD
+[Unreleased]: https://github.com/misunders2d/pi-experiences/compare/v0.1.46...HEAD
+[0.1.46]: https://github.com/misunders2d/pi-experiences/compare/v0.1.45...v0.1.46
 [0.1.45]: https://github.com/misunders2d/pi-experiences/compare/v0.1.44...v0.1.45
 [0.1.44]: https://github.com/misunders2d/pi-experiences/compare/v0.1.43...v0.1.44
 [0.1.43]: https://github.com/misunders2d/pi-experiences/compare/v0.1.42...v0.1.43

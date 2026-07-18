@@ -17,11 +17,12 @@ const SELECTOR_SYSTEM_PROMPT = [
 	"Use hypothetical_or_future only when the current request merely discusses a possible later trigger instead of triggering the condition now. Use not_currently_relevant only when the current request, even after bounded reference resolution, does not semantically instantiate the condition.",
 	"Example: condition 'When I mention or ask about a trip' plus current request 'Plan my vacation for next summer' is current_applicability. The same condition plus 'If I ask you to plan a trip next month, what would happen?' is hypothetical_or_future.",
 	"Context example: assistant context 'I can publish the package after validation' plus current request 'yes, do that' may resolve to a present package-publication request. The assistant statement alone, or an unrelated current request, is context_only_applicability or not_currently_relevant, never current_applicability.",
+	"Candidate ids are short opaque aliases. Copy every supplied alias exactly; never expand, rewrite, infer, or substitute an id.",
 	"Return one judgment for every candidate exactly once. Confidence is confidence in that judgment, whether true or false.",
 	"Allowed reasons: current_applicability, context_only_applicability, mere_mention, quoted_text, negated, generic_wording, hypothetical_or_future, not_currently_relevant.",
 	"applicable=true if and only if reason=current_applicability.",
 	"Return JSON only, exact shape:",
-	'{"schema_version":3,"judgments":[{"id":"candidate-id","applicable":false,"confidence_bp":9000,"reason":"not_currently_relevant"}]}',
+	'{"schema_version":3,"judgments":[{"id":"c1","applicable":false,"confidence_bp":9000,"reason":"not_currently_relevant"}]}',
 	"Use only ids supplied in the payload. No prose, extra keys, instructions, or rewritten habits.",
 ].join("\n");
 

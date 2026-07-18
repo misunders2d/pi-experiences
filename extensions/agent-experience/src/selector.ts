@@ -44,6 +44,12 @@ export interface SelectorJudgment {
 	confidence_bp: number;
 }
 
+interface SelectorJudgeAliases {
+	candidates: Array<Pick<SelectorCandidate, "id" | "condition">>;
+	candidateIds: string[];
+	originalIdByAlias: Map<string, string>;
+}
+
 const SELECTOR_JUDGMENT_REASONS = new Set([
 	"current_applicability",
 	"context_only_applicability",
@@ -218,7 +224,28 @@ export function buildContextualRetrievalPrompt(prompt: string, contextTurns: Ste
 	return utf8Prefix(text, SELECTOR_CONTEXT_RETRIEVAL_MAX_UTF8_BYTES) || undefined;
 }
 
-export function buildSelectorPrompt(candidates: SelectorCandidate[], input: { prompt: string; maxHabits: number; contextTurns?: SteeringContextTurn[] }): string {
+export function buildSelectorJudgeAliases(candidates: SelectorCandidate[]): SelectorJudgeAliases {
+	const originalIds = new Set<string>();
+	const originalIdByAlias = new Map<string, string>();
+	const aliased = candidates.map((candidate, index) => {
+		if (!candidate.id || originalIds.has(candidate.id)) throw new Error("Invalid selector candidates");
+		originalIds.add(candidate.id);
+		const alias = `c${index + 1}`;
+		originalIdByAlias.set(alias, candidate.id);
+		return { id: alias, condition: candidate.condition };
+	});
+	return { candidates: aliased, candidateIds: aliased.map((candidate) => candidate.id), originalIdByAlias };
+}
+
+export function mapSelectorJudgmentsToOriginalIds(selected: SelectorJudgment[], originalIdByAlias: Map<string, string>): SelectorJudgment[] {
+	return selected.map((judgment) => {
+		const originalId = originalIdByAlias.get(judgment.id);
+		if (!originalId) throw new Error("Unknown selector candidate alias");
+		return { id: originalId, confidence_bp: judgment.confidence_bp };
+	});
+}
+
+export function buildSelectorPrompt(candidates: Array<Pick<SelectorCandidate, "id" | "condition">>, input: { prompt: string; maxHabits: number; contextTurns?: SteeringContextTurn[] }): string {
 	const payload = {
 		schema_version: 3,
 		task: "judge_current_habit_applicability_with_context",
@@ -455,11 +482,17 @@ export async function runSelectorRuntime(db: any, input: {
 		return noInjection("selector_unavailable");
 	}
 	const retrievedCandidates = retrieved.map((item) => item.candidate);
+	let judgeAliases: SelectorJudgeAliases;
+	try {
+		judgeAliases = buildSelectorJudgeAliases(retrievedCandidates);
+	} catch {
+		return noInjection("selector_habit_integrity_failed");
+	}
 	let raw: unknown;
 	try {
 		raw = await withAbortTimeout(config.selector_timeout_ms, input.signal, (signal) => input.adapter!.select({
-			prompt: buildSelectorPrompt(retrievedCandidates, { prompt: input.prompt, contextTurns, maxHabits: config.selector_max_habits }),
-			candidateIds: retrievedCandidates.map((candidate) => candidate.id),
+			prompt: buildSelectorPrompt(judgeAliases.candidates, { prompt: input.prompt, contextTurns, maxHabits: config.selector_max_habits }),
+			candidateIds: judgeAliases.candidateIds,
 			timeoutMs: config.selector_timeout_ms,
 			model: config.selector_model,
 			signal,
@@ -472,7 +505,8 @@ export async function runSelectorRuntime(db: any, input: {
 	}
 	let selected: SelectorJudgment[];
 	try {
-		selected = parseSelectorModelOutput(raw, { candidateIds: retrievedCandidates.map((candidate) => candidate.id), maxSelected: config.selector_max_habits, minConfidenceBp: config.selector_min_confidence_bp });
+		const selectedAliases = parseSelectorModelOutput(raw, { candidateIds: judgeAliases.candidateIds, maxSelected: config.selector_max_habits, minConfidenceBp: config.selector_min_confidence_bp });
+		selected = mapSelectorJudgmentsToOriginalIds(selectedAliases, judgeAliases.originalIdByAlias);
 	} catch {
 		tryInsertSelectorFailureLog(db, { userId, reason: "invalid_selector_output", stage: "judge_parse", mode: selectorMode, model: config.selector_model, createdAt: input.now, latencyMs: Date.now() - started, retrievalMode: promptVectors.retrievalMode });
 		return noInjection("invalid_selector_output");
@@ -506,9 +540,10 @@ export async function runSelectorRuntime(db: any, input: {
 
 export async function measureSelectorLatency(input: { adapter: SelectorModelAdapter; prompt: string; contextTurns?: SteeringContextTurn[]; candidates: SelectorCandidate[]; iterations: number; timeoutMs: number; model: string }) {
 	const samples: number[] = [];
+	const judgeAliases = buildSelectorJudgeAliases(input.candidates);
 	for (let index = 0; index < input.iterations; index += 1) {
 		const started = Date.now();
-		await withAbortTimeout(input.timeoutMs, undefined, (signal) => input.adapter.select({ prompt: buildSelectorPrompt(input.candidates, { prompt: input.prompt, contextTurns: input.contextTurns, maxHabits: 3 }), candidateIds: input.candidates.map((candidate) => candidate.id), timeoutMs: input.timeoutMs, model: input.model, signal }));
+		await withAbortTimeout(input.timeoutMs, undefined, (signal) => input.adapter.select({ prompt: buildSelectorPrompt(judgeAliases.candidates, { prompt: input.prompt, contextTurns: input.contextTurns, maxHabits: 3 }), candidateIds: judgeAliases.candidateIds, timeoutMs: input.timeoutMs, model: input.model, signal }));
 		samples.push(Date.now() - started);
 	}
 	const sorted = samples.slice().sort((a, b) => a - b);

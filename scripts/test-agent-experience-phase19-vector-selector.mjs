@@ -104,6 +104,23 @@ function judgments(candidateIds, applicable = []) {
   };
 }
 
+const conditionPatternByOriginalId = {
+  status: /status\/progress/i,
+  code: /nontrivial code changes/i,
+  release: /package release/i,
+  decision: /decision, approval/i,
+  vacation: /summer vacation/i,
+};
+
+function aliasForOriginalId(prompt, originalId) {
+  const pattern = conditionPatternByOriginalId[originalId];
+  assert.ok(pattern, `missing condition pattern for ${originalId}`);
+  const match = JSON.parse(prompt).candidates.find((candidate) => pattern.test(candidate.condition));
+  assert.ok(match, `expected aliased candidate for ${originalId}`);
+  assert.match(match.id, /^c[1-9][0-9]*$/);
+  return match.id;
+}
+
 const law = lawSnapshotForTest('phase19 selector law');
 const temp = await mkdtemp(join(tmpdir(), 'agent-experience-phase19-'));
 const storage = await initExperienceStorage(join(temp, 'state'), { allowInit: true, userId: 'owner' });
@@ -148,7 +165,7 @@ try {
   let judgeCalls = 0;
   const statusResult = await runSelectorRuntime(storage.db, {
     userId: 'owner', prompt: 'Is the background task complete?', config, law, now: '2026-07-13T02:00:00.000Z', embeddingAdapter: embedding,
-    adapter: { async select({ candidateIds, prompt }) { judgeCalls += 1; assert.doesNotMatch(prompt, /Give concise evidence-backed status/); return judgments(candidateIds, ['status']); } },
+    adapter: { async select({ candidateIds, prompt }) { judgeCalls += 1; assert.doesNotMatch(prompt, /Give concise evidence-backed status|"status"/); return judgments(candidateIds, [aliasForOriginalId(prompt, 'status')]); } },
   });
   assert.equal(statusResult.injected, true);
   assert.equal(statusResult.mode, 'vector_judge');
@@ -157,7 +174,7 @@ try {
 
   const russian = await runSelectorRuntime(storage.db, {
     userId: 'owner', prompt: 'Завершилась ли фоновая задача?', config, law, now: '2026-07-13T02:01:00.000Z', embeddingAdapter: embedding,
-    adapter: { async select({ candidateIds }) { return judgments(candidateIds, ['status']); } },
+    adapter: { async select({ candidateIds, prompt }) { return judgments(candidateIds, [aliasForOriginalId(prompt, 'status')]); } },
   });
   assert.equal(russian.injected, true, 'multilingual prompt must reach condition-vector retrieval and judge');
 
@@ -169,10 +186,23 @@ try {
   ]) {
     const positive = await runSelectorRuntime(storage.db, {
       userId: 'owner', prompt, config, law, now, embeddingAdapter: embedding,
-      adapter: { async select({ candidateIds }) { assert.ok(candidateIds.includes(selectedId)); return judgments(candidateIds, [selectedId]); } },
+      adapter: { async select({ candidateIds, prompt: judgePrompt }) { const alias = aliasForOriginalId(judgePrompt, selectedId); assert.ok(candidateIds.includes(alias)); return judgments(candidateIds, [alias]); } },
     });
     assert.equal(positive.injected, true, `${selectedId} true positive must pass vector retrieval and strict judge`);
   }
+
+  const multiCandidate = await runSelectorRuntime(storage.db, {
+    userId: 'owner', prompt: 'agent package', config, law, now: '2026-07-13T02:01:50.000Z', embeddingAdapter: embedding,
+    adapter: { async select({ candidateIds, prompt }) {
+      const codeAlias = aliasForOriginalId(prompt, 'code');
+      assert.ok(candidateIds.includes(aliasForOriginalId(prompt, 'release')));
+      return judgments(candidateIds, [codeAlias]);
+    } },
+  });
+  assert.equal(multiCandidate.injected, true);
+  const multiCandidateLogs = storage.db.prepare('SELECT action, habit_id FROM selector_hit_log WHERE created_at = ? ORDER BY action, habit_id').all('2026-07-13T02:01:50.000Z').map((row) => ({ action: row.action, habit_id: row.habit_id }));
+  assert.deepEqual(multiCandidateLogs, [{ action: 'inject', habit_id: 'code' }, { action: 'skip', habit_id: 'release' }], 'selected and skipped logs must use restored original habit ids');
+  assert.equal(multiCandidateLogs.some((row) => /^c[1-9][0-9]*$/.test(row.habit_id)), false);
 
   for (const [prompt, now] of [
     ['does it take a lot of code?', '2026-07-13T02:02:00.000Z'],
@@ -228,9 +258,9 @@ try {
   const drifted = buildTypedStorageRow('habits', { id: before.id, userId: before.user_id, data: { ...JSON.parse(before.data_json), record_kind: before.record_kind, schema_version: before.schema_version, status: before.status, habit_id: before.habit_id, condition: before.condition, behavior: before.behavior, polarity: before.polarity, confidence_bp: before.confidence_bp, activation: before.activation, staleness: before.staleness + 0.01 }, createdAt: before.created_at, updatedAt: '2026-07-13T02:07:00.000Z' });
   const drift = await runSelectorRuntime(storage.db, {
     userId: 'owner', prompt: 'Is the background task complete?', config, law, now: '2026-07-13T02:07:01.000Z', embeddingAdapter: embedding,
-    adapter: { async select({ candidateIds }) {
+    adapter: { async select({ candidateIds, prompt }) {
       storage.db.prepare('UPDATE habits SET staleness=?, checksum=?, updated_at=? WHERE id=?').run(drifted.staleness, drifted.checksum, drifted.updated_at, 'status');
-      return judgments(candidateIds, ['status']);
+      return judgments(candidateIds, [aliasForOriginalId(prompt, 'status')]);
     } },
   });
   assert.equal(drift.injected, false);
