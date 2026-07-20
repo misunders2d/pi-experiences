@@ -1,5 +1,6 @@
 import { containsUnredactedSensitiveText } from "../storage/redaction.ts";
 import type { ValidatedObservationRecord } from "./observations.ts";
+import { parseProviderModel } from "./model-adapter.ts";
 import { validateModelOutputBatch, type ValidatedModelOutputBatch } from "./model-output.ts";
 import { GENERALIZED_HABIT_INSTRUCTIONS } from "./prompt.ts";
 
@@ -18,8 +19,11 @@ export interface ProposeFromObservationsInput {
 	timeoutMs?: number;
 }
 
+// Reuse the exact production consolidation-adapter validator so this path can never
+// diverge from it. parseProviderModel splits at the FIRST slash and accepts nested
+// model ids such as "openrouter/deepseek/deepseek-v4-pro".
 function assertConsolidationModel(model: string): string {
-	if (model !== "openai-codex/gpt-5.5") throw new Error("Unsupported consolidation model");
+	if (!parseProviderModel(model)) throw new Error("Unsupported consolidation model");
 	return model;
 }
 
@@ -67,7 +71,7 @@ export async function proposeFromObservations(input: ProposeFromObservationsInpu
 	for (const record of input.observations) assertRedactedObservation(record);
 	const payload = buildModelPayload({ userId: input.userId, model, observations: input.observations });
 	if (containsUnredactedSensitiveText(payload)) throw new Error("Model payload contains unredacted sensitive text");
-	const raw = await input.callModel({ model, payload, timeout_ms: input.timeoutMs ?? 1500 });
+	const raw = await input.callModel({ model, payload, timeout_ms: input.timeoutMs ?? 120000 });
 	return validateModelOutputBatch(parseModelResponse(raw), input.userId);
 }
 

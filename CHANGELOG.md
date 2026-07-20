@@ -6,6 +6,18 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 ## [Unreleased]
 
+### Changed
+
+- Approved-habit steering now isolates each candidate judgment. A single low-confidence or below-threshold judgment no longer discards the whole batch, so one ambiguous candidate can no longer suppress otherwise confident, applicable habits. Structurally malformed judge output still fails closed.
+- Steering keeps working as an approved-habit collection grows past 100 habits. Reply-time retrieval now deterministically uses the top 100 eligible habits by confidence instead of permanently disabling all guidance. Preparation guarantees the current-law top 100 and adds a best-effort buffer up to 500 for law changes; a future law that exposes habits beyond the buffer fails closed (no injection) until vectors are re-prepared, rather than misbehaving silently.
+- Capture no longer drops tool-heavy turns. It captures every assistant message in the run, including runs whose final message is only a tool call, and keeps the tail (where corrections and conclusions live) with a truncation marker when a run is oversized. Because Pi emits several agent_end events for one prompt across its automatic retry boundary, persistence is deferred to the settle boundary and keeps the last non-empty run's answer. A run that terminates in error, aborted, or truncation is dropped in full, so partial, error, or truncated output is never saved, and an exhausted sequence of failed runs captures nothing.
+- Habit learning now reasons causally over each batch: it locates friction (corrections, complaints, repeated requests, forced clarifications) — treating adjacency as a bounded heuristic the model is instructed to corroborate rather than a pipeline-enforced guarantee (attributing pushback to a prior response only when the content plausibly refers to it and the timestamps are close, since concurrent sessions can interleave and pairs can be dropped) — infers the behavioral change that would have prevented it, and formulates a generalized When/Do habit rather than clustering superficially similar messages. Friction-derived candidates are the primary, higher-confidence signal; stable positive preferences still qualify with cleaner repetition and lower confidence.
+- Habit learning also includes a clear habit-versus-fact-versus-skill-versus-one-off rubric with examples and a stronger instruction to reuse existing habit wording, so repeated patterns accumulate evidence on one habit instead of spawning paraphrased near-duplicates. Analyze retries once on a transient model failure.
+
+### Fixed
+
+- Raised the bounded applicability judge's output budget, reducing the risk that a full set of per-candidate judgments is truncated into total guidance loss (truncation is less likely, not impossible).
+
 ## [0.1.46] - 2026-07-18
 
 ### Fixed

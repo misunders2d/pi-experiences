@@ -2,7 +2,7 @@ import type { AssistantMessage, completeSimple } from "@earendil-works/pi-ai/com
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { compactContextIdentity, type CompactHabitContextItem } from "./context.ts";
 import type { ValidatedObservationRecord } from "./observations.ts";
-import { GENERALIZED_HABIT_INSTRUCTIONS } from "./prompt.ts";
+import { FRICTION_EXTRACTION_INSTRUCTIONS, GENERALIZED_HABIT_INSTRUCTIONS, HABIT_CLASSIFICATION_RUBRIC, HABIT_FEWSHOT_EXAMPLES } from "./prompt.ts";
 import { redactText } from "../storage/redaction.ts";
 
 export interface ConsolidationModelAdapterInput {
@@ -89,13 +89,18 @@ export function buildConsolidationSystemPrompt(fileGeneration: string): string {
 		"You are Agent Experience habit learning.",
 		"Return JSON only. No prose. No markdown unless JSON object only.",
 		"Infer durable user preferences/corrections from redacted user/assistant examples.",
+		...FRICTION_EXTRACTION_INSTRUCTIONS,
 		"Only propose habits supported by the provided examples. Do not invent facts.",
 		"Do not include secrets, emails, phone numbers, file paths, tokens, raw prompts, or private identifiers.",
 		"Prefer 1-6 concise candidate habits. Return zero proposals if evidence is weak.",
 		"Only propose repeated patterns: use compact existing habit context plus the new unread examples. Cite source_refs only from the new examples provided in this request.",
-		"A repeated habit needs at least 3 total supporting examples across at least 2 days, combining existing_habit_context counts with new source_refs. Reuse the same normalized condition/behavior/polarity wording when adding evidence to an existing identity.",
-		"Similar meanings in different wording or languages may support the same habit; cite each new matching example separately.",
+		"A repeated habit needs at least 3 total supporting examples across at least 2 days, combining existing_habit_context counts with new source_refs.",
+		"When the same underlying pattern recurs, reuse the canonical condition, behavior, and polarity already present in existing_habit_context so the normalized identity matches. Do not paraphrase, rephrase, translate, or re-order an existing identity.",
+		"Cross-batch evidence accumulates only when the normalized condition, behavior, and polarity match an existing identity. Matching ignores case and surrounding or collapsed whitespace, but any wording change forks a near-duplicate habit and loses the accumulated evidence, so reuse the existing wording whenever the pattern is the same.",
+		"Similar meanings in different wording or languages may support the same habit; cite each new matching example separately, but still reuse one canonical existing wording rather than inventing new phrasings.",
 		...GENERALIZED_HABIT_INSTRUCTIONS,
+		...HABIT_CLASSIFICATION_RUBRIC,
+		...HABIT_FEWSHOT_EXAMPLES,
 		"Every proposal must cite source_refs using only provided seq/checksum values.",
 		"Exact output schema:",
 		JSON.stringify(outputSchema),
@@ -247,7 +252,7 @@ export function createPiConsolidationModelAdapter(
 				env: auth.env,
 				signal: input.signal ?? ctx.signal,
 				timeoutMs: 120000,
-				maxRetries: 0,
+				maxRetries: 1,
 				maxRetryDelayMs: 0,
 				maxTokens: 4096,
 				metadata: { purpose },

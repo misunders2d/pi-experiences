@@ -105,6 +105,10 @@ const adapter = createPiSelectorModelAdapter({ modelRegistry: fakeRegistry() }, 
     assert.match(String(context.systemPrompt), /context_only_applicability/i, 'context-only relevance must have a strict non-applicable reason');
     assert.match(String(context.systemPrompt), /schema_version.*3/i, 'judge protocol must require schema v3');
     assert.match(String(context.systemPrompt), /short opaque aliases.*copy every supplied alias exactly/i, 'judge protocol must require exact short-alias copying');
+    assert.match(String(context.systemPrompt), /Proposition alignment.*instantiates the COMPLETE condition.*not merely share a verb or keyword/is, 'judge must require full-proposition alignment, not shared keywords');
+    assert.match(String(context.systemPrompt), /Metalinguistic rule.*talking ABOUT the trigger, not triggering it.*meta_discussion/is, 'judge must reject metalinguistic discussion of the trigger');
+    assert.match(String(context.systemPrompt), /ALSO contains an explicit, present, non-quoted action request/i, 'metalinguistic rule must let mixed-intent requests with an explicit present action still select');
+    assert.match(String(context.systemPrompt), /Allowed reasons:.*meta_discussion/i, 'meta_discussion must be in the allowed reason set delivered to the judge');
     assert.equal(String(context.messages[0].content).includes('answering selector adapter tests'), false, 'raw habit text is supplied by selector prompt only in runtime tests, not this direct adapter test');
     return assistantText('{"schema_version":3,"judgments":[{"id":"c1","applicable":true,"confidence_bp":9500,"reason":"current_applicability"}]}');
   },

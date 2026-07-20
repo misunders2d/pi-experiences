@@ -3543,6 +3543,29 @@ var GENERALIZED_HABIT_INSTRUCTIONS = [
   "Write behavior as durable agent conduct that can apply to future similar work. Durable tool/task categories such as npm package releases or Pi UI debugging are allowed when the repeated behavior truly belongs to that category; one-off names such as Agent Experience, pi-experiences, specific versions, hashes, paths, or screenshot ids are not.",
   "If examples share only a project-specific fact and no broader reusable behavior, return no proposal for that pattern."
 ];
+var HABIT_CLASSIFICATION_RUBRIC = [
+  "Classify each pattern before proposing. Only a HABIT is proposable:",
+  "- HABIT: a durable, reusable way to behave across similar future work (caution, timing, evidence standards, clarification style, review discipline, tone). Propose these.",
+  "- FACT: durable knowledge or project context (a name, a decision, which branch ships). Belongs in memory. Never propose it as a habit.",
+  "- SKILL: a deliberately authored multi-step procedure, checklist, or playbook. Never propose it as a habit.",
+  "- ONE-OFF INSTRUCTION: a single-task directive with no reusable behavioral generalization. Never propose it as a habit."
+];
+var FRICTION_EXTRACTION_INSTRUCTIONS = [
+  "Identify candidates by causal reasoning over the batch, not by clustering superficially similar messages. Shared words are not a habit.",
+  "For each candidate, work in three steps: (1) LOCATE FRICTION \u2014 a moment where the user corrected the assistant, repeated a request, expressed dissatisfaction, or had to clarify something the assistant should have anticipated; (2) INFER THE IMPROVEMENT DIRECTION \u2014 the behavioral change that would have prevented that friction; (3) FORMULATE \u2014 express it as a generalized When/Do habit (a situation class plus durable conduct) following the generalization rules.",
+  "Weight friction over preference. Corrections, complaints, and repeated requests are the primary, higher-confidence signal. Stable positive preferences with no friction (for example always wanting a table format or always wanting a rollback plan) still qualify, but require stronger and cleaner repetition and MUST receive a lower confidence_bp than friction-derived candidates.",
+  "Adjacent observations MAY be related conversation turns, but adjacency is NOT guaranteed: concurrent sessions can interleave into one stream and captured pairs can be dropped, leaving gaps. So corroborate before linking \u2014 treat observation N+1 user pushback as friction evidence about observation N ONLY when the pushback content plausibly refers to that assistant behavior AND their created_at timestamps are close (minutes, not hours). Otherwise treat the pairs as independent. Friction often lives BETWEEN pairs, but this is a heuristic to apply with judgment, not a guaranteed structure \u2014 confirm the link before attributing it.",
+  "Friction example: an assistant message claims a task is finished, and the next user message says the result was not actually verified. Propose 'When claiming a task is complete, verify the result before reporting it.'",
+  "Negative example: several messages share a keyword (for example 'deploy') but show no common correction, dissatisfaction, or repeated preference. Return no proposal \u2014 surface similarity without friction or a stable preference is not a habit."
+];
+var HABIT_FEWSHOT_EXAMPLES = [
+  "Propose (habit): condition 'When reporting whether work is finished', behavior 'State done or blocked, cite concrete evidence, then give the next action.'",
+  "Propose (habit): condition 'When a request is ambiguous enough to change correctness', behavior 'Ask one focused question before proceeding.'",
+  "Propose (habit): condition 'When about to call a build or release ready', behavior 'Verify the actual produced artifact instead of assuming success.'",
+  "Do NOT propose (fact): 'The release ships from the main branch.' A fact belongs in memory, not a habit.",
+  "Do NOT propose (skill): 'Follow the multi-step deployment checklist.' A procedure is a skill, not a habit.",
+  "Do NOT propose (one-off): 'Rename this flag in this one file right now.' A single-task instruction has no reusable behavior."
+];
 
 // extensions/agent-experience/src/consolidate/model-adapter.ts
 init_redaction();
@@ -3611,13 +3634,18 @@ function buildConsolidationSystemPrompt(fileGeneration) {
     "You are Agent Experience habit learning.",
     "Return JSON only. No prose. No markdown unless JSON object only.",
     "Infer durable user preferences/corrections from redacted user/assistant examples.",
+    ...FRICTION_EXTRACTION_INSTRUCTIONS,
     "Only propose habits supported by the provided examples. Do not invent facts.",
     "Do not include secrets, emails, phone numbers, file paths, tokens, raw prompts, or private identifiers.",
     "Prefer 1-6 concise candidate habits. Return zero proposals if evidence is weak.",
     "Only propose repeated patterns: use compact existing habit context plus the new unread examples. Cite source_refs only from the new examples provided in this request.",
-    "A repeated habit needs at least 3 total supporting examples across at least 2 days, combining existing_habit_context counts with new source_refs. Reuse the same normalized condition/behavior/polarity wording when adding evidence to an existing identity.",
-    "Similar meanings in different wording or languages may support the same habit; cite each new matching example separately.",
+    "A repeated habit needs at least 3 total supporting examples across at least 2 days, combining existing_habit_context counts with new source_refs.",
+    "When the same underlying pattern recurs, reuse the canonical condition, behavior, and polarity already present in existing_habit_context so the normalized identity matches. Do not paraphrase, rephrase, translate, or re-order an existing identity.",
+    "Cross-batch evidence accumulates only when the normalized condition, behavior, and polarity match an existing identity. Matching ignores case and surrounding or collapsed whitespace, but any wording change forks a near-duplicate habit and loses the accumulated evidence, so reuse the existing wording whenever the pattern is the same.",
+    "Similar meanings in different wording or languages may support the same habit; cite each new matching example separately, but still reuse one canonical existing wording rather than inventing new phrasings.",
     ...GENERALIZED_HABIT_INSTRUCTIONS,
+    ...HABIT_CLASSIFICATION_RUBRIC,
+    ...HABIT_FEWSHOT_EXAMPLES,
     "Every proposal must cite source_refs using only provided seq/checksum values.",
     "Exact output schema:",
     JSON.stringify(outputSchema)
@@ -3749,7 +3777,7 @@ function createPiConsolidationModelAdapter(ctx, options) {
         env: auth.env,
         signal: input.signal ?? ctx.signal,
         timeoutMs: 12e4,
-        maxRetries: 0,
+        maxRetries: 1,
         maxRetryDelayMs: 0,
         maxTokens: 4096,
         metadata: { purpose }
@@ -3959,6 +3987,7 @@ init_checksum();
 init_private_root();
 var SELECTOR_CONDITION_EMBEDDING_INPUT_VERSION = "selector_condition_embedding_input_v1";
 var MAX_SELECTOR_ELIGIBLE_HABITS = 100;
+var MAX_SELECTOR_PREPARED_HABITS = 500;
 function throwIfAborted2(signal) {
   if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : new Error("selector_cancelled");
 }
@@ -3985,8 +4014,8 @@ function expectationFor(candidate) {
     habitRowChecksum: selectorConditionIdentityChecksum(candidate.condition)
   };
 }
-function assertCandidateBounds(candidates) {
-  if (candidates.length > MAX_SELECTOR_ELIGIBLE_HABITS) throw new Error("selector_candidate_limit_exceeded");
+function assertCandidateBounds(candidates, max = MAX_SELECTOR_ELIGIBLE_HABITS) {
+  if (candidates.length > max) throw new Error("selector_candidate_limit_exceeded");
   const ids = /* @__PURE__ */ new Set();
   for (const candidate of candidates) {
     if (!candidate.id || ids.has(candidate.id)) throw new Error("selector_candidate_identity_invalid");
@@ -3995,7 +4024,8 @@ function assertCandidateBounds(candidates) {
 }
 function readSelectorConditionVectors(db, input) {
   assertLocalSelectorAdapter(input.embeddingAdapter);
-  assertCandidateBounds(input.candidates);
+  const maxHabits = input.maxHabits ?? MAX_SELECTOR_ELIGIBLE_HABITS;
+  assertCandidateBounds(input.candidates, maxHabits);
   const expectations = input.candidates.map(expectationFor);
   const cached = getCachedHabitEmbeddingsBatch(db, {
     userId: normalizeUserId(input.userId),
@@ -4004,7 +4034,7 @@ function readSelectorConditionVectors(db, input) {
     model: input.embeddingAdapter.model,
     dimensions: input.embeddingAdapter.dimensions,
     expectations,
-    maxHabits: MAX_SELECTOR_ELIGIBLE_HABITS
+    maxHabits
   });
   if (cached.missingIds.length || cached.invalidIds.length || cached.embeddings.size !== input.candidates.length) {
     throw new Error("selector_vectors_unavailable");
@@ -4022,7 +4052,7 @@ function readSelectorConditionVectors(db, input) {
 }
 async function prepareSelectorConditionVectors(db, input) {
   assertLocalSelectorAdapter(input.embeddingAdapter);
-  assertCandidateBounds(input.candidates);
+  assertCandidateBounds(input.candidates, MAX_SELECTOR_PREPARED_HABITS);
   throwIfAborted2(input.signal);
   const userId = normalizeUserId(input.userId);
   const expectations = input.candidates.map(expectationFor);
@@ -4034,7 +4064,7 @@ async function prepareSelectorConditionVectors(db, input) {
     model: input.embeddingAdapter.model,
     dimensions: input.embeddingAdapter.dimensions,
     expectations,
-    maxHabits: MAX_SELECTOR_ELIGIBLE_HABITS
+    maxHabits: MAX_SELECTOR_PREPARED_HABITS
   });
   const repairIds = [.../* @__PURE__ */ new Set([...inspected.missingIds, ...inspected.invalidIds])].sort();
   const prepared = /* @__PURE__ */ new Map();
@@ -4091,7 +4121,7 @@ async function prepareSelectorConditionVectors(db, input) {
       throw error;
     }
   }
-  readSelectorConditionVectors(db, { userId, candidates: input.candidates, embeddingAdapter: input.embeddingAdapter });
+  readSelectorConditionVectors(db, { userId, candidates: input.candidates, embeddingAdapter: input.embeddingAdapter, maxHabits: MAX_SELECTOR_PREPARED_HABITS });
   return { prepared: repairIds.length, cached: input.candidates.length - repairIds.length, total: input.candidates.length };
 }
 
@@ -4164,6 +4194,22 @@ function filterEligibleSelectorCandidates(candidates, input) {
   const minConfidence = Math.max(0, Math.min(1e4, Math.trunc(input.minConfidenceBp ?? 0)));
   const stalenessMax = Number.isFinite(input.stalenessMax) ? Number(input.stalenessMax) : Number.POSITIVE_INFINITY;
   return candidates.filter((candidate) => candidate.confidence_bp >= minConfidence && candidate.staleness <= stalenessMax).sort((left, right) => right.confidence_bp - left.confidence_bp || left.id.localeCompare(right.id));
+}
+function capSelectorCandidatesToBound(candidates) {
+  return candidates.slice(0, MAX_SELECTOR_ELIGIBLE_HABITS);
+}
+function selectorCandidatesForPreparation(input) {
+  const eligibility = { minConfidenceBp: input.minConfidenceBp, stalenessMax: input.stalenessMax };
+  const runtimeSet = capSelectorCandidatesToBound(filterEligibleSelectorCandidates(input.active.filter((candidate) => candidate.law_hash === input.lawHash), eligibility));
+  const prepared = [...runtimeSet];
+  const seen = new Set(prepared.map((candidate) => candidate.id));
+  for (const candidate of filterEligibleSelectorCandidates(input.active, eligibility)) {
+    if (prepared.length >= MAX_SELECTOR_PREPARED_HABITS) break;
+    if (seen.has(candidate.id)) continue;
+    seen.add(candidate.id);
+    prepared.push(candidate);
+  }
+  return prepared;
 }
 function normalizedApprovalIdentity(row) {
   return { candidate_id: row.id, condition: String(row.condition ?? "").trim().replace(/\s+/g, " ").toLowerCase(), behavior: String(row.behavior ?? "").trim().replace(/\s+/g, " ").toLowerCase(), polarity: Number(row.polarity) };
@@ -4274,8 +4320,9 @@ async function prepareActiveSelectorVectorsAfterChange(db, input) {
       owned = createLocalEmbeddingAdapter(input.root, { idleMs: 3e5 });
       adapter = owned;
     }
+    const law = input.law ?? await readConfiguredLawSnapshot(input.root, input.config);
     const active = selectActiveSelectorSnapshot(db, { userId: input.userId });
-    const eligible = filterEligibleSelectorCandidates(active, { minConfidenceBp: input.config.selector_min_confidence_bp, stalenessMax: input.config.selector_staleness_max });
+    const eligible = selectorCandidatesForPreparation({ active, lawHash: law.hash, minConfidenceBp: input.config.selector_min_confidence_bp, stalenessMax: input.config.selector_staleness_max });
     const result = await prepareSelectorConditionVectors(db, { userId: input.userId, candidates: eligible, embeddingAdapter: adapter, now: input.now, signal: input.signal });
     return { attempted: true, ready: true, total: result.total, prepared: result.prepared };
   } catch {

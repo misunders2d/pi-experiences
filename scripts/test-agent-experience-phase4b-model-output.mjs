@@ -150,6 +150,19 @@ try {
   assert.equal(canonicalJson(seenPayload).includes('phase4b@example.invalid'), false);
   const piiObservation = validateObservationRecords({ records: [makeObservation({ seq: 1, createdAt: '2026-07-07T00:00:00.000Z', safe: 'phase4b@example.invalid' })], userId: 'owner', fileGeneration: 'active' });
   await assert.rejects(() => proposeFromObservations({ userId: 'owner', model: 'openai-codex/gpt-5.5', observations: piiObservation, callModel: () => modelOutput(piiObservation) }), /unredacted sensitive/i);
+
+  // Aligned with the real consolidation adapter: any provider/model-formatted id is accepted and the default timeout matches (120 s, not the removed 1.5 s).
+  let altModelSeen;
+  let altTimeoutSeen;
+  const altProposed = await proposeFromObservations({ userId: 'owner', model: 'anthropic/claude-fable-5', observations, callModel: (request) => { altModelSeen = request.model; altTimeoutSeen = request.timeout_ms; return modelOutput(observations, { batch_id: 'alt-model-batch', model: 'anthropic/claude-fable-5' }); } });
+  assert.equal(altProposed.batch_id, 'alt-model-batch');
+  assert.equal(altModelSeen, 'anthropic/claude-fable-5', 'consolidation propose path must no longer hardcode one model');
+  assert.equal(altTimeoutSeen, 120000, 'default consolidation timeout must match the adapter contract, not the legacy 1.5 s');
+  await assert.rejects(() => proposeFromObservations({ userId: 'owner', model: 'no-slash-model', observations, callModel: () => modelOutput(observations) }), /Unsupported consolidation model/);
+  await assert.rejects(() => proposeFromObservations({ userId: 'owner', model: '/leading-slash', observations, callModel: () => modelOutput(observations) }), /Unsupported consolidation model/);
+  // Nested provider/model ids (e.g. an OpenRouter path) must be accepted exactly as the production adapter's parseProviderModel accepts them.
+  const nestedProposed = await proposeFromObservations({ userId: 'owner', model: 'openrouter/deepseek/deepseek-v4-pro', observations, callModel: (request) => { assert.equal(request.model, 'openrouter/deepseek/deepseek-v4-pro'); return modelOutput(observations, { batch_id: 'nested-model-batch', model: 'openrouter/deepseek/deepseek-v4-pro' }); } });
+  assert.equal(nestedProposed.batch_id, 'nested-model-batch');
 } finally {
   storage.db.close();
 }

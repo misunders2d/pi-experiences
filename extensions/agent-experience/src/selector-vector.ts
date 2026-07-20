@@ -27,6 +27,13 @@ export const SELECTOR_VECTOR_RETRIEVAL_METHOD_VERSION = "selector_vector_retriev
 export const SELECTOR_VECTOR_RETRIEVAL_FLOOR_BP = 1500;
 export const SELECTOR_VECTOR_RETRIEVAL_TOP_K = 12;
 export const MAX_SELECTOR_ELIGIBLE_HABITS = 100;
+// Preparation is not the reply hot path. selectorCandidatesForPreparation guarantees
+// the CURRENT-law runtime top-100 is prepared, then fills up to this bound with a
+// law-agnostic buffer. That buffer is best-effort, NOT a guarantee for future laws: a
+// later law can expose eligible habits beyond it (futurePrepared can be 0), and the
+// runtime then fails closed (no injection) for the uncovered request until setup or
+// maintenance re-prepares vectors — safe degradation, not silent wrongness.
+export const MAX_SELECTOR_PREPARED_HABITS = 500;
 
 export interface SelectorConditionVector {
 	habitId: string;
@@ -77,8 +84,8 @@ function expectationFor(candidate: SelectorCandidate): HabitEmbeddingExpectation
 	};
 }
 
-function assertCandidateBounds(candidates: SelectorCandidate[]): void {
-	if (candidates.length > MAX_SELECTOR_ELIGIBLE_HABITS) throw new Error("selector_candidate_limit_exceeded");
+function assertCandidateBounds(candidates: SelectorCandidate[], max: number = MAX_SELECTOR_ELIGIBLE_HABITS): void {
+	if (candidates.length > max) throw new Error("selector_candidate_limit_exceeded");
 	const ids = new Set<string>();
 	for (const candidate of candidates) {
 		if (!candidate.id || ids.has(candidate.id)) throw new Error("selector_candidate_identity_invalid");
@@ -90,9 +97,11 @@ export function readSelectorConditionVectors(db: any, input: {
 	userId: string;
 	candidates: SelectorCandidate[];
 	embeddingAdapter: EmbeddingAdapter;
+	maxHabits?: number;
 }): Map<string, SelectorConditionVector> {
 	assertLocalSelectorAdapter(input.embeddingAdapter);
-	assertCandidateBounds(input.candidates);
+	const maxHabits = input.maxHabits ?? MAX_SELECTOR_ELIGIBLE_HABITS;
+	assertCandidateBounds(input.candidates, maxHabits);
 	const expectations = input.candidates.map(expectationFor);
 	const cached = getCachedHabitEmbeddingsBatch(db, {
 		userId: normalizeUserId(input.userId),
@@ -101,7 +110,7 @@ export function readSelectorConditionVectors(db: any, input: {
 		model: input.embeddingAdapter.model,
 		dimensions: input.embeddingAdapter.dimensions,
 		expectations,
-		maxHabits: MAX_SELECTOR_ELIGIBLE_HABITS,
+		maxHabits,
 	});
 	if (cached.missingIds.length || cached.invalidIds.length || cached.embeddings.size !== input.candidates.length) {
 		throw new Error("selector_vectors_unavailable");
@@ -128,7 +137,7 @@ export async function prepareSelectorConditionVectors(db: any, input: {
 	onProgress?: (progress: { completed: number; total: number }) => void;
 }): Promise<{ prepared: number; cached: number; total: number }> {
 	assertLocalSelectorAdapter(input.embeddingAdapter);
-	assertCandidateBounds(input.candidates);
+	assertCandidateBounds(input.candidates, MAX_SELECTOR_PREPARED_HABITS);
 	throwIfAborted(input.signal);
 	const userId = normalizeUserId(input.userId);
 	const expectations = input.candidates.map(expectationFor);
@@ -140,7 +149,7 @@ export async function prepareSelectorConditionVectors(db: any, input: {
 		model: input.embeddingAdapter.model,
 		dimensions: input.embeddingAdapter.dimensions,
 		expectations,
-		maxHabits: MAX_SELECTOR_ELIGIBLE_HABITS,
+		maxHabits: MAX_SELECTOR_PREPARED_HABITS,
 	});
 	const repairIds = [...new Set([...inspected.missingIds, ...inspected.invalidIds])].sort();
 	const prepared = new Map<string, Float32Array>();
@@ -194,8 +203,9 @@ export async function prepareSelectorConditionVectors(db: any, input: {
 			throw error;
 		}
 	}
-	// Final strict read proves setup produced a complete, valid selector cache.
-	readSelectorConditionVectors(db, { userId, candidates: input.candidates, embeddingAdapter: input.embeddingAdapter });
+	// Final strict read proves setup produced a complete, valid selector cache for
+	// the whole prepared superset (which may exceed the runtime retrieval cap).
+	readSelectorConditionVectors(db, { userId, candidates: input.candidates, embeddingAdapter: input.embeddingAdapter, maxHabits: MAX_SELECTOR_PREPARED_HABITS });
 	return { prepared: repairIds.length, cached: input.candidates.length - repairIds.length, total: input.candidates.length };
 }
 

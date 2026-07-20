@@ -8,6 +8,8 @@ import type { EmbeddingAdapter, SemanticDedupePolicy } from "./semantic/types.ts
 import type { AgentExperienceConfig } from "./config.ts";
 import {
 	embedSelectorPromptQueries,
+	MAX_SELECTOR_ELIGIBLE_HABITS,
+	MAX_SELECTOR_PREPARED_HABITS,
 	readSelectorConditionVectors,
 	retrieveSelectorCandidates,
 	selectorConditionIdentityChecksum,
@@ -53,6 +55,7 @@ interface SelectorJudgeAliases {
 const SELECTOR_JUDGMENT_REASONS = new Set([
 	"current_applicability",
 	"context_only_applicability",
+	"meta_discussion",
 	"mere_mention",
 	"quoted_text",
 	"negated",
@@ -174,6 +177,38 @@ export function filterEligibleSelectorCandidates(candidates: SelectorCandidate[]
 		.sort((left, right) => right.confidence_bp - left.confidence_bp || left.id.localeCompare(right.id));
 }
 
+// Deterministic top-N cap for reply-time vector retrieval. The input is already
+// ordered by confidence desc, id asc, so a growing collection no longer disables
+// all steering — it keeps steering the strongest eligible habits.
+export function capSelectorCandidatesToBound(candidates: SelectorCandidate[]): SelectorCandidate[] {
+	return candidates.slice(0, MAX_SELECTOR_ELIGIBLE_HABITS);
+}
+
+// Preparation set. It must contain EXACTLY the reply-time candidate set for the
+// current law (so a law change that leaves >MAX_SELECTOR_PREPARED_HABITS stale
+// high-confidence habits can never leave a law-fresh runtime candidate without a
+// vector — rank-only supersetting does not guarantee that). The remaining prepared
+// budget is filled with the law-agnostic ordering as a buffer against future law
+// changes. Deterministic and deduplicated.
+export function selectorCandidatesForPreparation(input: {
+	active: SelectorCandidate[];
+	lawHash: string;
+	minConfidenceBp?: number;
+	stalenessMax?: number;
+}): SelectorCandidate[] {
+	const eligibility = { minConfidenceBp: input.minConfidenceBp, stalenessMax: input.stalenessMax };
+	const runtimeSet = capSelectorCandidatesToBound(filterEligibleSelectorCandidates(input.active.filter((candidate) => candidate.law_hash === input.lawHash), eligibility));
+	const prepared: SelectorCandidate[] = [...runtimeSet];
+	const seen = new Set(prepared.map((candidate) => candidate.id));
+	for (const candidate of filterEligibleSelectorCandidates(input.active, eligibility)) {
+		if (prepared.length >= MAX_SELECTOR_PREPARED_HABITS) break;
+		if (seen.has(candidate.id)) continue;
+		seen.add(candidate.id);
+		prepared.push(candidate);
+	}
+	return prepared;
+}
+
 function boundedPromptSummary(prompt: string): string {
 	const summary = redactText(prompt).trim().replace(/\s+/g, " ").slice(0, 500);
 	if (containsUnredactedSensitiveText(summary)) throw new Error("Selector prompt contains unredacted sensitive text");
@@ -201,6 +236,10 @@ function boundedSelectorContextTurns(turns: SteeringContextTurn[] | undefined): 
 	return redacted;
 }
 
+// Conservative byte cap that cannot exceed the shared local MiniLM worker's
+// 128-token limit across scripts (including multi-byte Cyrillic), so the compact
+// contextual query always embeds without touching the shared strict-error worker
+// contract that dedupe calibration depends on.
 export const SELECTOR_CONTEXT_RETRIEVAL_MAX_UTF8_BYTES = 120;
 
 function utf8Prefix(value: string, maxBytes: number): string {
@@ -284,11 +323,16 @@ export function parseSelectorModelOutput(output: unknown, input: { candidateIds:
 		if (!allowed.has(id)) throw new Error("Unknown selector habit id");
 		if (seen.has(id)) throw new Error("Duplicate selector habit id");
 		if (typeof applicable !== "boolean") throw new Error("Invalid selector applicability");
-		if (!Number.isInteger(confidence) || confidence < minimum || confidence > 10000) throw new Error("Selector confidence below threshold");
+		// Confidence out of the structural [0, 10000] integer range is malformed and
+		// still fails closed. A structurally valid judgment whose confidence is merely
+		// below the selection threshold is NOT an error: it is simply not selected
+		// (applicable) or accepted as a valid rejection (non-applicable), so one
+		// low-confidence candidate can no longer veto other confident matches.
+		if (!Number.isInteger(confidence) || confidence < 0 || confidence > 10000) throw new Error("Invalid selector confidence");
 		if (!SELECTOR_JUDGMENT_REASONS.has(reason)) throw new Error("Invalid selector reason");
 		if (applicable !== (reason === "current_applicability")) throw new Error("Inconsistent selector judgment");
 		seen.add(id);
-		if (applicable) selected.push({ id, confidence_bp: confidence });
+		if (applicable && confidence >= minimum) selected.push({ id, confidence_bp: confidence });
 	}
 	if (seen.size !== allowed.size) throw new Error("Incomplete selector judgment coverage");
 	const max = Math.max(0, Math.min(3, Math.trunc(input.maxSelected)));
@@ -462,7 +506,7 @@ export async function runSelectorRuntime(db: any, input: {
 		return noInjection("selector_habit_integrity_failed");
 	}
 	const lawFresh = allActive.filter((candidate) => candidate.law_hash === law.hash);
-	const eligible = filterEligibleSelectorCandidates(lawFresh, { minConfidenceBp: config.selector_min_confidence_bp, stalenessMax: config.selector_staleness_max });
+	const eligible = capSelectorCandidatesToBound(filterEligibleSelectorCandidates(lawFresh, { minConfidenceBp: config.selector_min_confidence_bp, stalenessMax: config.selector_staleness_max }));
 	if (!eligible.length) return noInjection(allActive.length ? "no_fresh_active_candidates" : "no_active_candidates");
 	let retrieved: RetrievedSelectorCandidate[];
 	try {

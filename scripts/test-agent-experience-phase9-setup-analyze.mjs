@@ -284,6 +284,15 @@ const liveSystemPrompt = __buildAgentExperienceConsolidationSystemPromptForTest(
 assert.match(liveSystemPrompt, /reusable behavioral essence/, 'live setup analyzer prompt must require generalized habits');
 assert.match(liveSystemPrompt, /one-off names such as Agent Experience/, 'live setup analyzer prompt must reject one-project habit labels');
 assert.match(liveSystemPrompt, /return no proposal/, 'live setup analyzer prompt must suppress project-specific-only patterns');
+assert.match(liveSystemPrompt, /Classify each pattern before proposing/, 'consolidation prompt must wire in the habit-vs-fact-vs-skill-vs-one-off rubric');
+assert.match(liveSystemPrompt, /Do NOT propose \(fact\)/, 'consolidation prompt must wire in the negative few-shot examples');
+assert.match(liveSystemPrompt, /reuse the canonical condition, behavior, and polarity/, 'consolidation prompt must instruct reuse of the existing canonical habit wording');
+assert.match(liveSystemPrompt, /LOCATE FRICTION/, 'consolidation prompt must wire in causal friction extraction');
+assert.match(liveSystemPrompt, /Weight friction over preference/, 'consolidation prompt must friction-weight over stable positive preferences');
+assert.match(liveSystemPrompt, /Adjacent observations MAY be related conversation turns, but adjacency is NOT guaranteed/, 'consolidation prompt must treat adjacency as a bounded heuristic (interleaving/gaps), not guaranteed sequence');
+assert.match(liveSystemPrompt, /plausibly refers to that assistant behavior AND their created_at timestamps are close/, 'adjacency friction attribution must require plausible reference plus close timestamps');
+assert.match(liveSystemPrompt, /verify the result before reporting it/, 'consolidation prompt must include a friction-extraction few-shot');
+assert.match(liveSystemPrompt, /not by clustering superficially similar messages/, 'consolidation prompt must ban surface-pattern clustering');
 const rotatedGeneration = 'g-20260710132454239-test';
 const rotatedSystemPrompt = __buildAgentExperienceConsolidationSystemPromptForTest(rotatedGeneration);
 const rotatedOutputSchema = JSON.parse(rotatedSystemPrompt.split('\n').at(-1));

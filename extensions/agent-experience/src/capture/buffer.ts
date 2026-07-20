@@ -2,7 +2,7 @@ import { keyToString, type CaptureKey } from "./origin.ts";
 
 export const MAX_CAPTURE_STATES = 16;
 
-export type CloseReason = "agent_end" | "next_input" | "session_shutdown" | "disable";
+export type CloseReason = "agent_settled" | "next_input" | "session_shutdown" | "disable";
 
 export interface PendingInput {
 	key: CaptureKey;
@@ -20,9 +20,15 @@ export interface CompletedPair {
 	completedAt: string;
 }
 
+// "pending": user input received, no assistant text yet.
+// "settling": at least one agent_end produced assistant text; awaiting the settle
+// boundary. Pi's automatic retries emit multiple agent_end events for one prompt
+// (an initial run then continuations), so persistence is deferred until settle and
+// the assistant text is the LAST non-empty run — the final corrected answer, not a
+// retryable partial/error run.
 type CaptureState =
 	| { state: "pending"; input: PendingInput }
-	| { state: "complete"; pair: CompletedPair };
+	| { state: "settling"; input: PendingInput; assistantText: string; completedAt: string };
 
 export interface PairPayload {
 	kind: "conversation_pair_v1";
@@ -36,6 +42,17 @@ export interface PairPayload {
 }
 
 export type AppendPair = (pair: CompletedPair, reason: CloseReason) => Promise<void>;
+
+function pairFromSettling(state: { input: PendingInput; assistantText: string; completedAt: string }): CompletedPair {
+	return {
+		key: state.input.key,
+		origin: state.input.origin,
+		userText: state.input.text,
+		assistantText: state.assistantText,
+		inputCreatedAt: state.input.createdAt,
+		completedAt: state.completedAt,
+	};
+}
 
 export class CapturePairBuffer {
 	private states = new Map<string, CaptureState>();
@@ -57,9 +74,10 @@ export class CapturePairBuffer {
 			this.enforceBound();
 			return;
 		}
-		if (current.state === "complete") {
+		if (current.state === "settling") {
+			// A new user turn arrived before the prior pair settled; flush it as a backstop.
 			try {
-				await append(current.pair, "next_input");
+				await append(pairFromSettling(current), "next_input");
 				this.states.set(key, { state: "pending", input });
 				this.enforceBound();
 			} catch {
@@ -68,28 +86,31 @@ export class CapturePairBuffer {
 			}
 			return;
 		}
-		// A second user input before agent_end means correlation is ambiguous; drop memory only.
+		// A second user input before any agent_end means correlation is ambiguous; drop memory only.
 		this.states.delete(key);
 	}
 
-	completeAgentEnd(key: CaptureKey, assistantText: string, completedAt = new Date().toISOString()): void {
+	// Record an agent_end without persisting. Pi may emit several agent_end events for
+	// one settled prompt (retryable error/partial run, then a continuation with the
+	// real answer). Keep the LAST non-empty assistant text; an empty run (tool-only or
+	// error with no text) must not overwrite or drop an already-captured answer.
+	recordAgentEnd(key: CaptureKey, assistantText: string | undefined, completedAt = new Date().toISOString()): void {
 		const keyString = keyToString(key);
 		const current = this.states.get(keyString);
-		if (!current || current.state !== "pending") {
-			this.states.delete(keyString);
-			return;
-		}
-		this.states.set(keyString, {
-			state: "complete",
-			pair: {
-				key,
-				origin: current.input.origin,
-				userText: current.input.text,
-				assistantText,
-				inputCreatedAt: current.input.createdAt,
-				completedAt,
-			},
-		});
+		if (!current) return;
+		if (!assistantText) return;
+		this.states.set(keyString, { state: "settling", input: current.input, assistantText, completedAt });
+	}
+
+	// Persist the settled pair at the true settle boundary (after all retries). A
+	// pending state with no assistant text is dropped (nothing to save).
+	async settle(key: CaptureKey, append: AppendPair): Promise<void> {
+		const keyString = keyToString(key);
+		const current = this.states.get(keyString);
+		if (!current) return;
+		this.states.delete(keyString);
+		if (current.state !== "settling") return;
+		await append(pairFromSettling(current), "agent_settled");
 	}
 
 	dropKey(key: CaptureKey | undefined): void {
@@ -100,12 +121,13 @@ export class CapturePairBuffer {
 		this.states.clear();
 	}
 
+	// Backstop flush (session shutdown) if settle never fired.
 	async flushKey(key: CaptureKey, reason: CloseReason, append: AppendPair): Promise<void> {
 		const keyString = keyToString(key);
 		const current = this.states.get(keyString);
 		this.states.delete(keyString);
-		if (!current || current.state !== "complete") return;
-		await append(current.pair, reason);
+		if (!current || current.state !== "settling") return;
+		await append(pairFromSettling(current), reason);
 	}
 
 	stateForTest(key: CaptureKey): string | undefined {

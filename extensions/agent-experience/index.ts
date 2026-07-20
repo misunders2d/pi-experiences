@@ -55,7 +55,7 @@ import { redactText } from "./src/storage/redaction.ts";
 import { classifyCaptureInput, type CaptureKey } from "./src/capture/origin.ts";
 import { CapturePairBuffer, buildPairPayload, type CompletedPair, type CloseReason } from "./src/capture/buffer.ts";
 import { extractSingleFinalAssistantText } from "./src/capture/extract.ts";
-import { filterEligibleSelectorCandidates, promoteApprovedPendingCandidates, runSelectorRuntime, selectActiveSelectorSnapshot, type SelectorModelAdapter } from "./src/selector.ts";
+import { promoteApprovedPendingCandidates, runSelectorRuntime, selectActiveSelectorSnapshot, selectorCandidatesForPreparation, type SelectorModelAdapter } from "./src/selector.ts";
 import { createPiSelectorModelAdapter } from "./src/selector-model.ts";
 import { prepareSelectorConditionVectors } from "./src/selector-vector.ts";
 import { extractSteeringContext, latestUserMessageBoundary, type SteeringContextTurn } from "./src/steering-context.ts";
@@ -2126,7 +2126,8 @@ async function prepareAndEnableSelector(ctx: ExtensionCommandContext): Promise<v
 			if (!(await fileExists(resolvePrivatePath(paths.root, "ledger.sqlite")))) return { prepared: 0, cached: 0, total: 0 };
 			return withExistingReviewStorage(async (storage) => {
 				const active = selectActiveSelectorSnapshot(storage.db, { userId: storage.userId });
-				const eligible = filterEligibleSelectorCandidates(active, { minConfidenceBp: config.selector_min_confidence_bp, stalenessMax: config.selector_staleness_max });
+				const law = await readConfiguredLawSnapshot(paths.root, config);
+					const eligible = selectorCandidatesForPreparation({ active, lawHash: law.hash, minConfidenceBp: config.selector_min_confidence_bp, stalenessMax: config.selector_staleness_max });
 				return prepareSelectorConditionVectors(storage.db, {
 					userId: storage.userId,
 					candidates: eligible,
@@ -2718,7 +2719,7 @@ function usage(topic = "") {
 			"tail -3 ~/.agents/experience/observations.jsonl",
 			"experience-consolidate status # maintainer check: bundled CLI can read config",
 			"If no observations appear after a normal turn, restart Pi so the latest extension code is loaded.",
-			"Capture writes completed turns at agent_end; selector/ledger are separate.",
+			"Capture writes completed turns at agent_settled (persistence deferred across retries); selector/ledger are separate.",
 		].join("\n");
 	}
 	if (normalized === "advanced") {
@@ -3131,28 +3132,24 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 		}
 	});
 
-	pi.on("agent_end", async (event, ctx) => {
-		// Keep transient guidance across Pi's automatic retry boundary. agent_settled,
-		// session shutdown, a changed user-message count, or the next normal prompt clears it.
-		const { paths, active } = await getEffectiveCapture();
+	pi.on("agent_end", async (_event, ctx) => {
+		// Pi emits agent_end once per run, and one settled prompt can span several runs
+		// across its automatic retry/continuation boundary. A run that terminates in
+		// error/aborted/length is dropped entirely by extractSingleFinalAssistantText, so
+		// its partial/error/truncated output (including earlier same-run text) is never
+		// captured. Accumulate here (keeping the last non-empty run) but DEFER persistence
+		// to agent_settled; an empty/failed run never drops an already-captured answer.
+		// next-input and session-shutdown remain backstops. Persisting on the first
+		// agent_end would capture a failed run's text and discard the real answer.
+		const { active } = await getEffectiveCapture();
 		const key = captureKeyFromContext(ctx);
 		if (!active) {
 			captureBuffer.dropKey(key);
 			return;
 		}
 		if (!key) return;
-		const assistantText = extractSingleFinalAssistantText(event.messages as unknown[]);
-		if (!assistantText) {
-			captureBuffer.dropKey(key);
-			return;
-		}
-		try {
-			captureBuffer.completeAgentEnd(key, assistantText);
-			await captureBuffer.flushKey(key, "agent_end", (pair, reason) => appendCapturedPair(paths.root, pair, reason));
-		} catch (error) {
-			captureBuffer.dropKey(key);
-			notifyDedupedDiagnostic(ctx, captureDiagnosticsShown, diagnosticFor("capture-persist", error));
-		}
+		const assistantText = extractSingleFinalAssistantText(_event.messages as unknown[]);
+		captureBuffer.recordAgentEnd(key, assistantText);
 	});
 
 	pi.on("tool_execution_start", async (event, ctx) => {
@@ -3188,6 +3185,17 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 		if (steeringScope) pendingSteeringRuns.delete(steeringScope);
 		const breakScope = breakInScopeFromContext(ctx);
 		if (breakScope) breakInAgentActive.delete(breakInScopeKey(breakScope));
+		// The prompt has truly settled (all automatic retries/continuations done):
+		// persist the accumulated captured pair exactly once here.
+		try {
+			const { paths, active } = await getEffectiveCapture();
+			const key = captureKeyFromContext(ctx);
+			if (!active) captureBuffer.dropKey(key);
+			else if (key) await captureBuffer.settle(key, (pair, reason) => appendCapturedPair(paths.root, pair, reason));
+		} catch (error) {
+			captureBuffer.dropKey(captureKeyFromContext(ctx));
+			notifyDedupedDiagnostic(ctx, captureDiagnosticsShown, diagnosticFor("capture-persist", error));
+		}
 		await checkScheduledReceipts(ctx);
 		await maybePromptBreakInReview(ctx, "agent-settled");
 	});
