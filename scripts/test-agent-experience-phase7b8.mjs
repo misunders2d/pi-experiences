@@ -172,7 +172,7 @@ try {
     else process.env.HOME = previousHome;
   }
   assert.match(notes.at(-1), /Experience: OFF/);
-  assert.match(notes.at(-1), /Analyze saved examples now: available when you choose it in setup/);
+  assert.match(notes.at(-1), /Analyze all waiting examples now: available when you choose it in setup/);
   assert.match(notes.at(-1), /Automatic schedule: OFF/);
   await commands.get('experience').handler('help', { cwd: process.cwd(), ui: { notify(message) { notes.push(message); } } });
   assert.match(notes.at(-1), /Discuss a pattern naturally/);

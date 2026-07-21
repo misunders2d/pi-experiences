@@ -20,7 +20,7 @@ export type ScheduledAnalyzeCoreResult =
 
 async function acquireAnalyzeLock(root: string) {
 	try {
-		return await acquireOwnedLock(root, "analyze", { waitMs: 0, staleMs: 2 * 60 * 60_000 });
+		return await acquireOwnedLock(root, "analyze", { waitMs: 0, staleMs: 24 * 60 * 60_000 });
 	} catch (error: any) {
 		if (/Could not acquire/.test(String(error?.message || error))) return undefined;
 		throw error;
@@ -58,6 +58,7 @@ export async function runScheduledAnalyzeCore(input: {
 			userId,
 			afterSeq: watermark?.seq || 0,
 			afterChecksum: watermark?.checksum || null,
+			expectedGeneration: generation,
 			maxRecords: input.config.analyze_batch_max_records,
 			maxBytes: input.config.analyze_batch_max_bytes,
 		});

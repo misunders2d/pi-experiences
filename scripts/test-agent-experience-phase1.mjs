@@ -149,7 +149,7 @@ assert.deepEqual(notes.find((note) => note.level === 'select').options, [
   '[ ] Save chat examples locally',
   'Choose model for habit learning (openai-codex/gpt-5.5)',
   'Choose model for habit assessment (openai-codex/gpt-5.4-mini)',
-  'Analyze saved examples now',
+  'Analyze all waiting examples now',
   'Review suggested habits',
   'Resolve duplicate habits',
   'Review approved habits',
@@ -220,7 +220,7 @@ assert.equal('selector_daily_budget' in legacyConfig, false, 'legacy daily-budge
 assert.doesNotMatch(formatAgentExperienceConfig(legacyConfig), /selector_daily_budget|daily_budget/, 'rewriting a legacy config must remove obsolete quota keys');
 assert.doesNotMatch(configText, /TOKEN|SECRET|PRIVATE_KEY|BEGIN PRIVATE KEY/i, 'config must not contain secret-like fixture text');
 
-setupChoices = ['Analyze saved examples now', undefined];
+setupChoices = ['Analyze all waiting examples now', undefined];
 const beforeAnalyzeSetup = notes.length;
 await commands.get('experience').handler('setup', ctx);
 assert.ok(notes.slice(beforeAnalyzeSetup).some((note) => /saved examples|model|Habit learning/i.test(note.message)), 'analyze-now setup action must explain missing prerequisites without enabling fake timer');

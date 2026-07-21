@@ -18,10 +18,10 @@ npm audit --omit=dev
 5. explicit review/CAS/law gates;
 6. selector behavior plus muted per-answer steering provenance, privacy, ordering, and fail-closed visibility;
 7. selector adapters and legacy CLI behavior;
-8. nonblocking setup Analyze;
+8. nonblocking manual Analyze that drains the action-start queue through sequential bounded calls, excludes mid-run appends, preserves committed progress on later failure/cancellation, and emits one final summary;
 9. separate-field semantic duplicate routing, method reconciliation, and candidate restoration;
 10. future-schema and online backup/journaled restore hardening;
-11. bounded observation tail/index/Analyze/rotation/retention;
+11. bounded observation tail/index/snapshot reads plus safe Analyze rotation/retention;
 12. managed local embedding unit checks;
 13. two-connection semantic activation and atomic scan adversarial checks;
 14. token-lock stale/dead/malformed/ownership recovery;
@@ -79,7 +79,7 @@ npm pack --json --pack-destination /tmp/pi-experiences-047-pack
 
 The tarball must include:
 
-- `package.json` version `0.1.48` and Node floor `>=22.19.0`;
+- `package.json` version `0.1.49` and Node floor `>=22.19.0`;
 - `CHANGELOG.md` with a verified entry for the release;
 - wildcard Pi peer dependencies;
 - extension source, `steering-note.ts`, and public skill;
@@ -92,7 +92,7 @@ The tarball must include:
 Fresh installation must use the exact generated tarball and disable lifecycle scripts:
 
 ```bash
-npm install --ignore-scripts --legacy-peer-deps /tmp/pi-experiences-048-pack/pi-experiences-0.1.48.tgz
+npm install --ignore-scripts --legacy-peer-deps /tmp/pi-experiences-049-pack/pi-experiences-0.1.49.tgz
 ```
 
 Use a dedicated disposable `/tmp/*smoke*` prefix. Verify package version, CLI help/status, extension import, skill loading, package-relative worker resolution, and file allowlist from that installed copy—not the source checkout.

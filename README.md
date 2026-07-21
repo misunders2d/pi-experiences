@@ -73,7 +73,7 @@ There are two reviewed entry paths:
 - **Learn from repetition:** opt into local examples and manually run Analyze. The repeated-pattern loop remains:
 
 1. **Observe** — after you opt in, Pi stores bounded, heuristically redacted examples from normal work.
-2. **Detect** — when you manually start Analyze, your selected Pi model/provider examines the next bounded batch for repeated behavior.
+2. **Detect** — when you manually start Analyze, Pi snapshots the examples waiting at that moment and your selected Pi model/provider examines them through sequential bounded batches for repeated behavior.
 3. **Propose** — possible habits appear as inactive “When → Do” suggestions.
 4. **Review** — you approve or reject every new or materially reworded habit.
 5. **Apply** — only approved, active habits can provide small relevant guidance, and only after you enable reminders.
@@ -178,7 +178,7 @@ You can also ask Pi to show habit suggestions or possible duplicates, discuss nu
 2. Turn on **Save chat examples locally**.
 3. Use Pi normally until a behavioral pattern repeats.
 4. Select **Choose model for habit learning**.
-5. Choose **Analyze saved examples now** when you are ready.
+5. Choose **Analyze all waiting examples now** when you are ready, or run `/experience analyze` directly.
 6. Review suggestions conversationally or from **Review suggested habits**, then explicitly approve or reject each proposal.
 7. Use **Review approved habits** to inspect, disable, re-enable, archive, or recheck a waiting approval.
 8. Optionally prepare **Prevent duplicate habits**.
@@ -230,7 +230,7 @@ The local duplicate model receives habit wording only—not raw chat examples, s
 
 Capture is opt-in. Captured conversation pairs are stored under your private local state root and heuristically redacted before storage. Redaction reduces exposure but cannot guarantee recognition of every sensitive value.
 
-When you manually start Analyze, the next bounded batch of redacted examples is processed by the Pi model/provider you selected for habit learning. That provider's data handling still applies. Analyze creates suggestions, never approvals.
+When you manually start Analyze from setup or `/experience analyze`, Pi snapshots the redacted examples waiting at that moment and processes the fixed queue through sequential bounded calls to the model/provider you selected for habit learning. Each call remains bounded; examples captured after the snapshot wait for the next run. That provider's data handling still applies. Analyze creates suggestions, never approvals.
 
 When an approved habit later steers a TUI answer, its approved `When:` / `Do:` wording is retained in that local Pi session as the visible provenance marker. The marker contains no raw prompt or source example and never enters LLM context.
 
@@ -363,7 +363,7 @@ Observation storage uses:
 - a fixed-width offset index;
 - token-owned single-writer locking.
 
-Append validates only bounded tail state rather than parsing all history. Analyze seeks directly to the next same-user contiguous unread range, with defaults of at most 200 records and 80,000 bytes. A watermark advances only in the successful reducer transaction. Compact structured habit/candidate context preserves cross-batch learning without resending committed raw observations. The Analyze model prompt performs friction-weighted causal extraction — locating friction across likely-related observation turns (adjacency is a bounded heuristic the model is instructed to corroborate before attributing pushback, not a pipeline-enforced guarantee, since concurrent sessions can interleave into one stream and pairs can be dropped), inferring the improvement direction, and formulating a generalized When/Do habit — rather than clustering superficially similar wording; friction-derived candidates outrank friction-free positive preferences.
+Append validates only bounded tail state rather than parsing all history. Manual Analyze snapshots the same-user unread queue waiting at action start, then seeks through that fixed queue using sequential calls bounded by default to at most 200 records and 80,000 bytes each. Examples appended afterward wait for the next run. Each batch advances the read watermark only in its successful reducer transaction, so earlier committed progress remains valid if a later batch fails. Compact structured habit/candidate context is rebuilt between committed batches, preserving cross-batch learning without resending committed raw observations. Scheduled Analyze remains one bounded batch per scheduled run. The Analyze model prompt performs friction-weighted causal extraction — locating friction across likely-related observation turns (adjacency is a bounded heuristic the model is instructed to corroborate before attributing pushback, not a pipeline-enforced guarantee, since concurrent sessions can interleave into one stream and pairs can be dropped), inferring the improvement direction, and formulating a generalized When/Do habit — rather than clustering superficially similar wording; friction-derived candidates outrank friction-free positive preferences.
 
 After a generation is fully analyzed, source text rotates through a recovery journal. Rotated redacted source text expires after:
 
@@ -455,9 +455,9 @@ Setup can inspect, repair/rewrite, disable, or remove the package-owned user uni
 
 ### Optional break-in review prompts
 
-`/experience setup` can explicitly enable private TUI break-in prompts. Default is off. After a manual Analyze batch creates new suggestions, the prompt waits until Pi is idle; scheduled results are detected during an open private TUI session or at the next eligible private TUI start. Each Analyze batch prompts at most once with exactly **Review now**, **Later**, or **Turn break-in off**.
+`/experience setup` can explicitly enable private TUI break-in prompts. Default is off. After a manual Analyze action creates new suggestions, the prompt waits until Pi is idle; scheduled results are detected during an open private TUI session or at the next eligible private TUI start. Each manual Analyze action or scheduled batch prompts at most once with exactly **Review now**, **Later**, or **Turn break-in off**.
 
-Break-in is review-only. It makes no extra model call and never approves, rejects, merges, activates, or applies a habit. `Review now` only opens the existing review UI, where every decision still requires human action. `Later` ends that batch reminder while leaving suggestions in Review. Missing session scope, UI, idle state, readable review state, or safe lifecycle suppresses/defer the prompt. Tool execution, compaction, streaming, queued messages, headless modes, and session shutdown cannot open it. Only bounded sanitized metadata is retained; no suggestion text, source references, prompts, model output, credentials, or private paths enter the break-in queue.
+Break-in is review-only. It makes no extra model call and never approves, rejects, merges, activates, or applies a habit. `Review now` only opens the existing review UI, where every decision still requires human action. `Later` ends that action/result reminder while leaving suggestions in Review. Missing session scope, UI, idle state, readable review state, or safe lifecycle suppresses/defer the prompt. Tool execution, compaction, streaming, queued messages, headless modes, and session shutdown cannot open it. Only bounded sanitized metadata is retained; no suggestion text, source references, prompts, model output, credentials, or private paths enter the break-in queue.
 
 ### Law-check caveat
 

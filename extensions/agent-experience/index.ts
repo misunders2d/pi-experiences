@@ -199,7 +199,7 @@ function buildSetupSettingItems(config: { enabled: boolean; capture_enabled: boo
 		{ id: "save", label: "Save chat examples locally", currentValue: checkboxValue(captureActive), values: ["[ ] OFF", "[x] ON"], description: "Space/Enter toggles local redacted example capture." },
 		{ id: "model", label: "Choose model for habit learning", currentValue: modelValueForSetup(config), values: [modelValueForSetup(config)], description: "Selects the model that turns saved examples into suggestions." },
 		{ id: "assessmentModel", label: "Choose model for habit assessment", currentValue: assessmentModelValueForSetup(config), values: [assessmentModelValueForSetup(config)], description: "Selects the model that checks whether approved habits apply before replies." },
-		{ id: "analyze", label: "Analyze saved examples now", currentValue: "open", values: ["open"], description: "Starts nonblocking analysis. No habits are auto-approved." },
+		{ id: "analyze", label: "Analyze all waiting examples now", currentValue: "open", values: ["open"], description: "Starts nonblocking analysis. No habits are auto-approved." },
 		{ id: "review", label: "Review suggested habits", currentValue: "open", values: ["open"], description: "Inspect each suggestion in a boxed panel, then approve/reject/back." },
 		{ id: "duplicates", label: "Resolve duplicate habits", currentValue: "open", values: ["open"], description: "Review semantically similar habits and choose merge/supersede/keep/archive." },
 		{ id: "habits", label: "Review approved habits", currentValue: "open", values: ["open"], description: "Browse active/disabled habits, then disable, re-enable, or archive/hide one." },
@@ -962,14 +962,14 @@ async function buildStatusText(): Promise<{ text: string; enabled: boolean }> {
 			? "Choose Review approved habits in /experience setup to recheck habits that are waiting."
 		: reviewCount > 0
 			? "Choose Review suggested habits in /experience setup."
-			: "Choose Analyze saved examples now in /experience setup to create suggestions.";
+			: "Choose Analyze all waiting examples now in /experience setup to create suggestions.";
 	return { enabled: config.enabled, text: [
 		`Experience: ${config.enabled ? "ON" : "OFF"}`,
 		`Config file: ${path}${exists ? "" : " (not created; using defaults)"}`,
 		`Save chat examples locally: ${captureActive ? "ON" : "OFF"}${observations === undefined ? "" : ` (${plural(observations, "saved example")})`}`,
 		`Habit-learning model: ${config.consolidation_model}`,
 		`Habit-assessment model: ${config.selector_model}`,
-		`Analyze saved examples now: ${config.consolidation_enabled ? "available from setup" : "available when you choose it in setup"}`,
+		`Analyze all waiting examples now: ${config.consolidation_enabled ? "available from setup" : "available when you choose it in setup"}`,
 		`Review suggested habits: ${summary.error ? `ledger unreadable (${summary.error})` : summary.ledger ? `${plural(reviewCount, "suggestion")} waiting, ${plural(summary.active, "approved habit")}${summary.approvedWaiting ? `, ${plural(summary.approvedWaiting, "approved habit")} waiting for activation` : ""}` : "no review list yet"}`,
 		`Prevent duplicate habits: ${duplicateStatus}`,
 		`Use approved habits before replies: ${selectorActive ? `ON (private local vectors + bounded current/follow-up context to ${config.selector_model})` : config.selector_enabled ? "configured ON, inactive because Experience is OFF" : "OFF"}`,
@@ -1003,7 +1003,7 @@ function buildSetupOptions(config: { enabled: boolean; capture_enabled: boolean;
 		`${captureActive ? "[x]" : "[ ]"} Save chat examples locally`,
 		`Choose model for habit learning (${modelValueForSetup(config)})`,
 		`Choose model for habit assessment (${assessmentModelValueForSetup(config)})`,
-		"Analyze saved examples now",
+		"Analyze all waiting examples now",
 		"Review suggested habits",
 		"Resolve duplicate habits",
 		"Review approved habits",
@@ -1041,7 +1041,7 @@ function setupHelpMessage(config: { enabled: boolean; capture_enabled: boolean; 
 		"Save chat examples locally: turn this on first to start saving examples. It stores redacted completed user/assistant pairs under ~/.agents/experience. It does not store raw full prompts or injected text.",
 		"Choose model for habit learning: selects the model that reads saved examples and creates habit suggestions during Analyze.",
 		"Choose model for habit assessment: selects the model that checks whether already-approved habits apply to each request. Changing it does not enable or disable reminders.",
-		"Analyze saved examples now: runs from this setup menu, reads saved redacted examples, calls the chosen model once, and creates suggested habits for review.",
+		"Analyze all waiting examples now: runs from this setup menu, snapshots the waiting redacted examples, processes them through bounded model calls, and creates suggested habits for review.",
 		`Use approved habits before replies: compares each request privately against local approved-condition vectors. For follow-ups, up to four prior visible user/assistant messages (300 redacted characters each) may help local retrieval and one bounded ${config.selector_model} applicability check. The current message remains the only trigger; context is ephemeral. Redaction is heuristic. Missing vectors, auth, timeouts, ambiguity, or malformed output produce no guidance.`,
 		"Automatic schedule: optional Linux systemd user timer at 03:30 system-local time with persistent catch-up. Setup shows exact paths and requires confirmation before install/enable; scheduled runs create suggestions only.",
 		"Break-in review prompts: explicit opt-in. After Analyze creates suggestions and Pi is safely idle, one private TUI prompt offers Review now, Later, or Turn break-in off. It makes no extra model call and never approves or applies anything.",
@@ -1078,23 +1078,23 @@ async function chooseSetup(ctx: ExtensionContext, title: string, options: readon
 }
 
 async function handleSetupConsolidation(ctx: ExtensionCommandContext) {
-	const choice = await chooseSetup(ctx, "Analyze saved examples", [
-		"Explain Analyze saved examples now (no changes)",
-		"Allow Analyze saved examples now",
-		"Do not allow Analyze saved examples now",
+	const choice = await chooseSetup(ctx, "Analyze all waiting examples", [
+		"Explain Analyze all waiting examples now (no changes)",
+		"Allow Analyze all waiting examples now",
+		"Do not allow Analyze all waiting examples now",
 		"Back/cancel (no changes)",
 	]);
-	if (!choice || choice === "Back/cancel (no changes)") return notify(ctx, "Analyze saved examples setup cancelled. No config changed.", "info");
-	if (choice === "Explain Analyze saved examples now (no changes)") {
+	if (!choice || choice === "Back/cancel (no changes)") return notify(ctx, "Analyze all waiting examples setup cancelled. No config changed.", "info");
+	if (choice === "Explain Analyze all waiting examples now (no changes)") {
 		return notify(ctx, [
-			"Analyze saved examples now lets Pi read saved redacted examples and create proposed habits for you to review.",
+			"Analyze all waiting examples now lets Pi read saved redacted examples and create proposed habits for you to review.",
 			"Manual Analyze runs only when you choose it. Automatic schedule is a separate explicit setup action.",
 			"Analyze creates review suggestions only. It never approves habits by itself.",
 		].join("\n"), "info");
 	}
-	if (choice === "Allow Analyze saved examples now") return handleConsolidation("on", ctx);
-	if (choice === "Do not allow Analyze saved examples now") return handleConsolidation("off", ctx);
-	return notify(ctx, "Analyze saved examples setup cancelled. No config changed.", "info");
+	if (choice === "Allow Analyze all waiting examples now") return handleConsolidation("on", ctx);
+	if (choice === "Do not allow Analyze all waiting examples now") return handleConsolidation("off", ctx);
+	return notify(ctx, "Analyze all waiting examples setup cancelled. No config changed.", "info");
 }
 
 async function handleSetupEmbedding(ctx: ExtensionCommandContext) {
@@ -1422,7 +1422,7 @@ async function handleSetupModel(ctx: ExtensionCommandContext) {
 		if (!auth.ok) return notify(ctx, `The schedule remains unchanged and the model was not changed because background authentication failed. Detail: ${auth.reason}`, "warn");
 	}
 	const { path } = await setAgentExperienceConsolidationModel(choice);
-	return notify(ctx, [`Habit-learning model: ${choice}`, `Config file: ${path}`, "Analyze saved examples now is available inside /experience setup."].join("\n"), "info");
+	return notify(ctx, [`Habit-learning model: ${choice}`, `Config file: ${path}`, "Analyze all waiting examples now is available inside /experience setup."].join("\n"), "info");
 }
 
 async function handleSetupAssessmentModel(ctx: ExtensionCommandContext) {
@@ -1447,7 +1447,7 @@ async function handleSetupAssessmentModel(ctx: ExtensionCommandContext) {
 
 async function acquireAnalyzeLock(root: string) {
 	try {
-		return await acquireOwnedLock(root, "analyze", { waitMs: 0, staleMs: 2 * 60 * 60_000 });
+		return await acquireOwnedLock(root, "analyze", { waitMs: 0, staleMs: 24 * 60 * 60_000 });
 	} catch (error: any) {
 		if (/Could not acquire/.test(String(error?.message || error))) return undefined;
 		throw error;
@@ -1468,86 +1468,179 @@ function formatAnalyzeFailure(error: unknown): string {
 	return `Habit learning failed safely. No suggestions were approved. Detail: ${detail}`;
 }
 
-async function runAnalyzeNowJob(ctx: ExtensionCommandContext, preflight: { lock: { release: () => Promise<void> }; observations: ValidatedObservationRecord[]; habitContext: CompactHabitContextItem[]; hasMore: boolean; totalUnread: number }) {
-	const paths = getAgentExperiencePaths();
-	const { config } = await readAgentExperienceConfig(paths);
+async function runAnalyzeNowJob(ctx: ExtensionCommandContext, preflight: {
+	lock: { release: () => Promise<void> };
+	observations: ValidatedObservationRecord[];
+	habitContext: CompactHabitContextItem[];
+	generation: string;
+	targetSeq: number;
+	targetChecksum: string;
+	startAfterSeq: number;
+	totalUnread: number;
+	config: AgentExperienceConfig;
+	userId: string;
+	paths: ReturnType<typeof getAgentExperiencePaths>;
+}) {
+	const paths = preflight.paths;
+	const config = preflight.config;
 	const model = config.consolidation_model;
 	const lock = preflight.lock;
-	const batch = preflight.observations;
-	const expected = expectedRangeFromObservations(batch, getConfiguredUserId());
-	const adapter = consolidationModelAdapter ?? createPiConsolidationModelAdapter(ctx, { complete: completeSimple });
+	const userId = preflight.userId;
+	let adapter: ConsolidationModelAdapter | undefined;
+	const signal = (ctx as any).signal as AbortSignal | undefined;
 	let storage: Awaited<ReturnType<typeof initExperienceStorage>> | undefined;
+	let batch = preflight.observations;
+	let habitContext = preflight.habitContext;
+	let committedSeq = preflight.startAfterSeq;
+	let committedBatches = 0;
+	let newSuggestionCount = 0;
+	let modelProposalCount = 0;
+	let reviewUpdated = false;
+	let failure: unknown;
+	let promotionNote = "";
+	let retentionNote = "";
+	let breakInNote = "";
+	const throwIfAborted = () => {
+		if (signal?.aborted) throw signal.reason || new Error("Analyze cancelled");
+	};
 	try {
-		const userId = getConfiguredUserId();
-		const output = await adapter.generate({ model, userId, observations: batch, habitContext: preflight.habitContext, expected, signal: (ctx as any).signal });
-		storage = await initExperienceStorage(paths.root, { allowInit: true, userId });
-		const result = await runConsolidationOnce({ root: paths.root, db: storage.db, userId: storage.userId, observations: batch, modelOutput: output, model, config, dryRun: false, now: new Date().toISOString() });
-		if (!result.ok) return notify(ctx, `Habit learning did not create suggestions: ${redactText(String(result.reason || "model output invalid"))}`, "warn");
-		let promotionNote = "";
+		adapter = consolidationModelAdapter ?? createPiConsolidationModelAdapter(ctx, { complete: completeSimple });
+		while (committedSeq < preflight.targetSeq) {
+			throwIfAborted();
+			if (!batch.length) throw new Error("Analyze bounded read made no progress");
+			const expected = expectedRangeFromObservations(batch, userId);
+			if (expected.file_generation !== preflight.generation || expected.seq_start !== committedSeq + 1 || expected.seq_end > preflight.targetSeq) throw new Error("Analyze snapshot range drifted");
+			const output = await adapter.generate({ model, userId, observations: batch, habitContext, expected, signal });
+			throwIfAborted();
+			storage = await initExperienceStorage(paths.root, { allowInit: true, userId });
+			const result = await runConsolidationOnce({ root: paths.root, db: storage.db, userId: storage.userId, observations: batch, modelOutput: output, model, config, dryRun: false, now: new Date().toISOString() });
+			if (!result.ok) throw new Error(`habit_learning_model_output_invalid:${String(result.reason || "model output invalid")}`);
+			const watermark = getProposalReadWatermark(storage.db, userId, preflight.generation);
+			const last = batch.at(-1)!;
+			if (!watermark || watermark.seq !== last.seq || watermark.checksum !== last.checksum) throw new Error("Analyze successful batch did not advance its verified read watermark");
+			const candidateIds = Array.isArray((result as any).result?.candidate_ids) ? (result as any).result.candidate_ids : [];
+			const pendingId = (result as any).result?.pending_review_id;
+			const inserted = (result as any).result?.inserted || {};
+			newSuggestionCount += Number(inserted.candidates || 0) + Number(inserted.pending_review || 0);
+			modelProposalCount += Number((result as any).diff?.proposal_count ?? candidateIds.length ?? 0);
+			reviewUpdated ||= candidateIds.length > 0 || !!pendingId;
+			committedSeq = last.seq;
+			committedBatches += 1;
+			habitContext = buildCompactHabitContext(storage.db, { userId, limit: 60 });
+			storage.db.close();
+			storage = undefined;
+			if (committedSeq >= preflight.targetSeq) break;
+			const next = await readValidatedObservationRange(paths.root, {
+				userId,
+				afterSeq: committedSeq,
+				afterChecksum: last.checksum,
+				maxRecords: config.analyze_batch_max_records,
+				maxBytes: config.analyze_batch_max_bytes,
+				expectedGeneration: preflight.generation,
+				throughSeq: preflight.targetSeq,
+			});
+			if (!next.records.length) throw new Error("Analyze bounded read made no progress");
+			batch = next.records;
+		}
+	} catch (error) {
+		failure = error;
+	} finally {
+		storage?.db.close();
+		storage = undefined;
+	}
+
+	if (committedBatches > 0) {
 		let promotionProvider: any;
 		try {
+			storage = await initExperienceStorage(paths.root, { allowInit: true, userId });
 			const policy = semanticPolicyFromConfig(config);
 			promotionProvider = createEmbeddingAdapterFromConfig(config, paths.root);
-			const promotion = await promoteApprovedPendingCandidates(storage.db, { userId, law: await readConfiguredLawForRoot(paths.root), now: new Date().toISOString(), semantic: { policy, provider: promotionProvider, signal: (ctx as any).signal } });
+			const promotion = await promoteApprovedPendingCandidates(storage.db, { userId, law: await readConfiguredLawForRoot(paths.root), now: new Date().toISOString(), semantic: { policy, provider: promotionProvider, signal } });
 			if (promotion.promoted.length) {
-				const selector = await maintainSelectorVectorsAfterActiveChange(storage, (ctx as any).signal);
+				const selector = await maintainSelectorVectorsAfterActiveChange(storage, signal);
 				promotionNote = `${plural(promotion.promoted.length, "previously approved habit")} became active after receiving enough evidence.${selector.ready ? "" : " Approved-habit reminders will fail closed until local vectors are repaired from setup."}`;
 			} else if (promotion.blocked.length) promotionNote = `${plural(promotion.blocked.length, "previously approved habit")} remains safely waiting; review its reason in setup.`;
 		} catch (error: any) {
 			promotionNote = `Previously approved waiting habits need a later recheck. ${redactText(String(error?.message || error)).slice(0, 180)}`;
 		} finally {
+			storage?.db.close();
+			storage = undefined;
 			await promotionProvider?.close?.().catch(() => undefined);
 		}
-		let retentionNote = "";
-		if (!preflight.hasMore) {
+		if (newSuggestionCount > 0) {
 			try {
-				const last = batch.at(-1)!;
-				const rotation = await rotateObservationGenerationIfFullyRead(paths.root, { userId, fileGeneration: last.file_generation, seq: last.seq, checksum: last.checksum, retentionDays: config.observation_retention_days });
-				await purgeExpiredObservationArchives(paths.root);
-				if (rotation.rotated) retentionNote = `Saved source examples moved into ${config.observation_retention_days}-day private retention.`;
+				await enqueueManualBreakIn(ctx, `manual:${preflight.generation}:${preflight.startAfterSeq + 1}:${preflight.targetSeq}`, newSuggestionCount);
 			} catch (error: any) {
-				retentionNote = `Source-example cleanup needs retry; learned suggestions remain safely committed. ${redactText(String(error?.message || error)).slice(0, 180)}`;
+				breakInNote = `Review prompt needs retry; suggestions remain available in setup. ${redactText(String(error?.message || error)).slice(0, 180)}`;
 			}
 		}
-		const candidateIds = Array.isArray((result as any).result?.candidate_ids) ? (result as any).result.candidate_ids : [];
-		const pendingId = (result as any).result?.pending_review_id;
-		const inserted = (result as any).result?.inserted || {};
-		const newSuggestionCount = Number(inserted.candidates || 0) + Number(inserted.pending_review || 0);
-		const modelProposalCount = Number((result as any).diff?.proposal_count ?? candidateIds.length ?? 0);
-		if (newSuggestionCount > 0) {
-			await enqueueManualBreakIn(ctx, `manual:${expected.file_generation}:${expected.seq_start}:${expected.seq_end}`, newSuggestionCount);
+	}
+
+	const committedExamples = committedSeq - preflight.startAfterSeq;
+	if (!failure && committedSeq === preflight.targetSeq) {
+		try {
+			const rotation = await rotateObservationGenerationIfFullyRead(paths.root, { userId, fileGeneration: preflight.generation, seq: preflight.targetSeq, checksum: preflight.targetChecksum, retentionDays: config.observation_retention_days });
+			await purgeExpiredObservationArchives(paths.root);
+			if (rotation.rotated) retentionNote = `Saved source examples moved into ${config.observation_retention_days}-day private retention.`;
+			else if (rotation.reason === "new_observations_or_generation_changed") retentionNote = "New saved examples arrived during Analyze; they remain waiting for the next run.";
+		} catch (error: any) {
+			retentionNote = `Source-example cleanup needs retry; learned suggestions remain safely committed. ${redactText(String(error?.message || error)).slice(0, 180)}`;
 		}
-		const rangeLine = `Analyze saved examples finished: ${plural(batch.length, "new saved example")} checked${preflight.totalUnread > batch.length ? ` of ${preflight.totalUnread} waiting` : ""}.`;
-		const moreLine = preflight.hasMore ? "More unread examples remain; choose Analyze saved examples now again for the next bounded batch." : "All currently saved examples are analyzed.";
-		return notify(ctx, newSuggestionCount > 0 ? [
+	}
+
+	let finalLevel: "info" | "warn" = failure ? "warn" : "info";
+	let finalMessage: string;
+	if (failure) {
+		if (committedBatches === 0) finalMessage = formatAnalyzeFailure(failure);
+		else {
+			const remaining = Math.max(0, preflight.totalUnread - committedExamples);
+			const detail = redactText(String((failure as any)?.message || failure)).slice(0, 300);
+			finalMessage = [
+				`Analyze all waiting examples stopped after ${plural(committedExamples, "saved example")} across ${committedBatches} bounded ${committedBatches === 1 ? "batch" : "batches"}.`,
+				`${plural(remaining, "example")} from the starting queue ${remaining === 1 ? "remains" : "remain"} unprocessed.`,
+				"Earlier completed batches and their suggestions remain safely committed; the failed batch created no suggestions and did not advance read coverage.",
+				`Detail: ${detail}`,
+				promotionNote,
+				breakInNote,
+			].filter(Boolean).join("\n");
+		}
+	} else {
+		const rangeLine = `Analyze all waiting examples finished: ${plural(committedExamples, "saved example")} checked across ${committedBatches} bounded ${committedBatches === 1 ? "batch" : "batches"}.`;
+		const doneLine = "All examples that were waiting when Analyze started are analyzed.";
+		finalMessage = (newSuggestionCount > 0 ? [
 			rangeLine,
 			`New suggested habits created: ${newSuggestionCount}`,
-			candidateIds.length || pendingId ? "Review list updated." : "Review list updated.",
-			moreLine,
+			reviewUpdated ? "Review list updated." : "Suggestions and supporting evidence updated.",
+			doneLine,
 			promotionNote,
 			retentionNote,
+			breakInNote,
 			"Next: open /experience setup and choose Review suggested habits.",
-		].filter(Boolean).join("\n") : modelProposalCount > 0 ? [
+		] : modelProposalCount > 0 ? [
 			rangeLine,
 			"No new suggestions were created; these examples matched existing suggestions.",
-			moreLine,
+			doneLine,
 			promotionNote,
 			retentionNote,
+			breakInNote,
 			"Next: open /experience setup and choose Review suggested habits, or capture more examples before analyzing again.",
-		].filter(Boolean).join("\n") : [
+		] : [
 			rangeLine,
 			"No repeated habit was strong enough to review yet.",
 			"A suggestion needs at least 3 supporting examples across 2 different days, including prior compact evidence.",
-			moreLine,
+			doneLine,
 			promotionNote,
 			retentionNote,
-		].filter(Boolean).join("\n"), "info");
-	} catch (error: any) {
-		return notify(ctx, formatAnalyzeFailure(error), "warn");
-	} finally {
-		storage?.db.close();
-		await lock.release();
+			breakInNote,
+		]).filter(Boolean).join("\n");
 	}
+	try {
+		await lock.release();
+	} catch (error: any) {
+		finalLevel = "warn";
+		finalMessage = `${finalMessage}\nAnalyze lock cleanup needs manual recovery. ${redactText(String(error?.message || error)).slice(0, 180)}`;
+	}
+	return notify(ctx, finalMessage, finalLevel);
 }
 
 async function handleAnalyzeNow(ctx: ExtensionCommandContext) {
@@ -1560,42 +1653,66 @@ async function handleAnalyzeNow(ctx: ExtensionCommandContext) {
 		const auth = await configuredModelAuthenticated(ctx, model);
 		if (!auth.ok) return notify(ctx, `Choose an authenticated habit-learning model in /experience setup first. Current model: ${redactText(model)}. Detail: ${auth.reason}`, "warn");
 	}
-	const jobKey = `${paths.root}:${getConfiguredUserId()}`;
-	if (analyzeJobs.has(jobKey)) return notify(ctx, "Analyze saved examples is already running. Pi remains usable; come back to /experience setup and choose Review suggested habits after it finishes.", "info");
+	const userId = getConfiguredUserId();
+	const jobKey = `${paths.root}:${userId}`;
+	if (analyzeJobs.has(jobKey)) return notify(ctx, "Analyze all waiting examples is already running. Pi remains usable; come back to /experience setup and choose Review suggested habits after it finishes.", "info");
 	const lock = await acquireAnalyzeLock(paths.root);
-	if (!lock) return notify(ctx, "Analyze saved examples is already running. Pi remains usable; come back to /experience setup and choose Review suggested habits after it finishes.", "info");
+	if (!lock) return notify(ctx, "Analyze all waiting examples is already running. Pi remains usable; come back to /experience setup and choose Review suggested habits after it finishes.", "info");
 	let range: Awaited<ReturnType<typeof readValidatedObservationRange>>;
 	let habitContext: CompactHabitContextItem[] = [];
+	let generation = "";
+	let targetSeq = 0;
+	let targetChecksum: string | null = null;
+	let startAfterSeq = 0;
 	try {
-		const userId = getConfiguredUserId();
 		let storage: Awaited<ReturnType<typeof initExperienceStorage>> | undefined;
-		let generation: string;
 		let watermark: ReturnType<typeof getProposalReadWatermark> = null;
 		try {
 			storage = await initExperienceStorage(paths.root, { allowInit: true, userId });
-			generation = (await readCurrentObservationManifest(paths.root)).file_generation;
+			const manifest = await readCurrentObservationManifest(paths.root);
+			generation = manifest.file_generation;
+			targetSeq = manifest.last_seq;
+			targetChecksum = manifest.last_checksum;
 			watermark = getProposalReadWatermark(storage.db, userId, generation);
+			startAfterSeq = watermark?.seq || 0;
 			habitContext = buildCompactHabitContext(storage.db, { userId, limit: 60 });
 		} finally {
 			storage?.db.close();
 		}
-		range = await readValidatedObservationRange(paths.root, { userId, afterSeq: watermark?.seq || 0, afterChecksum: watermark?.checksum || null, maxRecords: config.analyze_batch_max_records, maxBytes: config.analyze_batch_max_bytes });
-		if (range.manifest.file_generation !== generation) throw new Error("Observation generation changed during Analyze preflight; retry");
+		if (startAfterSeq > targetSeq) throw new Error("Analyze watermark is beyond the current observation snapshot");
+		if (startAfterSeq === targetSeq) {
+			if (targetSeq > 0 && (!targetChecksum || watermark?.checksum !== targetChecksum)) throw new Error("Analyze watermark checksum does not match the current observation snapshot");
+			await lock.release();
+			return notify(ctx, targetSeq > 0 ? "All currently saved examples were already analyzed. Capture more examples before analyzing again." : "No saved examples yet. Turn on Save chat examples locally, have a normal conversation, then choose Analyze all waiting examples now.", "info");
+		}
+		if (!targetChecksum) throw new Error("Observation snapshot checksum is missing");
+		range = await readValidatedObservationRange(paths.root, {
+			userId,
+			afterSeq: startAfterSeq,
+			afterChecksum: watermark?.checksum || null,
+			maxRecords: config.analyze_batch_max_records,
+			maxBytes: config.analyze_batch_max_bytes,
+			expectedGeneration: generation,
+			throughSeq: targetSeq,
+		});
 	} catch (error: any) {
 		await lock.release();
 		const raw = String(error?.message || error);
-		return notify(ctx, `No readable saved examples yet. Turn on Save chat examples locally, have a normal conversation, then choose Analyze saved examples now. Detail: ${redactText(raw).slice(0, 300)}`, "warn");
+		return notify(ctx, `No readable saved examples yet. Turn on Save chat examples locally, have a normal conversation, then choose Analyze all waiting examples now. Detail: ${redactText(raw).slice(0, 300)}`, "warn");
 	}
 	if (range.records.length < 1) {
 		await lock.release();
-		return notify(ctx, range.manifest.last_seq > 0 ? "All currently saved examples were already analyzed. Capture more examples before analyzing again." : "No saved examples yet. Turn on Save chat examples locally, have a normal conversation, then choose Analyze saved examples now.", "info");
+		return notify(ctx, "Analyze could not read the first bounded batch safely. No examples were processed.", "warn");
 	}
-	const job = runAnalyzeNowJob(ctx, { lock, observations: range.records, habitContext, hasMore: range.has_more, totalUnread: range.total_unread }).finally(() => analyzeJobs.delete(jobKey));
+	const totalUnread = targetSeq - startAfterSeq;
+	// Yield past the command handler so submitted text renders before any model work starts.
+	const job = new Promise<void>((resolve) => setImmediate(resolve))
+		.then(() => runAnalyzeNowJob(ctx, { lock, observations: range.records, habitContext, generation, targetSeq, targetChecksum: targetChecksum!, startAfterSeq, totalUnread, config, userId, paths }))
+		.finally(() => analyzeJobs.delete(jobKey));
 	analyzeJobs.set(jobKey, job);
 	void job.catch((error) => notify(ctx, formatAnalyzeFailure(error), "warn"));
-	return notify(ctx, "Analyze saved examples started. Pi remains usable while the model works. I’ll post a message here when suggestions are ready, then use /experience setup → Review suggested habits.", "info");
+	return notify(ctx, `Analyze all waiting examples started: ${plural(totalUnread, "saved example")} queued. Pi remains usable while the model works through bounded batches. I’ll post one summary when the starting queue is finished; newer examples wait for the next run.`, "info");
 }
-
 function reviewItemSource(item: any): any {
 	if (item?.type === "candidate") return { ...(item.payload || {}), condition: item.condition, behavior: item.behavior, polarity: item.polarity, confidence_bp: item.confidence_bp, status: item.status };
 	return item?.payload;
@@ -1649,7 +1766,7 @@ function formatReviewActionForHuman(action: "Approve" | "Reject", result: any): 
 
 function formatReviewListForHuman(list: any): string {
 	const items = Array.isArray(list?.items) ? list.items : [];
-	if (!items.length) return "No suggested habits are waiting for review. Open /experience setup and choose Analyze saved examples now to create suggestions.";
+	if (!items.length) return "No suggested habits are waiting for review. Open /experience setup and choose Analyze all waiting examples now to create suggestions.";
 	return ["Suggested habits waiting for review:", "", ...items.map((item: any, index: number) => formatReviewListItemForHuman(item, index)), "", "Choose Review # in the menu to inspect full details, then approve or reject."].join("\n\n");
 }
 
@@ -1869,7 +1986,7 @@ function formatDuplicateConfirmation(choice: DuplicateResolutionChoice, item: an
 
 async function handleDuplicateResolutionSetup(ctx: ExtensionCommandContext) {
 	const paths = getAgentExperiencePaths();
-	if (!(await fileExists(resolvePrivatePath(paths.root, "ledger.sqlite")))) return notify(ctx, "No habit ledger yet. Choose Analyze saved examples now after saving examples.", "info");
+	if (!(await fileExists(resolvePrivatePath(paths.root, "ledger.sqlite")))) return notify(ctx, "No habit ledger yet. Choose Analyze all waiting examples now after saving examples.", "info");
 	duplicateList: while (true) {
 		const data = await withExistingReviewStorage(async (storage) => {
 			const duplicates = listHabitDuplicates(storage.db, { userId: storage.userId, decision: "pending" });
@@ -1950,7 +2067,7 @@ async function recheckApprovedWaitingHabits(ctx: ExtensionCommandContext) {
 
 async function handleApprovedHabitsSetup(ctx: ExtensionCommandContext) {
 	const paths = getAgentExperiencePaths();
-	if (!(await fileExists(resolvePrivatePath(paths.root, "ledger.sqlite")))) return notify(ctx, "No approved habits yet. Choose Analyze saved examples now, then Review suggested habits and approve one first.", "info");
+	if (!(await fileExists(resolvePrivatePath(paths.root, "ledger.sqlite")))) return notify(ctx, "No approved habits yet. Choose Analyze all waiting examples now, then Review suggested habits and approve one first.", "info");
 	while (true) {
 		let habits: any[];
 		let waiting: any[];
@@ -2000,7 +2117,7 @@ async function handleApprovedHabitsSetup(ctx: ExtensionCommandContext) {
 
 async function handleReviewSetup(ctx: ExtensionContext) {
 	const paths = getAgentExperiencePaths();
-	if (!(await fileExists(resolvePrivatePath(paths.root, "ledger.sqlite")))) return notify(ctx, "No review list yet. Choose Analyze saved examples now first.", "info");
+	if (!(await fileExists(resolvePrivatePath(paths.root, "ledger.sqlite")))) return notify(ctx, "No review list yet. Choose Analyze all waiting examples now first.", "info");
 	while (true) {
 		let list: any;
 		try {
@@ -2305,7 +2422,7 @@ async function handleSetup(ctx: ExtensionCommandContext, args: string[] = []) {
 			else if (choice === "Turn all experience features off") await handleOff(ctx);
 			else if (choice.startsWith("Choose model for habit learning")) await handleSetupModel(ctx);
 			else if (choice.startsWith("Choose model for habit assessment")) await handleSetupAssessmentModel(ctx);
-			else if (choice === "Analyze saved examples now") { await handleAnalyzeNow(ctx); return; }
+			else if (choice === "Analyze all waiting examples now") { await handleAnalyzeNow(ctx); return; }
 			else if (choice.startsWith("Automatic schedule")) await handleSetupTimer(ctx);
 			else if (choice.includes("Break-in review prompts")) await handleSetupBreakIn(ctx);
 			else if (choice.includes("Use approved habits before replies")) await handleSetupUseHabitsToggle(ctx, !config.selector_enabled);
@@ -2348,7 +2465,7 @@ async function handleOn(ctx: ExtensionCommandContext) {
 			"Agent Experience is ON.",
 			`Config file: ${path}`,
 			"Save chat examples locally: ON",
-			"Analyze saved examples now: available from /experience setup after choosing a model",
+			"Analyze all waiting examples now: available from /experience setup after choosing a model",
 			`Use approved habits before replies: ${config.selector_enabled ? "ON" : "OFF until enabled from setup"}`,
 			`Automatic schedule: ${config.timer_enabled ? "ON" : "OFF until explicitly enabled from setup"}`,
 			`Break-in review prompts: ${config.break_in_enabled ? "ON" : "OFF until explicitly enabled from setup"}`,
@@ -2381,7 +2498,7 @@ async function handleOff(ctx: ExtensionCommandContext) {
 			"Agent Experience is OFF.",
 			`Config file: ${path}`,
 			"Save chat examples locally: OFF",
-			"Analyze saved examples now: OFF",
+			"Analyze all waiting examples now: OFF",
 			"Use approved habits before replies: OFF",
 			"Automatic schedule: OFF (unit files, if any, are retained)",
 			"Off drops in-memory capture buffers without writing observations. Existing records are preserved.",
@@ -2515,7 +2632,7 @@ async function handleReview(args: string[], ctx: ExtensionCommandContext) {
 		return notify(ctx, [
 			"No review list yet.",
 			"Saved examples can exist before suggestions are created.",
-			"Open /experience setup and choose Analyze saved examples now to create suggestions, or explicitly enable the local daily schedule.",
+			"Open /experience setup and choose Analyze all waiting examples now to create suggestions, or explicitly enable the local daily schedule.",
 			"Scheduled Analyze calls the selected model only when unread examples exist and never approves suggestions automatically.",
 		].join("\n"), "info");
 	}
@@ -2627,7 +2744,7 @@ async function handleConsolidation(command: string | undefined, ctx: ExtensionCo
 	notify(
 		ctx,
 		[
-			`Analyze saved examples now from setup: ${value === "on" ? "ON" : "OFF"}`,
+			`Analyze all waiting examples now from setup: ${value === "on" ? "ON" : "OFF"}`,
 			`Config file: ${path}`,
 			config.timer_enabled ? "Daily scheduled Analyze remains ON." : "No timer starts automatically; schedule changes require explicit confirmation in /experience setup.",
 			`Save chat examples locally: ${config.enabled && config.capture_enabled ? "ON" : "OFF"}`,
@@ -2686,7 +2803,8 @@ function usage(topic = "") {
 		return [
 			"Agent Experience setup:",
 			"/experience setup                         # complete control panel and fallback",
-			"Inside that menu: save examples, choose model, analyze saved examples, review suggestions, review approved habits, disable/re-enable habits, and use approved habits.",
+			"/experience analyze                       # analyze all examples waiting when this action starts",
+			"Inside setup: save examples, choose model, Analyze all waiting examples, review suggestions, review approved habits, disable/re-enable habits, and use approved habits.",
 			"Use arrow keys plus Space/Enter on menu rows. No typed setup subcommands are required for normal use. Checkbox rows show [x]/[ ].",
 			"Automatic schedule is optional and explicit: local Linux systemd at 03:30 system-local time with persistent catch-up and one sanitized next-session receipt.",
 		].join("\n");
@@ -2741,7 +2859,7 @@ function usage(topic = "") {
 		"Agent Experience:",
 		"Discuss a pattern naturally, review Pi's exact When/Do draft, then confirm it in a later message to save a directly declared habit.",
 		"Ask Pi to show numbered suggestions/duplicates for conversational review, or use /experience setup as the complete control panel.",
-		"Inside setup: save examples, choose model, analyze saved examples, review suggestions, approve/reject, and use approved habits.",
+		"Inside setup: save examples, choose model, Analyze all waiting examples, review suggestions, approve/reject, and use approved habits.",
 		"No typed subcommand, internal ID, or checksum is required for normal declaration, setup, analysis, review, approval, or approved-habit reminders.",
 		"Automatic schedule is optional, local, and confirmation-gated. Scheduled suggestions are never auto-approved.",
 	].join("\n");
@@ -2933,6 +3051,10 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 					return;
 				case "review":
 					await handleReview(tokens.slice(1), ctx);
+					return;
+				case "analyze":
+				case "analyze-now":
+					await handleAnalyzeNow(ctx);
 					return;
 				case "capture":
 					await handleCapture(subcommand, ctx);

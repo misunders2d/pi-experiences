@@ -21,7 +21,7 @@ function usage() {
   return [
     'Usage: experience-consolidate status|now|scheduled [--dry-run] [--fixture-output FILE] [--root DIR] [--user USER] [--generation active] [--pi-runtime-root DIR]',
     'Advanced runtime/maintainer CLI. Normal users should use only /experience setup.',
-    'The setup menu contains model selection, Analyze saved examples now, review, approved-habit controls, and explicit local schedule management.',
+    'The setup menu contains model selection, Analyze all waiting examples now, review, approved-habit controls, and explicit local schedule management.',
     '--dry-run produces reviewable output and must not advance watermarks or mutate ledger state.',
     'Without a fixture/model adapter, the CLI fails closed rather than guessing model output.',
   ].join('\n');
@@ -88,7 +88,7 @@ async function main() {
   }
   if (command !== 'now') throw new Error(usage());
   if (!config.enabled) throw new Error('learning_disabled: enable saving examples from /experience setup before using this advanced CLI');
-  if (!config.consolidation_enabled) throw new Error('learning_disabled: enable Analyze saved examples now from /experience setup before using this advanced CLI');
+  if (!config.consolidation_enabled) throw new Error('learning_disabled: enable Analyze all waiting examples now from /experience setup before using this advanced CLI');
   const fixturePath = argValue(args, '--fixture-output');
   if (!fixturePath) throw new Error('consolidation_model_adapter_unavailable: provide --fixture-output for package-local dry-run/test, or run through an approved Pi adapter path');
   const generation = argValue(args, '--generation') || 'active';

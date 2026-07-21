@@ -120,7 +120,8 @@ try {
   const conflictResult = await processValidatedModelOutput({ db: storage.db, userId: 'owner', output: conflict, observations });
   assert.ok(conflictResult.pending_review_id, 'merge conflict must route to pending review');
   assert.equal(storage.db.prepare('SELECT COUNT(*) AS count FROM pending_review WHERE user_id = ? AND status = ?').get('owner', 'open').count, 1);
-  assert.equal(storage.db.prepare('SELECT seq FROM proposal_read_watermarks WHERE user_id = ? AND file_generation = ?').get('owner', 'active').seq, 2, 'pending review conflict must not advance read coverage');
+  assert.equal(conflictResult.read_watermark_after.seq, 2, 'pending-review conflict must return verified read coverage even on an idempotent range');
+  assert.equal(storage.db.prepare('SELECT seq FROM proposal_read_watermarks WHERE user_id = ? AND file_generation = ?').get('owner', 'active').seq, 2, 'idempotent pending-review conflict must preserve verified read coverage');
 
   const quarantine = insertModelOutputQuarantine(storage.db, { userId: 'owner', fileGeneration: 'active', seqStart: 1, seqEnd: 2, reason: 'invalid_json', model: 'openai-codex/gpt-5.5', output: { bad: 'phase4b@example.invalid' }, createdAt: '2026-07-07T01:02:00.000Z' });
   const quarantineAgain = insertModelOutputQuarantine(storage.db, { userId: 'owner', fileGeneration: 'active', seqStart: 1, seqEnd: 2, reason: 'invalid_json', model: 'openai-codex/gpt-5.5', output: { bad: 'phase4b@example.invalid' }, createdAt: '2026-07-07T01:02:00.000Z' });
@@ -136,6 +137,17 @@ try {
   const skipped = validateModelOutputBatch(modelOutput(fourObservations, { batch_id: 'skip-batch', observations_read: { seq_start: 4, seq_end: 4, checksum: fourObservations.at(-1).checksum }, proposals: [] }), 'owner');
   await assert.rejects(() => processValidatedModelOutput({ db: storage.db, userId: 'owner', output: skipped, observations: fourObservations }), /skip/i);
   assert.equal(storage.db.prepare('SELECT seq FROM proposal_read_watermarks WHERE user_id = ? AND file_generation = ?').get('owner', 'active').seq, 2, 'skipped coverage failure must not advance read coverage');
+
+  const nextObservations = fourObservations.slice(2);
+  const nextConflictBase = modelOutput(nextObservations).proposals[0];
+  const nextConflict = validateModelOutputBatch(modelOutput(nextObservations, { batch_id: 'next-conflict-batch', proposals: [
+    { ...nextConflictBase, proposal_id: 'next-conflict-a', candidate_key: 'same-next-key', behavior: 'Give concise answers' },
+    { ...nextConflictBase, proposal_id: 'next-conflict-b', candidate_key: 'same-next-key', behavior: 'Give detailed answers' },
+  ] }), 'owner');
+  const nextConflictResult = await processValidatedModelOutput({ db: storage.db, userId: 'owner', output: nextConflict, observations: fourObservations });
+  assert.ok(nextConflictResult.pending_review_id, 'a later conflict range must route to pending review');
+  assert.equal(nextConflictResult.read_watermark_after.seq, 4, 'pending-review conflict must atomically advance verified read coverage so manual Analyze can continue');
+  assert.equal(storage.db.prepare('SELECT seq FROM proposal_read_watermarks WHERE user_id = ? AND file_generation = ?').get('owner', 'active').seq, 4, 'pending-review conflict coverage must persist');
 
   const payload = buildProposalModelPayloadForTest({ userId: 'owner', model: 'openai-codex/gpt-5.5', observations });
   assert.equal(canonicalJson(payload).includes('phase4b@example.invalid'), false, 'model payload must use redacted/safe observations only');

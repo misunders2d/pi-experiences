@@ -439,7 +439,7 @@ export async function appendObservation(root: string, input: AppendObservationIn
 	}, { waitMs: 10_000 });
 }
 
-export async function readValidatedObservationRange(root: string, input: { userId?: string; afterSeq?: number; afterChecksum?: string | null; maxRecords?: number; maxBytes?: number }): Promise<ObservationRangeResult> {
+export async function readValidatedObservationRange(root: string, input: { userId?: string; afterSeq?: number; afterChecksum?: string | null; maxRecords?: number; maxBytes?: number; expectedGeneration?: string; throughSeq?: number }): Promise<ObservationRangeResult> {
 	const privateRoot = await ensurePrivateRoot(root);
 	const userId = normalizeUserId(input.userId);
 	const afterSeq = Math.max(0, Math.trunc(input.afterSeq || 0));
@@ -447,14 +447,17 @@ export async function readValidatedObservationRange(root: string, input: { userI
 	const maxBytes = Math.max(MAX_RECORD_BYTES + 1, Math.min(2_000_000, Math.trunc(input.maxBytes || DEFAULT_RANGE_BYTES)));
 	return withOwnedLock(privateRoot, LOCK_NAME, async () => {
 		const manifest = await loadStateLocked(privateRoot);
+		if (input.expectedGeneration && manifest.file_generation !== input.expectedGeneration) throw new Error("Observation generation changed during bounded read");
+		const throughSeq = input.throughSeq === undefined ? manifest.last_seq : Math.trunc(input.throughSeq);
+		if (!Number.isInteger(throughSeq) || throughSeq < afterSeq || throughSeq > manifest.last_seq) throw new Error("Observation read boundary is invalid");
 		if (afterSeq > manifest.last_seq) throw new Error("Observation read watermark is beyond current generation");
 		if (afterSeq > 0) {
 			const previous = await readRecordAt(privateRoot, manifest, afterSeq);
 			if (previous.user_id !== userId || previous.checksum !== input.afterChecksum) throw new Error("Observation read watermark checksum mismatch");
 		} else if (input.afterChecksum) throw new Error("Observation read watermark checksum without sequence");
-		if (afterSeq === manifest.last_seq) return { manifest, records: [], has_more: false, total_unread: 0, bytes_read: 0 };
+		if (afterSeq === throughSeq) return { manifest, records: [], has_more: false, total_unread: 0, bytes_read: 0 };
 		const startOffset = afterSeq === 0 ? 0 : await readOffset(resolvePrivatePath(privateRoot, OBSERVATIONS_INDEX), afterSeq);
-		const desiredCount = Math.min(maxRecords, manifest.last_seq - afterSeq);
+		const desiredCount = Math.min(maxRecords, throughSeq - afterSeq);
 		const indexHandle = await open(resolvePrivatePath(privateRoot, OBSERVATIONS_INDEX), constants.O_RDONLY);
 		const offsetsBuffer = Buffer.alloc(desiredCount * INDEX_ENTRY_BYTES);
 		try {
@@ -491,7 +494,7 @@ export async function readValidatedObservationRange(root: string, input: { userI
 			previousRef = pairRef(record);
 		}
 		if (records.length !== count) throw new Error("Observation range record count mismatch");
-		return { manifest, records, has_more: afterSeq + count < manifest.last_seq, total_unread: manifest.last_seq - afterSeq, bytes_read: length };
+		return { manifest, records, has_more: afterSeq + count < throughSeq, total_unread: throughSeq - afterSeq, bytes_read: length };
 	}, { waitMs: 10_000 });
 }
 

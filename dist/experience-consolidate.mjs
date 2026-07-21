@@ -756,14 +756,17 @@ async function readValidatedObservationRange(root, input) {
   const maxBytes = Math.max(MAX_RECORD_BYTES + 1, Math.min(2e6, Math.trunc(input.maxBytes || DEFAULT_RANGE_BYTES)));
   return withOwnedLock(privateRoot, LOCK_NAME, async () => {
     const manifest = await loadStateLocked(privateRoot);
+    if (input.expectedGeneration && manifest.file_generation !== input.expectedGeneration) throw new Error("Observation generation changed during bounded read");
+    const throughSeq = input.throughSeq === void 0 ? manifest.last_seq : Math.trunc(input.throughSeq);
+    if (!Number.isInteger(throughSeq) || throughSeq < afterSeq || throughSeq > manifest.last_seq) throw new Error("Observation read boundary is invalid");
     if (afterSeq > manifest.last_seq) throw new Error("Observation read watermark is beyond current generation");
     if (afterSeq > 0) {
       const previous = await readRecordAt(privateRoot, manifest, afterSeq);
       if (previous.user_id !== userId || previous.checksum !== input.afterChecksum) throw new Error("Observation read watermark checksum mismatch");
     } else if (input.afterChecksum) throw new Error("Observation read watermark checksum without sequence");
-    if (afterSeq === manifest.last_seq) return { manifest, records: [], has_more: false, total_unread: 0, bytes_read: 0 };
+    if (afterSeq === throughSeq) return { manifest, records: [], has_more: false, total_unread: 0, bytes_read: 0 };
     const startOffset = afterSeq === 0 ? 0 : await readOffset(resolvePrivatePath(privateRoot, OBSERVATIONS_INDEX), afterSeq);
-    const desiredCount = Math.min(maxRecords, manifest.last_seq - afterSeq);
+    const desiredCount = Math.min(maxRecords, throughSeq - afterSeq);
     const indexHandle = await open3(resolvePrivatePath(privateRoot, OBSERVATIONS_INDEX), constants2.O_RDONLY);
     const offsetsBuffer = Buffer.alloc(desiredCount * INDEX_ENTRY_BYTES);
     try {
@@ -808,7 +811,7 @@ async function readValidatedObservationRange(root, input) {
       previousRef = pairRef(record);
     }
     if (records.length !== count) throw new Error("Observation range record count mismatch");
-    return { manifest, records, has_more: afterSeq + count < manifest.last_seq, total_unread: manifest.last_seq - afterSeq, bytes_read: length };
+    return { manifest, records, has_more: afterSeq + count < throughSeq, total_unread: throughSeq - afterSeq, bytes_read: length };
   }, { waitMs: 1e4 });
 }
 function rotationChecksum(base) {
@@ -3093,14 +3096,17 @@ async function consolidateProposalBatch(input) {
   }
   return result;
 }
-function recordZeroProposalReadCoverage(input) {
+function recordProposalReadCoverageInTransaction(input) {
   const userId = normalizeUserId(input.userId);
   if (input.last.user_id !== userId || input.last.file_generation !== input.fileGeneration) throw new Error("Proposal read coverage observation mismatch");
+  const watermark = upsertProposalReadWatermark(input.db, { userId, fileGeneration: input.fileGeneration, seqStart: input.seqStart, seqEnd: input.last.seq, checksum: input.last.checksum, updatedAt: input.createdAt });
+  return { watermark_after: watermark.row, inserted: { read_watermark: watermark.changed } };
+}
+function recordZeroProposalReadCoverage(input) {
   let result;
   input.db.exec("BEGIN IMMEDIATE");
   try {
-    const watermark = upsertProposalReadWatermark(input.db, { userId, fileGeneration: input.fileGeneration, seqStart: input.seqStart, seqEnd: input.last.seq, checksum: input.last.checksum, updatedAt: input.createdAt });
-    result = { watermark_after: watermark.row, inserted: { read_watermark: watermark.changed } };
+    result = recordProposalReadCoverageInTransaction(input);
     input.db.exec("COMMIT");
   } catch (error) {
     try {
@@ -3376,9 +3382,11 @@ async function processValidatedModelOutput(input) {
   const conflict = findCandidateKeyConflict(input.output);
   if (conflict) {
     let pending;
+    let readCoverage;
     input.db.exec("BEGIN IMMEDIATE");
     try {
       pending = insertPendingReview(input.db, { userId, kind: "candidate_key_conflict", payload: { file_generation: input.output.file_generation, seq_start: input.output.seq_start, seq_end: input.output.seq_end, conflict }, createdAt: input.output.created_at });
+      readCoverage = recordProposalReadCoverageInTransaction({ db: input.db, userId, fileGeneration: input.output.file_generation, seqStart: input.output.seq_start, last: sourceLast, createdAt: input.output.created_at });
       input.db.exec("COMMIT");
     } catch (error) {
       try {
@@ -3387,7 +3395,7 @@ async function processValidatedModelOutput(input) {
       }
       throw error;
     }
-    return { user_id: userId, file_generation: input.output.file_generation, candidate_ids: [], evidence_ids: [], watermark_after: null, pending_review_id: pending.id, inserted: { pending_review: pending.inserted ? 1 : 0 } };
+    return { user_id: userId, file_generation: input.output.file_generation, candidate_ids: [], evidence_ids: [], watermark_after: null, read_watermark_after: readCoverage.watermark_after, pending_review_id: pending.id, inserted: { pending_review: pending.inserted ? 1 : 0, read_watermark: readCoverage.inserted.read_watermark } };
   }
   if (input.output.proposals.length === 0) {
     const zero = recordZeroProposalReadCoverage({ db: input.db, userId, fileGeneration: input.output.file_generation, seqStart: input.output.seq_start, last: sourceLast, createdAt: input.output.created_at });
@@ -4338,7 +4346,7 @@ init_private_root();
 init_observations();
 async function acquireAnalyzeLock(root) {
   try {
-    return await acquireOwnedLock(root, "analyze", { waitMs: 0, staleMs: 2 * 60 * 6e4 });
+    return await acquireOwnedLock(root, "analyze", { waitMs: 0, staleMs: 24 * 60 * 6e4 });
   } catch (error) {
     if (/Could not acquire/.test(String(error?.message || error))) return void 0;
     throw error;
@@ -4367,6 +4375,7 @@ async function runScheduledAnalyzeCore(input) {
       userId,
       afterSeq: watermark?.seq || 0,
       afterChecksum: watermark?.checksum || null,
+      expectedGeneration: generation,
       maxRecords: input.config.analyze_batch_max_records,
       maxBytes: input.config.analyze_batch_max_bytes
     });
@@ -4616,7 +4625,7 @@ function usage() {
   return [
     "Usage: experience-consolidate status|now|scheduled [--dry-run] [--fixture-output FILE] [--root DIR] [--user USER] [--generation active] [--pi-runtime-root DIR]",
     "Advanced runtime/maintainer CLI. Normal users should use only /experience setup.",
-    "The setup menu contains model selection, Analyze saved examples now, review, approved-habit controls, and explicit local schedule management.",
+    "The setup menu contains model selection, Analyze all waiting examples now, review, approved-habit controls, and explicit local schedule management.",
     "--dry-run produces reviewable output and must not advance watermarks or mutate ledger state.",
     "Without a fixture/model adapter, the CLI fails closed rather than guessing model output."
   ].join("\n");
@@ -4685,7 +4694,7 @@ async function main() {
   }
   if (command !== "now") throw new Error(usage());
   if (!config.enabled) throw new Error("learning_disabled: enable saving examples from /experience setup before using this advanced CLI");
-  if (!config.consolidation_enabled) throw new Error("learning_disabled: enable Analyze saved examples now from /experience setup before using this advanced CLI");
+  if (!config.consolidation_enabled) throw new Error("learning_disabled: enable Analyze all waiting examples now from /experience setup before using this advanced CLI");
   const fixturePath = argValue(args, "--fixture-output");
   if (!fixturePath) throw new Error("consolidation_model_adapter_unavailable: provide --fixture-output for package-local dry-run/test, or run through an approved Pi adapter path");
   const generation = argValue(args, "--generation") || "active";

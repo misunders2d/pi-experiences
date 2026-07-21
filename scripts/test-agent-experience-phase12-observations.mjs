@@ -47,6 +47,22 @@ async function assertBoundedAppendAndCrashRecovery() {
     assert.deepEqual(first.records.map((row) => row.seq), [1, 2, 3]);
     const second = await readValidatedObservationRange(root, { userId: 'owner', afterSeq: 3, afterChecksum: first.records.at(-1).checksum, maxRecords: 3, maxBytes: 70000 });
     assert.deepEqual(second.records.map((row) => row.seq), [4, 5, 6]);
+    const snapshotManifest = await readCurrentObservationManifest(root);
+    const snapshotBounded = await readValidatedObservationRange(root, { userId: 'owner', afterSeq: 3, afterChecksum: first.records.at(-1).checksum, maxRecords: 10, maxBytes: 70000, expectedGeneration: snapshotManifest.file_generation, throughSeq: 5 });
+    assert.deepEqual(snapshotBounded.records.map((row) => row.seq), [4, 5], 'snapshot-bounded reads must stop at the action-start sequence even when newer records exist');
+    assert.equal(snapshotBounded.total_unread, 2);
+    assert.equal(snapshotBounded.has_more, false);
+    const snapshotBatch1 = await readValidatedObservationRange(root, { userId: 'owner', maxRecords: 2, maxBytes: 70000, expectedGeneration: snapshotManifest.file_generation, throughSeq: 6 });
+    assert.deepEqual(snapshotBatch1.records.map((row) => row.seq), [1, 2]);
+    assert.equal(snapshotBatch1.has_more, true);
+    const snapshotBatch2 = await readValidatedObservationRange(root, { userId: 'owner', afterSeq: 2, afterChecksum: snapshotBatch1.records.at(-1).checksum, maxRecords: 2, maxBytes: 70000, expectedGeneration: snapshotManifest.file_generation, throughSeq: 6 });
+    assert.deepEqual(snapshotBatch2.records.map((row) => row.seq), [3, 4]);
+    assert.equal(snapshotBatch2.has_more, true);
+    const snapshotBatch3 = await readValidatedObservationRange(root, { userId: 'owner', afterSeq: 4, afterChecksum: snapshotBatch2.records.at(-1).checksum, maxRecords: 2, maxBytes: 70000, expectedGeneration: snapshotManifest.file_generation, throughSeq: 6 });
+    assert.deepEqual(snapshotBatch3.records.map((row) => row.seq), [5, 6]);
+    assert.equal(snapshotBatch3.has_more, false, 'final batch must close a fixed snapshot after three bounded reads');
+    await assert.rejects(() => readValidatedObservationRange(root, { userId: 'owner', expectedGeneration: 'wrong-generation', throughSeq: 5 }), /generation changed/i);
+    await assert.rejects(() => readValidatedObservationRange(root, { userId: 'owner', throughSeq: snapshotManifest.last_seq + 1 }), /boundary is invalid/i);
     await assert.rejects(() => readValidatedObservationRange(root, { userId: 'other', afterSeq: 3, afterChecksum: first.records.at(-1).checksum }), /user_id mismatch|watermark checksum/i);
 
     const manifest = await readCurrentObservationManifest(root);

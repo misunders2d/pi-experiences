@@ -4,7 +4,7 @@ from pathlib import Path
 if len(sys.argv)<3: raise SystemExit('usage: test-installed-tui-smoke.py INSTALLED_PACKAGE TRANSCRIPT')
 package=str(Path(sys.argv[1]).resolve()); transcript=Path(sys.argv[2]).resolve()
 state=Path(os.environ.get('AX_STATE_ROOT','/tmp/pi-experiences-047-tui-smoke-state')).resolve(); shutil.rmtree(state,ignore_errors=True); state.mkdir(parents=True,exist_ok=True)
-work=state.parent/'pi-experiences-0.1.48-tui-work'; work.mkdir(parents=True,exist_ok=True)
+work=state.parent/'pi-experiences-0.1.49-tui-work'; work.mkdir(parents=True,exist_ok=True)
 raw=bytearray(); csi=re.compile(rb'\x1b\[[0-?]*[ -/]*[@-~]'); osc=re.compile(rb'\x1b\][^\x07]*(?:\x07|\x1b\\)')
 def clean(data): return csi.sub(b'',osc.sub(b'',data)).replace(b'\r',b'\n').decode('utf-8','replace')
 def text(start=0): return clean(bytes(raw[start:]))
@@ -37,7 +37,7 @@ try:
     wait(fd,r'0\.0%/',timeout=12)
     mark=len(raw); send(fd,b'/experience setup\r',.5); wait(fd,r'Agent Experience setup',start=mark)
     initial=text(mark)
-    for label in ['Save chat examples locally','Choose model for habit learning','Choose model for habit assessment','Analyze saved examples now','Review suggested habits','Resolve duplicate habits','Review approved habits','Prevent duplicate habits','Keep analyzed source examples','Use approved habits before replies','Automatic schedule','Break-in review prompts','Show current settings','Explain these settings','Done']:
+    for label in ['Save chat examples locally','Choose model for habit learning','Choose model for habit assessment','Analyze all waiting examples now','Review suggested habits','Resolve duplicate habits','Review approved habits','Prevent duplicate habits','Keep analyzed source examples','Use approved habits before replies','Automatic schedule','Break-in review prompts','Show current settings','Explain these settings','Done']:
         assert label in initial, f'missing setup row: {label}'
     assert not re.search(r'OPENAI_API_KEY|embedding provider|dimensions|\b[0-9]{4}bp\b|checksum|source_refs|prompt_hash',initial,re.I)
     # Model chooser; Escape returns to setup.

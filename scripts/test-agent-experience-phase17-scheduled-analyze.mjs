@@ -165,6 +165,45 @@ try {
   assert.equal(result.checked, 1);
   assert.equal(result.new_suggestions, 0);
 
+  const boundedRoot = join(temp, 'scheduled-bounded');
+  for (let index = 1; index <= 3; index += 1) {
+    await appendObservation(boundedRoot, {
+      userId: 'owner',
+      origin: { source: 'test' },
+      payload: { kind: 'conversation_pair_v1', user_text_redacted: `Scheduled bounded example ${index}`, assistant_text_redacted: 'Understood' },
+      id: `scheduled-bounded-${index}`,
+      createdAt: `2026-07-10T08:00:0${index}.000Z`,
+    });
+  }
+  let boundedGenerateCalls = 0;
+  const boundedResult = await runScheduledAnalyzeCore({
+    root: boundedRoot,
+    userId: 'owner',
+    config: { ...DEFAULT_AGENT_EXPERIENCE_CONFIG, enabled: true, consolidation_enabled: true, timer_enabled: true, consolidation_model: 'test/model', analyze_batch_max_records: 2 },
+    adapterFactory: () => ({
+      async generate(input) {
+        boundedGenerateCalls += 1;
+        return {
+          schema_version: 1,
+          user_id: input.userId,
+          file_generation: input.expected.file_generation,
+          batch_id: 'scheduled-bounded-test',
+          model: input.model,
+          created_at: '2026-07-11T03:30:00.000Z',
+          observations_read: { seq_start: input.expected.seq_start, seq_end: input.expected.seq_end, checksum: input.expected.read_checksum },
+          proposals: [],
+        };
+      },
+    }),
+    now: () => '2026-07-11T03:30:00.000Z',
+  });
+  assert.equal(boundedResult.status, 'ok');
+  assert.equal(boundedGenerateCalls, 1, 'scheduled Analyze remains one bounded model call');
+  assert.equal(boundedResult.checked, 2);
+  assert.equal(boundedResult.total_unread, 3);
+  assert.equal(boundedResult.has_more, true);
+  assert.equal(boundedResult.retention_rotated, false);
+
   const lockedRoot = join(temp, 'locked');
   const held = await acquireOwnedLock(lockedRoot, 'analyze', { waitMs: 0 });
   try {
@@ -172,6 +211,15 @@ try {
     assert.equal(locked.status, 'locked');
   } finally {
     await held.release();
+  }
+
+  const agedLiveRoot = join(temp, 'aged-live-lock');
+  const agedLive = await acquireOwnedLock(agedLiveRoot, 'analyze', { waitMs: 0, now: () => Date.now() - 3 * 60 * 60_000 });
+  try {
+    const locked = await runScheduledAnalyzeCore({ root: agedLiveRoot, userId: 'owner', config: DEFAULT_AGENT_EXPERIENCE_CONFIG, adapterFactory: () => { throw new Error('must not run'); } });
+    assert.equal(locked.status, 'locked', 'scheduled Analyze must not reclaim a live manual Analyze lock after the old two-hour threshold');
+  } finally {
+    await agedLive.release();
   }
 
   const receiptRoot = join(temp, 'receipts');

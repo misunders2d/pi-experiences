@@ -434,14 +434,19 @@ export async function consolidateProposalBatch(input: CommitInput): Promise<Cons
 	return result;
 }
 
-export function recordZeroProposalReadCoverage(input: { db: any; userId: string; fileGeneration: string; seqStart: number; last: ValidatedObservationRecord; createdAt: string }): { watermark_after: Watermark; inserted: { read_watermark: 0 | 1 } } {
+/** Caller must already hold an open write transaction; this helper does not begin or commit one. */
+export function recordProposalReadCoverageInTransaction(input: { db: any; userId: string; fileGeneration: string; seqStart: number; last: ValidatedObservationRecord; createdAt: string }): { watermark_after: Watermark; inserted: { read_watermark: 0 | 1 } } {
 	const userId = normalizeUserId(input.userId);
 	if (input.last.user_id !== userId || input.last.file_generation !== input.fileGeneration) throw new Error("Proposal read coverage observation mismatch");
+	const watermark = upsertProposalReadWatermark(input.db, { userId, fileGeneration: input.fileGeneration, seqStart: input.seqStart, seqEnd: input.last.seq, checksum: input.last.checksum, updatedAt: input.createdAt });
+	return { watermark_after: watermark.row, inserted: { read_watermark: watermark.changed } };
+}
+
+export function recordZeroProposalReadCoverage(input: { db: any; userId: string; fileGeneration: string; seqStart: number; last: ValidatedObservationRecord; createdAt: string }): { watermark_after: Watermark; inserted: { read_watermark: 0 | 1 } } {
 	let result: { watermark_after: Watermark; inserted: { read_watermark: 0 | 1 } } | undefined;
 	input.db.exec("BEGIN IMMEDIATE");
 	try {
-		const watermark = upsertProposalReadWatermark(input.db, { userId, fileGeneration: input.fileGeneration, seqStart: input.seqStart, seqEnd: input.last.seq, checksum: input.last.checksum, updatedAt: input.createdAt });
-		result = { watermark_after: watermark.row, inserted: { read_watermark: watermark.changed } };
+		result = recordProposalReadCoverageInTransaction(input);
 		input.db.exec("COMMIT");
 	} catch (error) {
 		try {

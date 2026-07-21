@@ -6,6 +6,16 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 ## [Unreleased]
 
+## [0.1.49] - 2026-07-21
+
+### Fixed
+
+- One explicit manual Analyze action now processes every saved example waiting when the action starts through sequential bounded model calls. Per-call record/byte limits remain unchanged; later appends wait for the next run, successful batches commit atomically, later failure or cancellation reports preserved progress honestly, and the user receives one final summary instead of repeated-click batch instructions. Scheduled Analyze remains one bounded batch per run.
+
+### Validation
+
+- Added snapshot-bound range, multi-batch manual drain, post-start append exclusion, partial-failure/cancellation, watermark, notification, lock-release, and conflict-coverage regressions.
+
 ## [0.1.48] - 2026-07-21
 
 ### Fixed
@@ -130,7 +140,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 - Added synchronous submission-hook checks, deferred embedding/model assertions, and a packed Pi TUI smoke requiring submitted-message rendering within 1.5 seconds.
 
-[Unreleased]: https://github.com/misunders2d/pi-experiences/compare/v0.1.48...HEAD
+[Unreleased]: https://github.com/misunders2d/pi-experiences/compare/v0.1.49...HEAD
+[0.1.49]: https://github.com/misunders2d/pi-experiences/compare/v0.1.48...v0.1.49
 [0.1.48]: https://github.com/misunders2d/pi-experiences/compare/v0.1.47...v0.1.48
 [0.1.47]: https://github.com/misunders2d/pi-experiences/compare/v0.1.46...v0.1.47
 [0.1.46]: https://github.com/misunders2d/pi-experiences/compare/v0.1.45...v0.1.46

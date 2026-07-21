@@ -24,7 +24,7 @@ The panel contains every normal action:
 - save redacted chat examples locally;
 - choose the Pi model used for manual habit learning;
 - choose the Pi model that assesses whether approved habits apply before replies;
-- analyze the next bounded unread range;
+- analyze every example waiting when the action starts through sequential bounded calls;
 - review suggestions;
 - resolve possible duplicates;
 - browse, disable, re-enable, archive, or recheck approved habits;
@@ -53,7 +53,7 @@ Approved-but-waiting candidates remain visible under **Review approved habits** 
 
 Capture writes bounded, heuristically redacted completed conversation pairs. It does not create habits.
 
-Observation generations use a checksummed tail manifest and fixed-width offset index, so normal append and Analyze do not parse or resend all history. Analyze reads only the next contiguous same-user unread range (default maximum 200 records / 80,000 bytes), includes compact structured prior-habit context, and advances its watermark only in the successful reducer transaction.
+Observation generations use a checksummed tail manifest and fixed-width offset index, so normal append and Analyze do not parse or resend all history. Manual Analyze from setup or `/experience analyze` snapshots the same-user unread queue waiting at action start and drains that fixed boundary through sequential model calls, each limited by the configured range bound (default maximum 200 records / 80,000 bytes). New appends wait for the next run. Compact structured prior-habit context is rebuilt after each committed batch, and each batch advances its read watermark only in its successful reducer transaction. Scheduled Analyze remains one bounded batch per scheduled run.
 
 Fully analyzed source generations rotate through a recovery journal. Rotated redacted source text expires after 7 days by default, with 14/30-day choices. Minimized evidence, provenance, integrity checks, and review audit remain.
 
@@ -158,7 +158,7 @@ Typed capture/consolidation/review/selector commands and `experience-consolidate
 
 Automatic schedule defaults off and is Linux/systemd-user only. Setup renders absolute Node, CLI, host Pi runtime, config, and state paths; shows them with the selected model, fixed daily 03:30 system-local time, and `Persistent=true`; then requires explicit confirmation before installing/enabling the package-owned units. Moving or updating the host Pi runtime makes the unit require explicit repair. Scheduled runs call the model only for unread saved examples, create suggestions only, and write a bounded sanitized receipt shown once as a durable TUI-only transcript entry during an open private Pi session or at the next eligible private TUI start. The entry never enters model context. Setup can repair, disable, or remove the units. Package installation and updates never activate them.
 
-Break-in review prompts are a separate explicit setup toggle and default off. After Analyze creates new suggestions and Pi is safely idle, one private TUI prompt per batch offers Review now, Later, or Turn break-in off. It makes no extra model call, stores no suggestion text in its queue, and never auto-approves or applies anything. Scheduled Analyze stays headless; eligible results are detected during an open private TUI session or at the next private TUI start.
+Break-in review prompts are a separate explicit setup toggle and default off. After Analyze creates new suggestions and Pi is safely idle, one private TUI prompt per manual action or scheduled batch offers Review now, Later, or Turn break-in off. It makes no extra model call, stores no suggestion text in its queue, and never auto-approves or applies anything. Scheduled Analyze stays headless; eligible results are detected during an open private TUI session or at the next private TUI start.
 
 ## Validation
 

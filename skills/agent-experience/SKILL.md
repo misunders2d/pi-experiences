@@ -72,7 +72,7 @@ A direct declaration bypasses only the repeated-observation threshold. Law, conf
 2. Turn on **Save chat examples locally**.
 3. Use Pi normally until behavior repeats.
 4. Select **Choose model for habit learning**.
-5. Choose **Analyze saved examples now**.
+5. Choose **Analyze all waiting examples now**, or run `/experience analyze`.
 6. Open **Review suggested habits** and explicitly Approve or Reject.
 7. Open **Review approved habits** to inspect, disable, re-enable, archive, or recheck a waiting approval.
 8. Optionally prepare **Prevent duplicate habits**.
@@ -98,18 +98,19 @@ The panel also exposes duplicate resolution, current settings, help, explicit lo
 
 Capture stores bounded, heuristically redacted completed user/assistant pairs. Capture alone creates no habits.
 
-Analyze:
+Manual Analyze:
 
-- is manually started from setup;
+- is started explicitly from setup or `/experience analyze`;
 - runs nonblocking;
-- reads only the next bounded contiguous same-user unread range;
-- defaults to at most 200 records / 80,000 bytes;
-- uses compact structured prior-habit context for cross-batch repetition;
+- snapshots all same-user unread examples waiting when the action starts;
+- processes that fixed snapshot through sequential model calls, each still bounded to at most 200 records / 80,000 bytes by default;
+- leaves examples appended after the snapshot for the next run;
+- rebuilds compact structured prior-habit context after every committed batch for cross-batch repetition;
 - validates model output and cited ranges;
-- advances its watermark only in a successful commit;
-- creates proposals, never approvals.
+- advances its watermark atomically per successful batch, preserving earlier committed progress if a later batch fails;
+- posts one final summary and creates proposals, never approvals.
 
-If saved examples exist but no suggestions appear, choose **Analyze saved examples now** again. More unread bounded batches may remain.
+Scheduled Analyze remains one bounded batch per scheduled run.
 
 ## Review and approved waiting habits
 
@@ -200,7 +201,7 @@ Current law checking uses deterministic freshness plus a dangerous-pattern denyl
 
 Automatic schedule defaults off. On Linux with a working systemd user manager, `/experience setup` may explicitly render and install the package-owned daily 03:30 system-local timer with `Persistent=true`. Before enabling, show the exact Node path, CLI path, host Pi runtime path, unit paths, state root, user, model, timezone, no-work/no-runtime-import/no-model-call behavior, suggestions-only rule, and sanitized open-or-next-TUI receipt behavior. Scheduled summaries use durable TUI-only transcript entries and never enter model context. Require a separate confirmation. Setup also owns explicit repair, disable, and removal. Package install/update never activates it.
 
-Break-in review prompts are separately explicit and default off. Setup must explain and confirm ON. After Analyze creates new suggestions, wait for safe idle TUI state; offer exactly Review now, Later, or Turn break-in off once per batch. Scheduled Analyze never opens UI itself; its bounded sanitized result is detected during an open eligible TUI session or at the next eligible TUI start. Never make an extra model call, expose private metadata, or auto-approve/apply from break-in. Suppress or defer during tools, compaction, streaming, queued messages, missing scope/UI, non-TUI modes, and shutdown.
+Break-in review prompts are separately explicit and default off. Setup must explain and confirm ON. After Analyze creates new suggestions, wait for safe idle TUI state; offer exactly Review now, Later, or Turn break-in off once per manual action or scheduled batch. Scheduled Analyze never opens UI itself; its bounded sanitized result is detected during an open eligible TUI session or at the next eligible TUI start. Never make an extra model call, expose private metadata, or auto-approve/apply from break-in. Suppress or defer during tools, compaction, streaming, queued messages, missing scope/UI, non-TUI modes, and shutdown.
 
 ## Maintainer-only controls
 
@@ -231,7 +232,7 @@ Maintainer invariants:
 From `/experience setup`:
 
 - **Show current settings**: confirm capture, Analyze, duplicate prevention, retention, reminders, and waiting approvals.
-- **Analyze saved examples now**: process the next unread batch.
+- **Analyze all waiting examples now**: process the fixed queue waiting at action start through sequential bounded batches; later arrivals wait for the next run. If Analyze reports a partial stop, fix the reported cause and run it again; verified committed batches are not repeated.
 - **Review suggested habits**: inspect unapproved proposals.
 - **Resolve duplicate habits**: handle potential duplicate wording.
 - **Review approved habits**: browse active/disabled habits or recheck waiting approvals.

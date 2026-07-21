@@ -3,7 +3,7 @@ import { canonicalJson, checksumJson, sha256Hex } from "../storage/checksum.ts";
 import { containsUnredactedSensitiveText, redactJson } from "../storage/redaction.ts";
 import type { ValidatedObservationRecord } from "./observations.ts";
 import { observationKey } from "./observations.ts";
-import { consolidateProposalBatch, recordZeroProposalReadCoverage, type ConsolidationResult } from "./commit.ts";
+import { consolidateProposalBatch, recordProposalReadCoverageInTransaction, recordZeroProposalReadCoverage, type ConsolidationResult } from "./commit.ts";
 import type { ProposalBatch, ProposalSourceRef } from "./proposals.ts";
 
 export type ModelProposalKind = "habit_candidate" | "correction_split";
@@ -341,15 +341,17 @@ export async function processValidatedModelOutput(input: { db: any; userId: stri
 	const conflict = findCandidateKeyConflict(input.output);
 	if (conflict) {
 		let pending: { id: string; inserted: boolean } | undefined;
+		let readCoverage: ReturnType<typeof recordProposalReadCoverageInTransaction> | undefined;
 		input.db.exec("BEGIN IMMEDIATE");
 		try {
 			pending = insertPendingReview(input.db, { userId, kind: "candidate_key_conflict", payload: { file_generation: input.output.file_generation, seq_start: input.output.seq_start, seq_end: input.output.seq_end, conflict }, createdAt: input.output.created_at });
+			readCoverage = recordProposalReadCoverageInTransaction({ db: input.db, userId, fileGeneration: input.output.file_generation, seqStart: input.output.seq_start, last: sourceLast, createdAt: input.output.created_at });
 			input.db.exec("COMMIT");
 		} catch (error) {
 			try { input.db.exec("ROLLBACK"); } catch {}
 			throw error;
 		}
-		return { user_id: userId, file_generation: input.output.file_generation, candidate_ids: [], evidence_ids: [], watermark_after: null, pending_review_id: pending.id, inserted: { pending_review: pending.inserted ? 1 : 0 } };
+		return { user_id: userId, file_generation: input.output.file_generation, candidate_ids: [], evidence_ids: [], watermark_after: null, read_watermark_after: readCoverage.watermark_after, pending_review_id: pending.id, inserted: { pending_review: pending.inserted ? 1 : 0, read_watermark: readCoverage.inserted.read_watermark } };
 	}
 	if (input.output.proposals.length === 0) {
 		const zero = recordZeroProposalReadCoverage({ db: input.db, userId, fileGeneration: input.output.file_generation, seqStart: input.output.seq_start, last: sourceLast, createdAt: input.output.created_at });

@@ -8,7 +8,7 @@ import agentExperienceExtension, { __buildAgentExperienceConsolidationSystemProm
 import { getAgentExperiencePaths, readAgentExperienceConfig, setAgentExperienceCaptureActive, setAgentExperienceConsolidationEnabled, setAgentExperienceConsolidationModel, setAgentExperienceSelectorModel, writeAgentExperienceConfig } from '../extensions/agent-experience/src/paths.ts';
 import { canonicalJson } from '../extensions/agent-experience/src/storage/checksum.ts';
 import { ensurePrivateRoot, resolvePrivatePath } from '../extensions/agent-experience/src/storage/private-root.ts';
-import { observationChecksumForTest, observationPairRefForTest } from '../extensions/agent-experience/src/storage/observations.ts';
+import { appendObservation, observationChecksumForTest, observationPairRefForTest } from '../extensions/agent-experience/src/storage/observations.ts';
 import { initExperienceStorage, insertStorageRecord } from '../extensions/agent-experience/src/storage/sqlite.ts';
 import { listHabitDuplicates, upsertHabitDuplicate } from '../extensions/agent-experience/src/semantic/storage.ts';
 import { LOCAL_EMBEDDING_DIMENSIONS, LOCAL_EMBEDDING_MODEL, LOCAL_EMBEDDING_PROVIDER } from '../extensions/agent-experience/src/semantic/local-model-manifest.ts';
@@ -46,6 +46,16 @@ async function waitForNote(pattern, label) {
   const deadline = Date.now() + 2000;
   while (Date.now() < deadline) {
     if (notes.some((note) => pattern.test(note.message || ''))) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.fail(`${label}\nObserved notes:\n${notes.map((note) => String(note.message || note.title || '')).join('\n---\n')}`);
+}
+
+async function waitForAnalyzeUnlock(root, label) {
+  const lockPath = resolvePrivatePath(root, '.analyze.lock');
+  const deadline = Date.now() + 2000;
+  while (Date.now() < deadline) {
+    if (!existsSync(lockPath)) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   assert.fail(label);
@@ -231,27 +241,29 @@ authHeadersAvailable = true;
 await setAgentExperienceSelectorModel('openai-codex/gpt-5.4-mini', paths);
 
 await setAgentExperienceConsolidationEnabled(false, paths);
-setupChoices = ['Analyze saved examples now', 'Done'];
+setupChoices = ['Analyze all waiting examples now', 'Done'];
 await commands.get('experience').handler('setup', ctx);
 assert.ok(notes.some((note) => /Choose a habit-learning model/.test(note.message || '')), 'analyze must not run when model learning is disabled');
 await setAgentExperienceConsolidationModel('openai-codex/gpt-5.5', paths);
 notes.length = 0;
 authHeadersAvailable = false;
-setupChoices = ['Analyze saved examples now', 'Done'];
+setupChoices = ['Analyze all waiting examples now', 'Done'];
 await commands.get('experience').handler('setup', ctx);
 assert.ok(notes.some((note) => /Current model: openai-codex\/gpt-5\.5/.test(note.message || '') && /model auth unavailable/.test(note.message || '')), 'analyze must preflight real model auth before showing started');
-assert.ok(!notes.some((note) => /Analyze saved examples started/.test(note.message || '')), 'analyze must not show started when auth preflight fails');
+assert.ok(!notes.some((note) => /Analyze all waiting examples started/.test(note.message || '')), 'analyze must not show started when auth preflight fails');
 authHeadersAvailable = true;
 notes.length = 0;
-setupChoices = ['Analyze saved examples now', 'Done'];
+setupChoices = ['Analyze all waiting examples now', 'Done'];
 await commands.get('experience').handler('setup', ctx);
 assert.ok(notes.some((note) => /No readable saved examples|No saved examples/.test(note.message || '')), 'analyze must preflight saved examples before showing started');
-assert.ok(!notes.some((note) => /Analyze saved examples started/.test(note.message || '')), 'analyze must not show started when there are no saved examples');
+assert.ok(!notes.some((note) => /Analyze all waiting examples started/.test(note.message || '')), 'analyze must not show started when there are no saved examples');
 
 const r1 = makeObservation({ seq: 1, createdAt: '2026-07-08T08:00:00.000Z', user: 'please be concise', assistant: 'understood, concise answer' });
 const r2 = makeObservation({ seq: 2, previous: r1, createdAt: '2026-07-08T09:00:00.000Z', user: 'too much fluff, give evidence only', assistant: 'short evidence list' });
 const r3 = makeObservation({ seq: 3, previous: r2, createdAt: '2026-07-09T08:00:00.000Z', user: 'again: concise and evidence-backed', assistant: 'concise evidence-backed answer' });
 await writeObservationFile(paths.root, [r1, r2, r3]);
+configResult = await readAgentExperienceConfig(paths);
+await writeAgentExperienceConfig({ ...configResult.config, analyze_batch_max_records: 2 }, paths);
 
 const strictNormalizeInput = {
   model: 'openai-codex/gpt-5.5',
@@ -320,20 +332,26 @@ const rotatedNormalizeInput = {
 assert.throws(() => __normalizeAgentExperienceConsolidationModelOutputForTest(strictRawOutput, rotatedNormalizeInput), /generation_mismatch/, 'strict normalizer must still reject a copied active placeholder for rotated observations');
 assert.throws(() => __normalizeAgentExperienceConsolidationModelOutputForTest({ ...strictRawOutput, proposals: [{ ...strictRawOutput.proposals[0], source_refs: [{ seq: 999 }] }] }, strictNormalizeInput), /invalid_source_ref/);
 
+const manualAnalyzeBatches = [];
 __setAgentExperienceConsolidationAdapterForTest({
   async generate(input) {
     assert.equal(input.model, 'openai-codex/gpt-5.5');
-    assert.deepEqual(input.observations.map((record) => record.seq), [1, 2, 3]);
+    const seqs = input.observations.map((record) => record.seq);
+    manualAnalyzeBatches.push(seqs);
+    assert.ok(seqs.length <= 2, 'each manual Analyze model call must preserve the configured record bound');
+    if (manualAnalyzeBatches.length === 2) {
+      assert.ok(input.habitContext.some((item) => item.condition === 'When answering Sergey after a correction' && item.unique_observations === 2), 'later batches must receive compact context rebuilt from the prior committed batch');
+    }
     return {
       schema_version: 1,
       user_id: input.userId,
       file_generation: input.expected.file_generation,
-      batch_id: 'manual-setup-test',
+      batch_id: `manual-setup-test-${input.expected.seq_start}`,
       model: input.model,
       created_at: '2026-07-09T09:00:00.000Z',
       observations_read: { seq_start: input.expected.seq_start, seq_end: input.expected.seq_end, checksum: input.expected.read_checksum },
       proposals: [{
-        proposal_id: 'setup-proposal-1',
+        proposal_id: `setup-proposal-${input.expected.seq_start}`,
         kind: 'habit_candidate',
         candidate_key: 'concise-evidence-backed',
         condition: 'When answering Sergey after a correction',
@@ -348,11 +366,27 @@ __setAgentExperienceConsolidationAdapterForTest({
   },
 });
 
-setupChoices = ['Analyze saved examples now', 'Done'];
+setupChoices = ['Analyze all waiting examples now', 'Done'];
 await commands.get('experience').handler('setup', ctx);
-assert.ok(notes.some((note) => /Analyze saved examples started/.test(note.message || '')), 'analyze-now must start without blocking setup');
+assert.equal(manualAnalyzeBatches.length, 0, 'manual Analyze must not call the model before the command handler returns');
+assert.ok(notes.some((note) => /Analyze all waiting examples started: 3 saved examples queued/.test(note.message || '')), 'analyze-all must start without blocking setup and report the starting snapshot');
 assert.ok(!notes.some((note) => /Agent Experience setup closed/.test(note.message || '')), 'setup should close silently after Analyze starts so completion cannot print behind the menu');
-await waitForNote(/New suggested habits created: 1/, 'analyze-now must create one suggestion');
+await waitForNote(/New suggested habits created: 1/, 'analyze-all must create one suggestion');
+await waitForAnalyzeUnlock(paths.root, 'full manual drain must release the outer Analyze lock');
+assert.deepEqual(manualAnalyzeBatches, [[1, 2], [3]], 'one manual action must drain the complete starting queue through sequential bounded batches');
+assert.ok(notes.some((note) => /3 saved examples checked across 2 bounded batches/.test(note.message || '')), 'completion must report useful all-queue and internal-batch totals');
+assert.ok(notes.some((note) => /All examples that were waiting when Analyze started are analyzed/.test(note.message || '')), 'completion must say the action-start queue is fully drained');
+assert.ok(!notes.some((note) => /choose Analyze .*again|More unread examples remain/i.test(note.message || '')), 'manual Analyze must not expose repeated-click batching');
+assert.equal(notes.filter((note) => /Analyze all waiting examples started:/.test(note.message || '')).length, 1, 'full drain must emit one start notification');
+assert.equal(notes.filter((note) => /Analyze all waiting examples finished:/.test(note.message || '')).length, 1, 'full drain must emit one final summary');
+let storage = await initExperienceStorage(paths.root, { allowInit: true, userId: 'owner' });
+try {
+  const watermark = storage.db.prepare('SELECT seq, checksum FROM proposal_read_watermarks WHERE user_id = ? AND file_generation = ?').get('owner', 'active');
+  assert.equal(watermark.seq, 3, 'full drain must advance read coverage to the captured target');
+  assert.equal(watermark.checksum, r3.checksum, 'full drain watermark checksum must match the captured target checksum');
+} finally {
+  storage.db.close();
+}
 
 notes.length = 0;
 let reviewPanelSeen = false;
@@ -456,7 +490,7 @@ delete ctx.ui.custom;
 assert.equal(helpPanelSeen, true, 'explain settings must not post behind the setup overlay');
 assert.ok(!notes.some((note) => /Use arrow keys to move/.test(note.message || '')), 'explain settings from setup should stay in-panel, not chat history');
 
-let storage = await initExperienceStorage(paths.root, { allowInit: true, userId: 'owner' });
+storage = await initExperienceStorage(paths.root, { allowInit: true, userId: 'owner' });
 let active;
 try {
   const rows = storage.db.prepare("SELECT id, condition, behavior, checksum FROM habits WHERE user_id = 'owner' AND status = 'active'").all();
@@ -703,10 +737,10 @@ assert.equal(configResult.config.observation_retention_days, 14, 'normal setup m
 assert.ok(notes.some((note) => /deleted after 14 days/.test(note.message || '')), 'retention change must explain deletion and preserved minimized evidence');
 
 notes.length = 0;
-setupChoices = ['Analyze saved examples now', 'Done'];
+setupChoices = ['Analyze all waiting examples now', 'Done'];
 await commands.get('experience').handler('setup', ctx);
 assert.ok(notes.some((note) => /No saved examples yet|already analyzed/.test(note.message || '')), 'second analyze must not resend the committed and rotated generation');
-assert.ok(!notes.some((note) => /Analyze saved examples started|New suggested habits created/.test(note.message || '')), 'caught-up analyze must not start a model job or claim new suggestions');
+assert.ok(!notes.some((note) => /Analyze all waiting examples started|New suggested habits created/.test(note.message || '')), 'caught-up analyze must not start a model job or claim new suggestions');
 storage = await initExperienceStorage(paths.root, { allowInit: true, userId: 'owner' });
 try {
   const rows = storage.db.prepare("SELECT id, status, condition, behavior FROM habits WHERE user_id = 'owner'").all();
@@ -743,6 +777,124 @@ configResult = await readAgentExperienceConfig(paths);
 assert.equal(configResult.config.enabled, false, 'custom setup off action must turn master experience off');
 assert.equal(configResult.config.capture_enabled, false, 'custom setup off action must turn capture off');
 assert.equal(configResult.config.selector_enabled, false, 'custom setup off action must turn approved-habit reminders off');
+
+function zeroProposalOutput(input, batchId) {
+  return {
+    schema_version: 1,
+    user_id: input.userId,
+    file_generation: input.expected.file_generation,
+    batch_id: batchId,
+    model: input.model,
+    created_at: '2026-07-10T12:00:00.000Z',
+    observations_read: { seq_start: input.expected.seq_start, seq_end: input.expected.seq_end, checksum: input.expected.read_checksum },
+    proposals: [],
+  };
+}
+
+async function prepareManualScenario(name) {
+  process.env.AX_STATE_ROOT = join(temp, name);
+  const scenarioPaths = getAgentExperiencePaths();
+  const s1 = makeObservation({ seq: 1, createdAt: '2026-07-10T08:00:00.000Z', user: 'one', assistant: 'one answer' });
+  const s2 = makeObservation({ seq: 2, previous: s1, createdAt: '2026-07-10T08:01:00.000Z', user: 'two', assistant: 'two answer' });
+  const s3 = makeObservation({ seq: 3, previous: s2, createdAt: '2026-07-10T08:02:00.000Z', user: 'three', assistant: 'three answer' });
+  await writeObservationFile(scenarioPaths.root, [s1, s2, s3]);
+  const current = await readAgentExperienceConfig(scenarioPaths);
+  await writeAgentExperienceConfig({
+    ...current.config,
+    enabled: true,
+    capture_enabled: true,
+    consolidation_enabled: true,
+    consolidation_model: 'openai-codex/gpt-5.5',
+    analyze_batch_max_records: 2,
+  }, scenarioPaths);
+  return scenarioPaths;
+}
+
+const snapshotPaths = await prepareManualScenario('snapshot-state');
+notes.length = 0;
+const snapshotCalls = [];
+__setAgentExperienceConsolidationAdapterForTest({
+  async generate(input) {
+    snapshotCalls.push(input.observations.map((record) => record.seq));
+    if (snapshotCalls.length === 1) {
+      await appendObservation(snapshotPaths.root, {
+        userId: 'owner',
+        origin: { source: 'test', command: 'mid-analyze-append' },
+        payload: { kind: 'conversation_pair_v1', user_text_redacted: 'arrived later', assistant_text_redacted: 'later answer', close_reason: 'agent_end' },
+        id: 'snapshot-later-4',
+        createdAt: '2026-07-10T08:03:00.000Z',
+      });
+    }
+    return zeroProposalOutput(input, `snapshot-${snapshotCalls.length}`);
+  },
+});
+await commands.get('experience').handler('analyze', ctx);
+await waitForNote(/All examples that were waiting when Analyze started are analyzed/, 'snapshot Analyze must finish');
+await waitForAnalyzeUnlock(snapshotPaths.root, 'successful snapshot drain must release the outer Analyze lock');
+assert.deepEqual(snapshotCalls, [[1, 2], [3]], 'manual Analyze must exclude observations appended after the action-start snapshot');
+assert.ok(notes.some((note) => /New saved examples arrived during Analyze; they remain waiting for the next run/.test(note.message || '')), 'completion must disclose post-snapshot arrivals');
+storage = await initExperienceStorage(snapshotPaths.root, { allowInit: true, userId: 'owner' });
+try {
+  assert.equal(storage.db.prepare('SELECT seq FROM proposal_read_watermarks WHERE user_id = ? AND file_generation = ?').get('owner', 'active').seq, 3, 'snapshot run watermark must stop at the captured target');
+} finally {
+  storage.db.close();
+}
+assert.equal(existsSync(resolvePrivatePath(snapshotPaths.root, '.analyze.lock')), false, 'successful snapshot drain must release the outer Analyze lock');
+assert.equal(notes.filter((note) => /Analyze all waiting examples started:/.test(note.message || '')).length, 1, 'snapshot run must emit one start notification');
+assert.equal(notes.filter((note) => /Analyze all waiting examples finished:/.test(note.message || '')).length, 1, 'snapshot run must emit one final summary');
+
+const partialPaths = await prepareManualScenario('partial-state');
+notes.length = 0;
+let partialCalls = 0;
+__setAgentExperienceConsolidationAdapterForTest({
+  async generate(input) {
+    partialCalls += 1;
+    if (partialCalls === 2) throw new Error('synthetic second batch failure');
+    return zeroProposalOutput(input, `partial-${partialCalls}`);
+  },
+});
+await commands.get('experience').handler('analyze', ctx);
+await waitForNote(/Analyze all waiting examples stopped after 2 saved examples across 1 bounded batch/, 'partial Analyze must report committed progress');
+await waitForAnalyzeUnlock(partialPaths.root, 'partial failure must release the outer Analyze lock');
+assert.equal(partialCalls, 2, 'partial-failure fixture must reach the second bounded model call');
+assert.ok(notes.some((note) => /1 example from the starting queue remains unprocessed/.test(note.message || '')), 'partial failure must report exact unprocessed starting-snapshot count');
+assert.ok(notes.some((note) => /Earlier completed batches and their suggestions remain safely committed; the failed batch created no suggestions and did not advance read coverage/.test(note.message || '')), 'partial failure must preserve and explain earlier commits without denying sanitized failure audit');
+storage = await initExperienceStorage(partialPaths.root, { allowInit: true, userId: 'owner' });
+try {
+  assert.equal(storage.db.prepare('SELECT seq FROM proposal_read_watermarks WHERE user_id = ? AND file_generation = ?').get('owner', 'active').seq, 2, 'partial failure must leave watermark at the last committed batch');
+} finally {
+  storage.db.close();
+}
+assert.equal(existsSync(resolvePrivatePath(partialPaths.root, '.analyze.lock')), false, 'partial failure must release the outer Analyze lock');
+assert.equal(notes.filter((note) => /Analyze all waiting examples started:/.test(note.message || '')).length, 1, 'partial run must emit one start notification');
+assert.equal(notes.filter((note) => /Analyze all waiting examples stopped after/.test(note.message || '')).length, 1, 'partial run must emit one final summary');
+
+const cancellationPaths = await prepareManualScenario('cancellation-state');
+notes.length = 0;
+let cancellationCalls = 0;
+const cancellationController = new AbortController();
+ctx.signal = cancellationController.signal;
+__setAgentExperienceConsolidationAdapterForTest({
+  async generate(input) {
+    cancellationCalls += 1;
+    if (cancellationCalls === 1) setImmediate(() => cancellationController.abort(new Error('synthetic cancellation between batches')));
+    return zeroProposalOutput(input, `cancellation-${cancellationCalls}`);
+  },
+});
+await commands.get('experience').handler('analyze', ctx);
+await waitForNote(/Analyze all waiting examples stopped after 2 saved examples across 1 bounded batch/, 'cancelled Analyze must report committed progress');
+await waitForAnalyzeUnlock(cancellationPaths.root, 'cancellation must release the outer Analyze lock');
+assert.equal(cancellationCalls, 1, 'cancellation between batches must stop before another model call');
+storage = await initExperienceStorage(cancellationPaths.root, { allowInit: true, userId: 'owner' });
+try {
+  assert.equal(storage.db.prepare('SELECT seq FROM proposal_read_watermarks WHERE user_id = ? AND file_generation = ?').get('owner', 'active').seq, 2, 'cancellation must preserve only the committed first batch');
+} finally {
+  storage.db.close();
+}
+assert.equal(existsSync(resolvePrivatePath(cancellationPaths.root, '.analyze.lock')), false, 'cancellation must release the outer Analyze lock');
+assert.equal(notes.filter((note) => /Analyze all waiting examples started:/.test(note.message || '')).length, 1, 'cancelled run must emit one start notification');
+assert.equal(notes.filter((note) => /Analyze all waiting examples stopped after/.test(note.message || '')).length, 1, 'cancelled run must emit one final summary');
+delete ctx.signal;
 
 __setAgentExperienceConsolidationAdapterForTest(undefined);
 __setAgentExperienceSelectorAdapterForTest(undefined);
