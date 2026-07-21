@@ -6,6 +6,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 ## [Unreleased]
 
+## [0.1.47] - 2026-07-21
+
 ### Changed
 
 - Approved-habit steering now isolates each candidate judgment. A single low-confidence or below-threshold judgment no longer discards the whole batch, so one ambiguous candidate can no longer suppress otherwise confident, applicable habits. Structurally malformed judge output still fails closed.
@@ -118,7 +120,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 - Added synchronous submission-hook checks, deferred embedding/model assertions, and a packed Pi TUI smoke requiring submitted-message rendering within 1.5 seconds.
 
-[Unreleased]: https://github.com/misunders2d/pi-experiences/compare/v0.1.46...HEAD
+[Unreleased]: https://github.com/misunders2d/pi-experiences/compare/v0.1.47...HEAD
+[0.1.47]: https://github.com/misunders2d/pi-experiences/compare/v0.1.46...v0.1.47
 [0.1.46]: https://github.com/misunders2d/pi-experiences/compare/v0.1.45...v0.1.46
 [0.1.45]: https://github.com/misunders2d/pi-experiences/compare/v0.1.44...v0.1.45
 [0.1.44]: https://github.com/misunders2d/pi-experiences/compare/v0.1.43...v0.1.44
