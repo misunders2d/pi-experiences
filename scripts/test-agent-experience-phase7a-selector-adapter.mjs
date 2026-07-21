@@ -241,7 +241,7 @@ try {
 
   const { commands, handlers } = makePi();
   const notes = [];
-  const ctx = { cwd: liveCwd, mode: 'tui', sessionManager: { getSessionId: () => 'phase7a-main', getSessionFile: () => join(temp, 'phase7a-main.jsonl') }, ui: { notify(message, level) { notes.push({ message, level }); } } };
+  const ctx = { cwd: liveCwd, mode: 'tui', model: { api: 'openai-completions' }, sessionManager: { getSessionId: () => 'phase7a-main', getSessionFile: () => join(temp, 'phase7a-main.jsonl') }, ui: { notify(message, level) { notes.push({ message, level }); } } };
   await commands.get('experience').handler('enable', ctx);
   assert.equal((await readAgentExperienceConfig(getAgentExperiencePaths())).config.selector_enabled, false, 'selector disabled default after master enable');
   __setAgentExperienceSelectorEmbeddingAdapterForTest(phase7Embedding);
@@ -261,11 +261,14 @@ try {
   const hookMessages = [{ role: 'user', content: [{ type: 'text', text: 'hook adapter prompt' }], timestamp: Date.now() }];
   const contextResult = await handlers.get('context')({ messages: hookMessages }, hookCtx);
   assert.equal(hookAdapterCalls, 1);
-  assert.equal(contextResult.messages.at(-1).customType, 'agent_experience.habit_guidance');
-  assert.match(contextResult.messages.at(-1).content, /Agent Experience approved habit guidance/);
-  assert.match(contextResult.messages.at(-1).content, /Do: use production adapter guidance/);
+  assert.equal(contextResult, undefined, 'selector context must not add custom/user guidance');
+  const providerPayload = { messages: [{ role: 'developer', content: 'base system' }, { role: 'user', content: 'hook adapter prompt' }] };
+  const guidedProvider = handlers.get('before_provider_request')({ payload: providerPayload }, hookCtx);
+  assert.match(guidedProvider.messages[0].content, /Agent Experience approved habit guidance/);
+  assert.match(guidedProvider.messages[0].content, /Do: use production adapter guidance/);
   await handlers.get('context')({ messages: hookMessages }, hookCtx);
   assert.equal(hookAdapterCalls, 1, 'tool-loop/retry context must reuse one assessment');
+  assert.match(handlers.get('before_provider_request')({ payload: providerPayload }, hookCtx).messages[0].content, /Do: use production adapter guidance/);
 
   handlers.get('before_agent_start')({ prompt: 'yes, do that', systemPrompt: 'base' }, hookCtx);
   const contextualMessages = [
@@ -276,7 +279,8 @@ try {
   ];
   const contextualResult = await handlers.get('context')({ messages: contextualMessages }, hookCtx);
   assert.equal(hookAdapterCalls, 2, 'context-aware follow-up must still call judge exactly once');
-  assert.equal(contextualResult.messages.at(-1).customType, 'agent_experience.habit_guidance');
+  assert.equal(contextualResult, undefined, 'context-aware follow-up must keep guidance out of message history');
+  assert.match(handlers.get('before_provider_request')({ payload: providerPayload }, hookCtx).messages[0].content, /Do: use production adapter guidance/);
   const contextualJudgePayload = JSON.parse(hookJudgePrompts[1]);
   assert.deepEqual(contextualJudgePayload.context_turns, [{ role: 'assistant', text: 'I can execute the hook adapter prompt action.' }]);
   assert.equal(contextualJudgePayload.current_user_request, 'yes, do that');
@@ -286,7 +290,8 @@ try {
     : message);
   const changedToolLoopResult = await handlers.get('context')({ messages: changedToolLoopMessages }, hookCtx);
   assert.equal(hookAdapterCalls, 2, 'tool-loop context must reuse the snapshotted assessment and context');
-  assert.equal(changedToolLoopResult.messages.at(-1).customType, 'agent_experience.habit_guidance');
+  assert.equal(changedToolLoopResult, undefined);
+  assert.match(handlers.get('before_provider_request')({ payload: providerPayload }, hookCtx).messages[0].content, /Do: use production adapter guidance/);
   assert.doesNotMatch(hookJudgePrompts[1], /Changed assistant context/);
 
   const noLedgerRoot = join(temp, 'no-ledger-state');

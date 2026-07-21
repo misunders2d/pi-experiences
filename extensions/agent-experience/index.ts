@@ -71,6 +71,7 @@ import { validateStandaloneConsolidationModel } from "./src/consolidate/standalo
 export { __buildAgentExperienceConsolidationSystemPromptForTest, __normalizeAgentExperienceConsolidationModelOutputForTest } from "./src/consolidate/model-adapter.ts";
 import { noteAgentExperienceConversationInput, registerAgentExperienceConversationalTools } from "./src/conversational-tools.ts";
 import { buildHabitSteeringEntry, HABIT_STEERING_ENTRY_TYPE, renderHabitSteeringEntry, type HabitSteeringEntryData } from "./src/steering-note.ts";
+import { appendHabitGuidanceToProviderPayload } from "./src/provider-guidance.ts";
 import { consumeScheduledAnalyzeReceipts, deleteScheduledAnalyzeReceiptFiles, transitionScheduledAnalyzeReceiptBreakInDelivery, type ScheduledAnalyzeReceiptRecord } from "./src/schedule/receipts.ts";
 import { BreakInQueue, breakInScopeKey, type BreakInScope, type PendingBreakInBatch } from "./src/break-in.ts";
 import { disableScheduledAnalyzeSystemd, inspectScheduledAnalyzeSystemd, installScheduledAnalyzeSystemd, previewScheduledAnalyzeSystemd, removeScheduledAnalyzeSystemd, SCHEDULED_ANALYZE_ON_CALENDAR, SCHEDULED_ANALYZE_SERVICE, SCHEDULED_ANALYZE_TIMER } from "./src/schedule/systemd.ts";
@@ -2882,7 +2883,6 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 		if (ctx.mode !== "tui" || ctx.hasUI === false) return;
 		startScheduledReceiptPolling(ctx);
 	});
-	const HABIT_GUIDANCE_CUSTOM_TYPE = "agent_experience.habit_guidance";
 	type PendingSteeringRun = {
 		prompt: string;
 		phase: "armed" | "attempted";
@@ -3072,14 +3072,57 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 			}
 		}
 
-		if (pendingSteeringRuns.get(steeringScope) !== state || !state.entry || !state.guidance) return;
+		// Selection is complete, but guidance remains transient extension state.
+		// The provider hook below prepares a system-level payload before the
+		// durable marker is committed. Context messages are never modified.
+	});
+
+	pi.on("before_provider_request", (event, ctx) => {
+		const steeringScope = steeringScopeFromContext(ctx);
+		if (!steeringScope) return;
+		const state = pendingSteeringRuns.get(steeringScope);
+		if (!state || state.phase !== "attempted" || !state.entry || !state.guidance) return;
+		if (ctx.mode !== "tui" || !steeringRendererReady || typeof pi.appendEntry !== "function") {
+			if (!state.markerCommitted) {
+				state.entry = undefined;
+				state.guidance = undefined;
+			}
+			notifyDedupedDiagnostic(ctx, selectorDiagnosticsShown, {
+				key: "selector-runtime:steering-provenance-unavailable",
+				message: "Agent Experience habit steering was suppressed because response-specific visual provenance is unavailable in this interface. No habit guidance was injected.",
+			});
+			return;
+		}
+
+		let prepared: ReturnType<typeof appendHabitGuidanceToProviderPayload>;
+		try {
+			prepared = appendHabitGuidanceToProviderPayload(ctx.model?.api, event.payload, state.guidance);
+		} catch {
+			prepared = { ok: false, reason: "known_api_shape_mismatch" };
+		}
+		if (!prepared.ok) {
+			// Before the marker, any unsupported or malformed provider payload is a
+			// permanent no-guidance tombstone for this response. After a successful
+			// marked request, keep state available for a same-response retry whose
+			// provider payload may be rebuilt correctly.
+			if (!state.markerCommitted) {
+				state.entry = undefined;
+				state.guidance = undefined;
+			}
+			notifyDedupedDiagnostic(ctx, selectorDiagnosticsShown, {
+				key: `selector-runtime:provider-guidance-${prepared.reason}`,
+				message: "Agent Experience habit steering was suppressed because this response provider could not accept verified system-level guidance. No habit guidance was injected.",
+			});
+			return;
+		}
+
 		if (!state.markerCommitted) {
 			try {
+				// Prepare the immutable provider payload first. Only a durable, visible
+				// marker authorizes returning that payload to Pi for this response.
 				pi.appendEntry(HABIT_STEERING_ENTRY_TYPE, state.entry);
 				state.markerCommitted = true;
 			} catch {
-				// Keep an attempted no-guidance tombstone so retries cannot rerun the
-				// selector after response-specific provenance failed.
 				state.entry = undefined;
 				state.guidance = undefined;
 				notifyDedupedDiagnostic(ctx, selectorDiagnosticsShown, {
@@ -3089,15 +3132,7 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 				return;
 			}
 		}
-		return {
-			messages: [...event.messages, {
-				role: "custom",
-				customType: HABIT_GUIDANCE_CUSTOM_TYPE,
-				content: state.guidance,
-				display: false,
-				timestamp: Date.now(),
-			}],
-		};
+		return prepared.payload;
 	});
 
 	pi.on("input", async (event, ctx) => {

@@ -24,6 +24,7 @@ assert.match(changelog,new RegExp(`^## \\[${packageJson.version.replaceAll('.', 
 assert.equal(packageJson.description,'Human-reviewed habits for Pi coding agents—a local-first behavioral learning layer alongside skills and memory.','package description must preserve the discoverable habits category');
 assert.equal(packageJson.dependencies?.typebox,'1.1.38','conversational tool schemas must declare their TypeBox runtime directly');
 assert.match(packageJson.scripts?.['check:agent-experience']||'',/test-agent-experience-phase16-conversation\.mjs/,'complete checks must include conversational habit validation');
+assert.match(packageJson.scripts?.['check:agent-experience']||'',/test-agent-experience-phase22-provider-guidance\.mjs/,'complete checks must include system-level provider guidance validation');
 for(const keyword of ['pi-package','pi-coding-agent','coding-agent','agent-habits','agent-memory','agent-profile','agent-skills','behavioral-learning','context-management','human-in-the-loop','local-first','token-efficiency']){
   assert.ok(packageJson.keywords.includes(keyword),`package discovery keyword missing: ${keyword}`);
 }
@@ -62,7 +63,8 @@ const technicalReadme=readme.slice(technicalSummaryIndex,technicalCloseIndex);
 assert.match(humanReadme,/situation and action separately/i,'normal-user duplicate explanation must preserve separate-field behavior');
 assert.match(humanReadme,/not globally against one another/i,'normal-user duplicate explanation must preserve approved-only candidate policy');
 for(const phrase of ['exact `When:` \/ `Do:` wording','later, explicit confirmation','bypasses only that repetition threshold','numbered plain-language items','◇ Steered by habit','No marker means that response received no habit guidance','not an LLM message','There is no daily quota']) assert.match(humanReadme,new RegExp(phrase,'i'),`README conversational/transparency contract missing: ${phrase}`);
-for(const phrase of ['one short-lived draft and one numbered review snapshot','no raw conversation or confirmation utterance','If it is unavailable, no candidate','expire after 15 minutes','agent_experience.habit_steering','durable marker does not participate in LLM context','non-TUI modes suppress']) assert.match(technicalReadme,new RegExp(phrase,'i'),`README technical conversational/transparency contract missing: ${phrase}`);
+for(const phrase of ['one short-lived draft and one numbered review snapshot','no raw conversation or confirmation utterance','If it is unavailable, no candidate','expire after 15 minutes','agent_experience.habit_steering','durable marker does not participate in LLM context','system-instruction field','non-TUI modes']) assert.match(technicalReadme,new RegExp(phrase,'i'),`README technical conversational/transparency contract missing: ${phrase}`);
+assert.match(technicalReadme,/non-TUI modes[^.]*suppress/is,'README technical contract must fail closed outside the visible TUI');
 for(const phrase of ['lower of separate condition and behavior cosine scores','Review threshold: 5,500 basis points','candidate-to-candidate semantic routing is excluded','obsolete pending scoring-method relations','every pending relation involving it','keep-separate decisions survive scoring/cache method upgrades'])assert.match(technicalReadme,new RegExp(phrase,'i'),`README dedupe correction contract missing: ${phrase}`);
 const extensionReadme=await readFile(join(root,'extensions/agent-experience/README.md'),'utf8');
 const experienceSkill=await readFile(join(root,'skills/agent-experience/SKILL.md'),'utf8');
@@ -76,6 +78,8 @@ for(const [name,text] of [['extension README',extensionReadme],['public skill',e
   assert.match(text,/◇ Steered by habit/is,`${name} must document exact response-specific habit steering`);
   assert.match(text,/No marker means that response received no habit guidance/is,`${name} must define marker absence semantics`);
   assert.match(text,/never enters? LLM context|does not participate in LLM context/is,`${name} must keep steering provenance out of model context`);
+  assert.match(text,/system-level (?:provider )?instruction|system-instruction field/is,`${name} must keep habit guidance at system authority`);
+  assert.match(text,/never (?:as|inject).*user|never user content|never inject.*user/is,`${name} must reject user-role habit guidance`);
   assert.match(text,/non-TUI|interface is not the Pi TUI/is,`${name} must preserve fail-closed interface visibility`);
   assert.match(text,/no daily quota/is,`${name} must preserve unlimited eligible guidance`);
 }
@@ -87,6 +91,14 @@ assert.doesNotMatch(configSource,/selector_daily_budget|selector\.daily_budget/,
 const steeringSource=await readFile(join(root,'extensions/agent-experience/src/steering-note.ts'),'utf8');
 assert.match(steeringSource,/agent_experience\.habit_steering/,'steering custom-entry type must remain stable');
 assert.doesNotMatch(steeringSource,/sendMessage|prompt_hash|confidence_bp|checksum|source_refs?|provider|model/,'steering entry module must not persist context-bearing or internal fields');
+const extensionSource=await readFile(join(root,'extensions/agent-experience/index.ts'),'utf8');
+const providerGuidanceSource=await readFile(join(root,'extensions/agent-experience/src/provider-guidance.ts'),'utf8');
+assert.doesNotMatch(extensionSource,/agent_experience\.habit_guidance/,'habit guidance must never be emitted as a custom/user conversation message');
+assert.match(extensionSource,/pi\.on\("before_provider_request"/,'habit guidance must use the pre-provider payload boundary');
+assert.match(extensionSource,/appendHabitGuidanceToProviderPayload\(ctx\.model\?\.api, event\.payload, state\.guidance\)/,'provider guidance must dispatch by the exact current model API');
+assert.match(providerGuidanceSource,/KNOWN_GUIDANCE_APIS/,'provider guidance must use a closed known-API allowlist');
+assert.match(providerGuidanceSource,/agent_experience_response_guidance/,'provider guidance must be retry-idempotent');
+assert.doesNotMatch(providerGuidanceSource,/console\.|writeFile|appendFile|sendMessage|sendUserMessage/,'transient provider guidance must not log, persist, or create conversation messages');
 const forbidden=/OPENAI_API_KEY|AX_OPENAI_EMBEDDING|openai-compatible embedding|api\.openai\.com/i;
 async function sourceFiles(directory){
   const out=[];

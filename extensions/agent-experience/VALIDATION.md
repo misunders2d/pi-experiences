@@ -79,7 +79,7 @@ npm pack --json --pack-destination /tmp/pi-experiences-047-pack
 
 The tarball must include:
 
-- `package.json` version `0.1.47` and Node floor `>=22.19.0`;
+- `package.json` version `0.1.48` and Node floor `>=22.19.0`;
 - `CHANGELOG.md` with a verified entry for the release;
 - wildcard Pi peer dependencies;
 - extension source, `steering-note.ts`, and public skill;
@@ -92,7 +92,7 @@ The tarball must include:
 Fresh installation must use the exact generated tarball and disable lifecycle scripts:
 
 ```bash
-npm install --ignore-scripts --legacy-peer-deps /tmp/pi-experiences-047-pack/pi-experiences-0.1.47.tgz
+npm install --ignore-scripts --legacy-peer-deps /tmp/pi-experiences-048-pack/pi-experiences-0.1.48.tgz
 ```
 
 Use a dedicated disposable `/tmp/*smoke*` prefix. Verify package version, CLI help/status, extension import, skill loading, package-relative worker resolution, and file allowlist from that installed copy—not the source checkout.
@@ -172,8 +172,9 @@ Release evidence must include:
 - any non-cancellation compact-context batch failure retries current-only embedding exactly once; cancellation never retries, current-only failure remains fail-closed, and the mandatory judge runs exactly once after successful fallback;
 - long internal habit IDs never enter runtime judge prompts or adapter candidate lists; aliases and their exact map remain ephemeral, while returned selections, post-judge revalidation, steering provenance, and selected/skipped logs use restored original IDs; latency probes use the same alias protocol;
 - selector guidance has no daily quota; repeated eligible messages continue receiving guidance, while hit logs remain audit/provenance only and persist no prompt/context text, derivative, vector, similarity, raw error, or judge rationale/confidence; sanitized failure rows contain only closed reason/stage/mode/model/retrieval-mode values;
-- durable provenance stores approved wording/count/time only and never enters LLM context; separate transient guidance enters only the marked response;
-- tool-loop context receives the same snapshotted context/result/guidance without duplicate extraction, embedding, assessment, or markers; no-selection and provenance-failure tombstones also prevent retries, and a new user message cannot inherit old steering;
+- durable provenance stores approved wording/count/time only and never enters LLM context; separate transient guidance enters only the marked response through the provider's system-instruction field, never user/custom conversation content;
+- every entry in the package's explicit ten-entry provider-payload allowlist receives immutable, idempotent system-level adaptation; unknown APIs, malformed allowlisted shapes, conflicting sentinels, and marker failure return the original payload with no new marker/guidance;
+- tool-loop context receives the same snapshotted context/result/guidance without duplicate extraction, embedding, assessment, markers, or system blocks; no-selection and provenance-failure tombstones also prevent retries, and a new user message cannot inherit old steering;
 - non-TUI, renderer/build/append failure produces no habit guidance and only a static sanitized diagnostic;
 - judge missteering regressions in the automated suite are a prompt/protocol-layer faithful-judge simulation only; model-level judge precision is validated out-of-band with a real configured model and is deliberately kept outside `npm run check` and release claims. Recorded evidence: the original 8-case probe passed 8/8, and an expanded EN/Russian/paraphrase/negation/quotation/mixed-intent set passed 18/18;
 - capture persists at `agent_settled` (deferred across Pi's automatic retries): the last non-empty run's answer is saved; a run whose terminal assistant message ends in `error`, `aborted`, or `length` (truncated) is dropped in full — including its earlier same-run text — so partial/error/truncated output is never saved and an exhausted sequence of failed runs persists nothing; next-input/session-shutdown are backstops.
@@ -194,3 +195,5 @@ git status --short
 Then obtain independent DeepSeek, an available model-diverse reviewer, and constitution review of the actual diff plus test evidence. Skip a reviewer that stalls or reports exhausted usage rather than blocking release evidence. Reviewer verdicts do not replace test evidence.
 
 After final commit and an explicitly approved tag push, verify local `HEAD`, `origin/main`, and the new immutable release tag resolve to the same commit while all historical tags remain unchanged. npm publication is a separate manual action and is outside this release scope.
+
+Rollback for this unreleased provider-guidance change is explicit and reversible: first turn **Approved-habit reminders** off in `/experience setup`; for package rollback, pin the prior known-good immutable release with `pi install npm:pi-experiences@0.1.47`, then start a new Pi process (or reload the current one). Source rollback must revert the eventual corrective commit; never rewrite `v0.1.47`.

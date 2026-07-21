@@ -6,6 +6,16 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 ## [Unreleased]
 
+## [0.1.48] - 2026-07-21
+
+### Fixed
+
+- Approved-habit guidance is no longer serialized as a hidden custom message that providers interpret as user-authored text. After the triggering user message is rendered and applicability is assessed, guidance is added transiently to a verified system-instruction field for each entry in the package's explicit provider-payload allowlist. Unknown APIs, malformed payloads, conflicting guidance frames, and marker failures fail closed with no fallback to user content.
+
+### Validation
+
+- Added immutable/idempotent payload tests for every entry in the package's ten-entry provider-payload allowlist, plus lifecycle regressions for marker ordering, retries, tool continuations, stale state, unsupported APIs, and provenance failure.
+
 ## [0.1.47] - 2026-07-21
 
 ### Changed
@@ -120,7 +130,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 - Added synchronous submission-hook checks, deferred embedding/model assertions, and a packed Pi TUI smoke requiring submitted-message rendering within 1.5 seconds.
 
-[Unreleased]: https://github.com/misunders2d/pi-experiences/compare/v0.1.47...HEAD
+[Unreleased]: https://github.com/misunders2d/pi-experiences/compare/v0.1.48...HEAD
+[0.1.48]: https://github.com/misunders2d/pi-experiences/compare/v0.1.47...v0.1.48
 [0.1.47]: https://github.com/misunders2d/pi-experiences/compare/v0.1.46...v0.1.47
 [0.1.46]: https://github.com/misunders2d/pi-experiences/compare/v0.1.45...v0.1.46
 [0.1.45]: https://github.com/misunders2d/pi-experiences/compare/v0.1.44...v0.1.45

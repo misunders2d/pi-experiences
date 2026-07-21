@@ -4,13 +4,13 @@ from pathlib import Path
 if len(sys.argv)<3: raise SystemExit('usage: test-steering-tui-smoke.py INSTALLED_PACKAGE TRANSCRIPT')
 package=Path(sys.argv[1]).resolve(); transcript=Path(sys.argv[2]).resolve()
 state=Path(os.environ.get('AX_STATE_ROOT','/tmp/pi-experiences-047-steering-tui-state')).resolve()
-runtime=state.parent/'pi-experiences-0.1.47-steering-runtime'
+runtime=state.parent/'pi-experiences-0.1.48-steering-runtime'
 shutil.rmtree(state,ignore_errors=True); shutil.rmtree(runtime,ignore_errors=True)
 state.mkdir(parents=True,exist_ok=True); shutil.copytree(package,runtime)
 os.symlink(package.parent,runtime/'node_modules',target_is_directory=True)
 asset_source=Path(os.environ.get('AX_SELECTOR_MODEL_SOURCE_ROOT',str(Path.home()/'.agents/experience'))).resolve()
 subprocess.run(['node','--experimental-strip-types',str(runtime/'scripts/seed-steering-tui-smoke.mjs'),str(state)],check=True,cwd=runtime,env={**os.environ,'AX_STATE_ROOT':str(state),'AX_USER_ID':'owner','AX_SELECTOR_MODEL_SOURCE_ROOT':str(asset_source)},stdout=subprocess.PIPE,stderr=subprocess.PIPE)
-work=state.parent/'pi-experiences-0.1.47-steering-tui-work'; work.mkdir(parents=True,exist_ok=True)
+work=state.parent/'pi-experiences-0.1.48-steering-tui-work'; work.mkdir(parents=True,exist_ok=True)
 raw=bytearray(); csi=re.compile(rb'\x1b\[[0-?]*[ -/]*[@-~]'); osc=re.compile(rb'\x1b\][^\x07]*(?:\x07|\x1b\\)')
 def clean(data): return csi.sub(b'',osc.sub(b'',data)).replace(b'\r',b'\n').decode('utf-8','replace')
 def text(start=0): return clean(bytes(raw[start:]))
@@ -33,10 +33,13 @@ def send(fd,data,pause=.18): os.write(fd,data); drain(fd,pause)
 pid,fd=pty.fork()
 if pid==0:
     env={**os.environ,'AX_STATE_ROOT':str(state),'AX_USER_ID':'owner','TERM':'xterm-256color'}
-    os.chdir(work); os.execvpe('pi',['pi','--no-extensions','--no-skills','--thinking','high','-e',str(package)],env)
+    entrypoint=runtime/'extensions/agent-experience/index.ts'
+    os.chdir(work); os.execvpe('pi',['pi','--no-extensions','--no-skills','--thinking','high','-e',str(entrypoint)],env)
 fcntl.ioctl(fd,termios.TIOCSWINSZ,struct.pack('HHHH',42,120,0,0))
 try:
-    drain(fd,2); mark=len(raw)
+    drain(fd,2)
+    wait(fd,r'pi-experiences-0\.1\.48-steering-tui-work',timeout=30)
+    mark=len(raw)
     send(fd,b'Please provide steering smoke status.',.1)
     submitted_mark=len(raw); submitted_at=time.monotonic()
     send(fd,b'\r',.05)
