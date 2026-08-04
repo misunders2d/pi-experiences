@@ -104,6 +104,7 @@ let selectorLocalEmbeddingAdapter: LocalEmbeddingAdapter | undefined;
 let selectorLocalEmbeddingRoot: string | undefined;
 let advisorAdapterOverride: AdvisorAgentAdapter | undefined;
 let advisorTransitionValidationGateForTest: (() => Promise<void>) | undefined;
+let advisorTransitionSettlementGateForTest: (() => Promise<void>) | undefined;
 const selectorDiagnosticsShown = new Set<string>();
 const captureDiagnosticsShown = new Set<string>();
 
@@ -656,6 +657,10 @@ export function __setAgentExperienceAdvisorAdapterForTest(adapter: AdvisorAgentA
 
 export function __setAgentExperienceAdvisorTransitionValidationGateForTest(gate: (() => Promise<void>) | undefined) {
 	advisorTransitionValidationGateForTest = gate;
+}
+
+export function __setAgentExperienceAdvisorTransitionSettlementGateForTest(gate: (() => Promise<void>) | undefined) {
+	advisorTransitionSettlementGateForTest = gate;
 }
 
 export function __advisorCatchupRequiredForTest(syncBacklog: AdvisorRuntimeConfig["syncBacklog"], backlog: number): boolean {
@@ -3089,6 +3094,7 @@ type AdvisorCanceledTransitionDelivery = {
 		primaryEntryIds: string[];
 		causalEpisodeId: string;
 	};
+	settlement?: Promise<void>;
 };
 
 type AdvisorLifecycleState = {
@@ -4424,23 +4430,29 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 		const advisorState = advisorStateForContext(ctx);
 		if (advisorState) {
 			if (advisorState.activeGeneration) advisorState.activeGeneration.terminal = true;
-			await flushPendingAdvisorMessages(advisorState, false);
 			const canceledTransition = advisorState.canceledTransitionDelivery;
 			if (canceledTransition) {
-				try {
-					const item = canceledTransition.validatedItem;
-					if (item && canceledTransitionBoundResponseIsCurrent(advisorState, canceledTransition, ctx)) {
-						await deliverPendingAdvisorItem(advisorState, item, {
-							visibleOnly: false,
-							isCurrent: () => canceledTransitionBoundResponseIsCurrent(advisorState, canceledTransition, ctx),
-						});
+				canceledTransition.settlement ??= (async () => {
+					try {
+						await advisorTransitionSettlementGateForTest?.();
+						const item = canceledTransition.validatedItem;
+						if (item && canceledTransitionBoundResponseIsCurrent(advisorState, canceledTransition, ctx)) {
+							await deliverPendingAdvisorItem(advisorState, item, {
+								visibleOnly: false,
+								isCurrent: () => canceledTransitionBoundResponseIsCurrent(advisorState, canceledTransition, ctx),
+							});
+						}
+					} catch {
+						// A claimed settled delivery fails closed and is never reopened.
+					} finally {
+						if (advisorState.canceledTransitionDelivery === canceledTransition) {
+							advisorState.canceledTransitionDelivery = undefined;
+						}
 					}
-				} finally {
-					if (advisorState.canceledTransitionDelivery === canceledTransition) {
-						advisorState.canceledTransitionDelivery = undefined;
-					}
-				}
+				})();
+				await canceledTransition.settlement;
 			}
+			await flushPendingAdvisorMessages(advisorState, false);
 		}
 		const steeringScope = steeringScopeFromContext(ctx);
 		if (steeringScope) pendingSteeringRuns.delete(steeringScope);

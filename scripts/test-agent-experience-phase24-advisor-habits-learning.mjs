@@ -9,6 +9,7 @@ import agentExperienceExtension, {
   __normalizeAgentExperienceConsolidationModelOutputForTest,
   __setAgentExperienceAdvisorAdapterForTest,
   __setAgentExperienceAdvisorTransitionValidationGateForTest,
+  __setAgentExperienceAdvisorTransitionSettlementGateForTest,
 } from '../extensions/agent-experience/index.ts';
 import {
   ADVISOR_FINDING_MESSAGE_TYPE,
@@ -727,7 +728,7 @@ try {
     const handlers = new Map(), commands = new Map(), messageRenderers = new Map(), entryRenderers = new Map(), sent = [], visibleEntries = [];
     const branch = [...initialEntries];
     const setupChoices = [], setupNotes = [];
-    let idle = true;
+    let idle = true, persistSentMessages = false;
     const advisorModels = [
       { provider: 'test', id: 'advisor', name: 'Advisor', api: 'test', contextWindow: 128000, input: ['text'] },
       { provider: 'test', id: 'advisor-v2', name: 'Advisor v2', api: 'test', contextWindow: 128000, input: ['text'] },
@@ -739,7 +740,12 @@ try {
       registerCommand(name, options) { commands.set(name, options); },
       registerMessageRenderer(type, renderer) { messageRenderers.set(type, renderer); },
       registerEntryRenderer(type, renderer) { entryRenderers.set(type, renderer); },
-      sendMessage(message, options) { sent.push({ message, options }); },
+      sendMessage(message, options) {
+        sent.push({ message, options });
+        if (persistSentMessages) {
+          branch.push({ type: 'message', id: `sent-${++entrySequence}`, parentId: branch.at(-1)?.id || null, message });
+        }
+      },
       appendEntry(customType, data) {
         const entry = { type: 'custom', customType, data, id: `custom-${++entrySequence}`, parentId: branch.at(-1)?.id || null, timestamp: new Date().toISOString() };
         visibleEntries.push(entry);
@@ -795,6 +801,7 @@ try {
       handlers, commands, messageRenderers, entryRenderers, sent, visibleEntries, branch, ctx, emit, setupNotes,
       queueSetup(...choices) { setupChoices.push(...choices); },
       setIdle(value) { idle = value; },
+      persistSentMessages(value = true) { persistSentMessages = value; },
     };
   }
   function fakeAdvisorAdapter(attempt) {
@@ -834,14 +841,15 @@ try {
     addMessageEntry(harness.branch, `assistant-${id}`, assistant);
     await harness.emit('turn_end', { turnIndex: Number(id) || 0, message: assistant, toolResults: [] });
   }
-  async function makeBoundCanceledTransitionHarness(label) {
+  async function makeBoundCanceledTransitionHarness(label, ordinaryAttempt) {
     await writeAgentExperienceConfig({ ...DEFAULT_AGENT_EXPERIENCE_CONFIG, enabled: true, advisor_enabled: true, advisor_model: 'test/advisor', selector_enabled: true, embedding_enabled: true, capture_enabled: false, break_in_enabled: false });
     const updates = [];
     const adapter = {
       contextTokenEstimate: 0,
       async review(update) {
         updates.push(update);
-        return updates.length === 1 ? [{ kind: 'generic_advice', severity: 'nit', note: `Bound transition ${label}.` }] : [];
+        if (updates.length === 1) return [{ kind: 'generic_advice', severity: 'nit', note: `Bound transition ${label}.` }];
+        return updates.length === 2 && ordinaryAttempt ? [ordinaryAttempt] : [];
       },
       reset() {},
       async dispose() {},
@@ -872,6 +880,10 @@ try {
     addMessageEntry(harness.branch, `assistant-${label}-after`, assistant);
     await harness.emit('turn_end', { turnIndex: 2, message: assistant, toolResults: [] });
     __setAgentExperienceAdvisorTransitionValidationGateForTest(undefined);
+    if (ordinaryAttempt) {
+      await waitUntil(() => updates.length === 2, `${label} ordinary review`);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
     assert.equal(harness.sent.length, 0, `${label} must remain pending after response binding`);
     return harness;
   }
@@ -1111,6 +1123,42 @@ try {
     assert.equal(shutdownDropHarness.sent.length, 0, 'shutdown must revoke bound model-visible canceled-transition delivery');
     assert.equal(shutdownDropHarness.visibleEntries.length, 0, 'shutdown must not misrepresent a bound canceled-transition finding as delivered');
 
+    const coexistHarness = await makeBoundCanceledTransitionHarness('coexisting-settled', {
+      kind: 'generic_advice',
+      severity: 'nit',
+      note: 'Ordinary pending at the same settlement.',
+    });
+    coexistHarness.persistSentMessages();
+    coexistHarness.setIdle(true);
+    await coexistHarness.emit('agent_settled');
+    assert.deepEqual(
+      coexistHarness.sent.map(({ message }) => message.details.note),
+      ['Bound transition coexisting-settled.', 'Ordinary pending at the same settlement.'],
+      'the bound retained finding must deliver before an ordinary pending append mutates the branch',
+    );
+    assert.ok(coexistHarness.sent.every(({ options }) => options.triggerTurn === false), 'settled coexistence must never steer or trigger a live turn');
+    await coexistHarness.emit('agent_settled');
+    assert.equal(coexistHarness.sent.length, 2, 'duplicate settle must not redeliver either coexisting finding');
+    await coexistHarness.emit('session_shutdown', { reason: 'quit' });
+
+    const concurrentSettledHarness = await makeBoundCanceledTransitionHarness('concurrent-settled');
+    let settlementValidationEntered = false;
+    let releaseSettlementValidation;
+    __setAgentExperienceAdvisorTransitionSettlementGateForTest(() => {
+      settlementValidationEntered = true;
+      return new Promise((resolve) => { releaseSettlementValidation = resolve; });
+    });
+    concurrentSettledHarness.setIdle(true);
+    const firstSettlement = concurrentSettledHarness.emit('agent_settled');
+    await waitUntil(() => settlementValidationEntered, 'deferred settlement revalidation');
+    const secondSettlement = concurrentSettledHarness.emit('agent_settled');
+    releaseSettlementValidation();
+    await Promise.all([firstSettlement, secondSettlement]);
+    assert.equal(concurrentSettledHarness.sent.length, 1, 'concurrent duplicate agent_settled callbacks must claim and deliver the bound item exactly once');
+    assert.equal(concurrentSettledHarness.sent[0].message.details.note, 'Bound transition concurrent-settled.');
+    __setAgentExperienceAdvisorTransitionSettlementGateForTest(undefined);
+    await concurrentSettledHarness.emit('session_shutdown', { reason: 'quit' });
+
     const cursorUpdates = [];
     const cursorAdapter = {
       contextTokenEstimate: 0,
@@ -1319,6 +1367,7 @@ try {
   } finally {
     __setAgentExperienceAdvisorAdapterForTest(undefined);
     __setAgentExperienceAdvisorTransitionValidationGateForTest(undefined);
+    __setAgentExperienceAdvisorTransitionSettlementGateForTest(undefined);
     for (const [key, value] of Object.entries(advisorEnv)) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
