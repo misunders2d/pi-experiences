@@ -22,6 +22,10 @@ import {
   createAdvisorWorkspaceTools,
 } from '../extensions/agent-experience/src/advisor/workspace-tools.ts';
 import { createPiAdvisorAgentAdapter } from '../extensions/agent-experience/src/advisor/model.ts';
+import { extractAdvisorTurnDelta } from '../extensions/agent-experience/src/advisor/transcript.ts';
+import { AdvisorEmissionGuard } from '../extensions/agent-experience/src/advisor/emission-guard.ts';
+import { AdvisorRuntime } from '../extensions/agent-experience/src/advisor/runtime.ts';
+import { createHash } from 'node:crypto';
 
 assert.equal(DEFAULT_AGENT_EXPERIENCE_CONFIG.advisor_enabled, false);
 assert.equal(DEFAULT_AGENT_EXPERIENCE_CONFIG.advisor_model, '');
@@ -522,5 +526,407 @@ try {
   await rm(workspace, { recursive: true, force: true });
   await rm(outside, { recursive: true, force: true });
 }
+
+// --- Task 3: Transcript extraction, emission guard, queue runtime ---
+
+// Transcript extraction
+const delta = extractAdvisorTurnDelta({
+  scope: { userId: 'owner', sessionId: 's', sessionFile: 'f' },
+  epoch: 2,
+  generation: 7,
+  cursor: 11,
+  currentUserEntryId: 'u-entry',
+  primaryEntryIds: ['a-entry', 'tool-result-entry'],
+  causalEpisodeId: 'episode-7',
+  causedByAdvisor: false,
+  currentRequest: 'Release the package',
+  assistantMessage: { role: 'assistant', content: [
+    { type: 'thinking', thinking: 'Need to publish quickly.' },
+    { type: 'text', text: 'Publishing now.' },
+    { type: 'toolCall', id: 't1', name: 'bash', arguments: { command: 'npm publish' } },
+  ] },
+  toolResults: [{ role: 'toolResult', toolCallId: 't1', toolName: 'bash', content: [{ type: 'text', text: 'published' }], isError: false }],
+});
+assert.match(delta.text, /Publishing now|npm publish|published/);
+assert.ok(delta.text.length <= 24_000);
+assert.equal(delta.toolEventCount, 1);
+assert.equal(delta.generation, 7);
+assert.equal(delta.cursor, 11);
+assert.equal(delta.causedByAdvisor, false);
+assert.equal(typeof delta.eventFingerprint, 'string');
+assert.equal(delta.eventFingerprint.length, 64);
+
+// No delta for Advisor-caused generation
+const advisorCaused = extractAdvisorTurnDelta({
+  scope: { userId: 'owner', sessionId: 's', sessionFile: 'f' },
+  epoch: 2, generation: 7, cursor: 11,
+  currentUserEntryId: 'u-entry',
+  primaryEntryIds: ['a-entry'],
+  causalEpisodeId: 'episode-7',
+  causedByAdvisor: true,
+  currentRequest: 'Check',
+  assistantMessage: { role: 'assistant', content: [{ type: 'text', text: 'Ok.' }] },
+  toolResults: [],
+});
+assert.equal(advisorCaused, undefined);
+
+// No delta for empty assistant turn
+const emptyTurn = extractAdvisorTurnDelta({
+  scope: { userId: 'owner', sessionId: 's', sessionFile: 'f' },
+  epoch: 2, generation: 7, cursor: 11,
+  currentUserEntryId: 'u-entry',
+  primaryEntryIds: ['a-entry'],
+  causalEpisodeId: 'episode-7',
+  causedByAdvisor: false,
+  currentRequest: 'Check',
+  assistantMessage: { role: 'assistant', content: [] },
+  toolResults: [],
+});
+assert.equal(emptyTurn, undefined);
+
+// No delta for missing entry identity
+const missingEntry = extractAdvisorTurnDelta({
+  scope: { userId: 'owner', sessionId: 's', sessionFile: 'f' },
+  epoch: 2, generation: 7, cursor: 11,
+  currentUserEntryId: '',
+  primaryEntryIds: ['a-entry'],
+  causalEpisodeId: 'episode-7',
+  causedByAdvisor: false,
+  currentRequest: 'Check',
+  assistantMessage: { role: 'assistant', content: [{ type: 'text', text: 'Ok.' }] },
+  toolResults: [],
+});
+assert.equal(missingEntry, undefined);
+
+// Fingerprint is deterministic for same input
+const delta2 = extractAdvisorTurnDelta({
+  scope: { userId: 'owner', sessionId: 's', sessionFile: 'f' },
+  epoch: 2, generation: 7, cursor: 11,
+  currentUserEntryId: 'u-entry',
+  primaryEntryIds: ['a-entry', 'tool-result-entry'],
+  causalEpisodeId: 'episode-7',
+  causedByAdvisor: false,
+  currentRequest: 'Release the package',
+  assistantMessage: { role: 'assistant', content: [
+    { type: 'thinking', thinking: 'Need to publish quickly.' },
+    { type: 'text', text: 'Publishing now.' },
+    { type: 'toolCall', id: 't1', name: 'bash', arguments: { command: 'npm publish' } },
+  ] },
+  toolResults: [{ role: 'toolResult', toolCallId: 't1', toolName: 'bash', content: [{ type: 'text', text: 'published' }], isError: false }],
+});
+assert.equal(delta.eventFingerprint, delta2.eventFingerprint);
+
+// Different entry IDs produce different fingerprint
+const delta3 = extractAdvisorTurnDelta({
+  scope: { userId: 'owner', sessionId: 's', sessionFile: 'f' },
+  epoch: 2, generation: 7, cursor: 11,
+  currentUserEntryId: 'u-entry',
+  primaryEntryIds: ['different-entry'],
+  causalEpisodeId: 'episode-7',
+  causedByAdvisor: false,
+  currentRequest: 'Release the package',
+  assistantMessage: { role: 'assistant', content: [
+    { type: 'text', text: 'Publishing now.' },
+    { type: 'toolCall', id: 't1', name: 'bash', arguments: { command: 'npm publish' } },
+  ] },
+  toolResults: [{ role: 'toolResult', toolCallId: 't1', toolName: 'bash', content: [{ type: 'text', text: 'published' }], isError: false }],
+});
+assert.notEqual(delta.eventFingerprint, delta3.eventFingerprint);
+
+// Emission guard normalization and deduplication
+const guard = new AdvisorEmissionGuard();
+const guardUpdate = {
+  schemaVersion: 1,
+  scope: { userId: 'owner', sessionId: 's', sessionFile: 'f' },
+  generation: 1, epoch: 1, cursor: 1, inProgress: false,
+  primaryDelta: 'test', currentRequest: 'test',
+  habits: [{ alias: 'h1', habitId: 'id1', condition: 'When x', behavior: 'Do y', checksum: 'c'.repeat(64), lawHash: 'l'.repeat(64) }],
+  eventFingerprint: 'fp1',
+  causalEpisodeId: 'ep-1',
+  causedByAdvisor: false,
+};
+
+// Accept one finding
+const accepted = guard.accept([{ kind: 'generic_advice', note: 'Check the build.', severity: 'concern' }], guardUpdate);
+assert.deepEqual(accepted, { kind: 'generic_advice', note: 'Check the build.', severity: 'concern' });
+
+// One per update
+const secondAttempt = guard.accept([{ kind: 'generic_advice', note: 'Second check.', severity: 'nit' }], guardUpdate);
+assert.equal(secondAttempt, undefined);
+
+// Reset for next update
+guard.resetForUpdate();
+const guardUpdate2 = { ...guardUpdate, eventFingerprint: 'fp2' };
+
+// Exact duplicate suppressed
+const duplicate = guard.accept([{ kind: 'generic_advice', note: 'Check the build.', severity: 'concern' }], guardUpdate2);
+assert.equal(duplicate, undefined);
+
+// Normalized duplicate: different casing
+guard.resetForUpdate();
+const guardUpdate3 = { ...guardUpdate, eventFingerprint: 'fp3' };
+const normalizedDup = guard.accept([{ kind: 'generic_advice', note: '  Check   THE build!!  ', severity: 'concern' }], guardUpdate3);
+assert.equal(normalizedDup, undefined);
+
+// Stop words suppressed
+guard.resetForUpdate();
+const guardUpdate4 = { ...guardUpdate, eventFingerprint: 'fp4' };
+const stopWord1 = guard.accept([{ kind: 'generic_advice', note: 'Stop.', severity: 'blocker' }], guardUpdate4);
+assert.equal(stopWord1, undefined);
+
+guard.resetForUpdate();
+const guardUpdate5 = { ...guardUpdate, eventFingerprint: 'fp5' };
+const stopWord2 = guard.accept([{ kind: 'generic_advice', note: 'Done.', severity: 'concern' }], guardUpdate5);
+assert.equal(stopWord2, undefined);
+
+guard.resetForUpdate();
+const guardUpdate6 = { ...guardUpdate, eventFingerprint: 'fp6' };
+const stopWord3 = guard.accept([{ kind: 'generic_advice', note: 'No issue; continue.', severity: 'nit' }], guardUpdate6);
+assert.equal(stopWord3, undefined);
+
+// Habit over generic priority
+guard.resetForUpdate();
+const guardUpdate7 = { ...guardUpdate, eventFingerprint: 'fp7' };
+const habitPriority = guard.accept([
+  { kind: 'generic_advice', note: 'Interesting observation.', severity: 'blocker' },
+  { kind: 'habit_violation', habitAlias: 'h1', severity: 'concern' },
+], guardUpdate7);
+assert.deepEqual(habitPriority, { kind: 'habit_violation', habitAlias: 'h1', severity: 'concern' });
+
+// Invalid habit alias rejected
+guard.resetForUpdate();
+const guardUpdate8 = { ...guardUpdate, eventFingerprint: 'fp8' };
+const invalidHabit = guard.accept([{ kind: 'habit_violation', habitAlias: 'h9', severity: 'blocker' }], guardUpdate8);
+assert.equal(invalidHabit, undefined);
+
+// Escalation: new event fingerprint allows genuinely new finding
+guard.resetForUpdate();
+const guardUpdate9 = { ...guardUpdate, eventFingerprint: 'fp9' };
+const escalate = guard.accept([{ kind: 'generic_advice', note: 'Critical security issue.', severity: 'blocker' }], guardUpdate9);
+assert.deepEqual(escalate, { kind: 'generic_advice', note: 'Critical security issue.', severity: 'blocker' });
+
+// Same event fingerprint re-emitted suppressed
+guard.resetForUpdate();
+const guardUpdate10 = { ...guardUpdate, eventFingerprint: 'fp9' };
+const sameFp = guard.accept([{ kind: 'generic_advice', note: 'Different note.', severity: 'concern' }], guardUpdate10);
+assert.equal(sameFp, undefined);
+
+// Empty attempts
+guard.resetForUpdate();
+const emptyAttempts = guard.accept([], { ...guardUpdate, eventFingerprint: 'fp10' });
+assert.equal(emptyAttempts, undefined);
+
+// AdvisorRuntime queue single-flight, coalescing, reset
+const runtimeCalls = [];
+const runtimeHost = {
+  async buildUpdate(delta) {
+    runtimeCalls.push(['buildUpdate', delta.cursor]);
+    return {
+      schemaVersion: 1,
+      scope: delta.scope,
+      generation: delta.generation, epoch: delta.epoch,
+      cursor: delta.cursor, inProgress: false,
+      primaryDelta: delta.text,
+      currentRequest: delta.currentRequest,
+      habits: [],
+      eventFingerprint: delta.eventFingerprint,
+      causalEpisodeId: delta.causalEpisodeId,
+      causedByAdvisor: false,
+    };
+  },
+  async acceptFinding(finding, _update) {
+    runtimeCalls.push(['acceptFinding', finding.kind]);
+  },
+  onStaticDiagnostic(reason) {
+    runtimeCalls.push(['diagnostic', reason]);
+  },
+};
+
+// Create a stub adapter that returns empty (no-op) for runtime tests
+const stubAdapter = {
+  get contextTokenEstimate() { return 0; },
+  async review(_update, _signal) { return []; },
+  reset() {},
+  async dispose() {},
+};
+
+const runtime = new AdvisorRuntime(runtimeHost, stubAdapter);
+
+// Enqueue a delta and wait for catch-up
+runtime.enqueue({
+  scope: { userId: 'owner', sessionId: 's', sessionFile: 'f' },
+  epoch: 2, generation: 7, cursor: 11,
+  currentUserEntryId: 'u1',
+  primaryEntryIds: ['a1'],
+  causalEpisodeId: 'ep-1',
+  causedByAdvisor: false,
+  text: 'Some delta text',
+  currentRequest: 'Do something',
+  inProgress: false,
+  toolEventCount: 0,
+  eventFingerprint: createHash('sha256').update('test1').digest('hex'),
+});
+await runtime.waitForCatchup();
+assert.ok(runtimeCalls.some((c) => c[0] === 'buildUpdate'));
+
+// Reset aborts and clears queue
+runtimeCalls.length = 0;
+runtime.reset('test reset');
+
+// Enqueue again after reset
+const lateDelta = {
+  scope: { userId: 'owner', sessionId: 's', sessionFile: 'f' },
+  epoch: 2, generation: 7, cursor: 12,
+  currentUserEntryId: 'u2',
+  primaryEntryIds: ['a2'],
+  causalEpisodeId: 'ep-2',
+  causedByAdvisor: false,
+  text: 'Late delta',
+  currentRequest: 'Late request',
+  inProgress: false,
+  toolEventCount: 0,
+  eventFingerprint: createHash('sha256').update('test2').digest('hex'),
+};
+
+runtime.enqueue(lateDelta);
+await runtime.waitForCatchup();
+
+// Same-generation coalescing
+runtimeCalls.length = 0;
+
+runtime.enqueue({
+  scope: { userId: 'owner', sessionId: 's', sessionFile: 'f' },
+  epoch: 2, generation: 8, cursor: 13,
+  currentUserEntryId: 'u3',
+  primaryEntryIds: ['a3'],
+  causalEpisodeId: 'ep-coalesce',
+  causedByAdvisor: false,
+  text: 'First batch item',
+  currentRequest: 'Batch request',
+  inProgress: false,
+  toolEventCount: 1,
+  eventFingerprint: createHash('sha256').update('batch1').digest('hex'),
+});
+
+runtime.enqueue({
+  scope: { userId: 'owner', sessionId: 's', sessionFile: 'f' },
+  epoch: 2, generation: 8, cursor: 14,
+  currentUserEntryId: 'u4',
+  primaryEntryIds: ['a4'],
+  causalEpisodeId: 'ep-coalesce',
+  causedByAdvisor: false,
+  text: 'Second batch item',
+  currentRequest: 'Batch request',
+  inProgress: false,
+  toolEventCount: 1,
+  eventFingerprint: createHash('sha256').update('batch2').digest('hex'),
+});
+
+await runtime.waitForCatchup();
+
+// Different generations do not coalesce
+runtimeCalls.length = 0;
+
+runtime.enqueue({
+  scope: { userId: 'owner', sessionId: 's', sessionFile: 'f' },
+  epoch: 2, generation: 9, cursor: 15,
+  currentUserEntryId: 'u5',
+  primaryEntryIds: ['a5'],
+  causalEpisodeId: 'ep-diff-gen',
+  causedByAdvisor: false,
+  text: 'Gen 9 item',
+  currentRequest: 'Gen 9 request',
+  inProgress: false,
+  toolEventCount: 0,
+  eventFingerprint: createHash('sha256').update('gen9').digest('hex'),
+});
+
+runtime.enqueue({
+  scope: { userId: 'owner', sessionId: 's', sessionFile: 'f' },
+  epoch: 2, generation: 10, cursor: 16,
+  currentUserEntryId: 'u6',
+  primaryEntryIds: ['a6'],
+  causalEpisodeId: 'ep-diff-gen2',
+  causedByAdvisor: false,
+  text: 'Gen 10 item',
+  currentRequest: 'Gen 10 request',
+  inProgress: false,
+  toolEventCount: 0,
+  eventFingerprint: createHash('sha256').update('gen10').digest('hex'),
+});
+
+await runtime.waitForCatchup();
+
+// Max five queued batches — sixth gets coalesced diagnostic
+runtimeCalls.length = 0;
+for (let i = 0; i < 7; i++) {
+  runtime.enqueue({
+    scope: { userId: 'owner', sessionId: 's', sessionFile: 'f' },
+    epoch: 2, generation: 11, cursor: 17 + i,
+    currentUserEntryId: `u${7 + i}`,
+    primaryEntryIds: [`a${7 + i}`],
+    causalEpisodeId: `ep-overflow-${i}`,
+    causedByAdvisor: false,
+    text: `Overflow item ${i}`,
+    currentRequest: 'Overflow',
+    inProgress: false,
+    toolEventCount: 0,
+    eventFingerprint: createHash('sha256').update(`overflow${i}`).digest('hex'),
+  });
+}
+// Should have at least one queue_coalesced diagnostic
+assert.ok(runtimeCalls.some((c) => c[1] === 'advisor_queue_coalesced'));
+
+// Dispose
+await runtime.dispose();
+
+// Failure isolation: adapter throws, runtime converts to diagnostic
+const failureCalls = [];
+const failureHost = {
+  async buildUpdate(delta) {
+    return {
+      schemaVersion: 1,
+      scope: delta.scope,
+      generation: delta.generation, epoch: delta.epoch,
+      cursor: delta.cursor, inProgress: false,
+      primaryDelta: delta.text,
+      currentRequest: delta.currentRequest,
+      habits: [],
+      eventFingerprint: delta.eventFingerprint,
+      causalEpisodeId: delta.causalEpisodeId,
+      causedByAdvisor: false,
+    };
+  },
+  async acceptFinding() {},
+  onStaticDiagnostic(reason) {
+    failureCalls.push(reason);
+  },
+};
+
+const throwingAdapter = {
+  get contextTokenEstimate() { return 0; },
+  async review() { throw new Error('adapter failure'); },
+  reset() {},
+  async dispose() {},
+};
+
+const failureRuntime = new AdvisorRuntime(failureHost, throwingAdapter);
+failureRuntime.enqueue({
+  scope: { userId: 'owner', sessionId: 's', sessionFile: 'f' },
+  epoch: 2, generation: 1, cursor: 1,
+  currentUserEntryId: 'u-fail',
+  primaryEntryIds: ['a-fail'],
+  causalEpisodeId: 'ep-fail',
+  causedByAdvisor: false,
+  text: 'Failure test',
+  currentRequest: 'Test',
+  inProgress: false,
+  toolEventCount: 0,
+  eventFingerprint: createHash('sha256').update('fail').digest('hex'),
+});
+await failureRuntime.waitForCatchup();
+assert.ok(failureCalls.includes('advisor_unavailable'));
+await failureRuntime.dispose();
+
 
 console.log('phase23 advisor core tests passed');
