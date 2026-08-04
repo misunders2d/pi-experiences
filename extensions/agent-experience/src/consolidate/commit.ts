@@ -72,6 +72,58 @@ function uniqueArrayByCanonical(values: unknown[]): unknown[] {
 	return out;
 }
 
+interface PersistedAdvisorEvent {
+	event_fingerprint: string;
+	created_at: string;
+}
+
+interface AdvisorEvidenceMetadata {
+	advisor_events: PersistedAdvisorEvent[];
+	advisor_source_ref_keys: string[];
+	non_advisor_source_dates: string[];
+}
+
+function observationRefKey(record: ValidatedObservationRecord): string {
+	return `${record.file_generation}:${record.seq}:${record.checksum}`;
+}
+
+function advisorEvidenceMetadata(records: ValidatedObservationRecord[]): AdvisorEvidenceMetadata {
+	const advisorEvents = new Map<string, PersistedAdvisorEvent>();
+	const advisorSourceRefKeys: string[] = [];
+	const nonAdvisorSourceDates: string[] = [];
+	for (const record of records) {
+		if (record.origin.source !== "advisor_finding") {
+			nonAdvisorSourceDates.push(record.created_at);
+			continue;
+		}
+		advisorSourceRefKeys.push(observationRefKey(record));
+		const payload = record.payload_redacted && typeof record.payload_redacted === "object" && !Array.isArray(record.payload_redacted)
+			? record.payload_redacted as Record<string, unknown>
+			: {};
+		const fingerprint = payload.event_fingerprint;
+		if (typeof fingerprint === "string" && /^[0-9a-f]{64}$/.test(fingerprint) && !advisorEvents.has(fingerprint)) {
+			advisorEvents.set(fingerprint, { event_fingerprint: fingerprint, created_at: record.created_at });
+		}
+	}
+	return {
+		advisor_events: [...advisorEvents.values()],
+		advisor_source_ref_keys: [...new Set(advisorSourceRefKeys)],
+		non_advisor_source_dates: [...new Set(nonAdvisorSourceDates)].sort(),
+	};
+}
+
+function mergeAdvisorEvents(values: unknown[]): PersistedAdvisorEvent[] {
+	const events = new Map<string, PersistedAdvisorEvent>();
+	for (const value of values) {
+		if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+		const event = value as Record<string, unknown>;
+		if (typeof event.event_fingerprint !== "string" || !/^[0-9a-f]{64}$/.test(event.event_fingerprint)) continue;
+		if (typeof event.created_at !== "string" || !Number.isFinite(Date.parse(event.created_at))) continue;
+		if (!events.has(event.event_fingerprint)) events.set(event.event_fingerprint, { event_fingerprint: event.event_fingerprint, created_at: event.created_at });
+	}
+	return [...events.values()];
+}
+
 function mergeCandidateData(existingResidual: any, incoming: any): unknown {
 	const merged: Record<string, unknown> = { ...(incoming && typeof incoming === "object" && !Array.isArray(incoming) ? incoming : {}) };
 	for (const key of [
@@ -93,6 +145,18 @@ function mergeCandidateData(existingResidual: any, incoming: any): unknown {
 	}
 	merged.source_refs = uniqueArrayByCanonical([...(Array.isArray(existingResidual?.source_refs) ? existingResidual.source_refs : []), ...(Array.isArray((incoming as any)?.source_refs) ? (incoming as any).source_refs : [])]);
 	merged.source_dates = uniqueArrayByCanonical([...(Array.isArray(existingResidual?.source_dates) ? existingResidual.source_dates : []), ...(Array.isArray((incoming as any)?.source_dates) ? (incoming as any).source_dates : [])]).sort();
+	merged.advisor_events = mergeAdvisorEvents([
+		...(Array.isArray(existingResidual?.advisor_events) ? existingResidual.advisor_events : []),
+		...(Array.isArray(incoming?.advisor_events) ? incoming.advisor_events : []),
+	]);
+	merged.advisor_source_ref_keys = uniqueArrayByCanonical([
+		...(Array.isArray(existingResidual?.advisor_source_ref_keys) ? existingResidual.advisor_source_ref_keys : []),
+		...(Array.isArray(incoming?.advisor_source_ref_keys) ? incoming.advisor_source_ref_keys : []),
+	]);
+	merged.non_advisor_source_dates = uniqueArrayByCanonical([
+		...(Array.isArray(existingResidual?.non_advisor_source_dates) ? existingResidual.non_advisor_source_dates : []),
+		...(Array.isArray(incoming?.non_advisor_source_dates) ? incoming.non_advisor_source_dates : []),
+	]).sort();
 	return merged;
 }
 
@@ -237,7 +301,7 @@ function validateSourceRefs(proposal: HabitCandidateProposal, observationMap: Ma
 	});
 }
 
-function proposalCandidateData(batch: ValidatedProposalBatch, proposal: HabitCandidateProposal, sourceDates: string[]) {
+function proposalCandidateData(batch: ValidatedProposalBatch, proposal: HabitCandidateProposal, sourceDates: string[], advisorEvidence: AdvisorEvidenceMetadata) {
 	return {
 		schema_version: 2,
 		record_kind: "candidate_habit_v1",
@@ -257,10 +321,11 @@ function proposalCandidateData(batch: ValidatedProposalBatch, proposal: HabitCan
 		source_refs: proposal.source_refs,
 		source_dates: sourceDates,
 		...(proposal.correction_role ? { correction_role: proposal.correction_role, correction_group_id: proposal.correction_group_id } : {}),
+		...advisorEvidence,
 	};
 }
 
-function proposalEvidenceData(_batch: ValidatedProposalBatch, proposal: HabitCandidateProposal, sourceDates: string[], habitId: string) {
+function proposalEvidenceData(_batch: ValidatedProposalBatch, proposal: HabitCandidateProposal, sourceDates: string[], habitId: string, advisorEvidence: AdvisorEvidenceMetadata) {
 	return {
 		schema_version: 2,
 		record_kind: "candidate_evidence_v1",
@@ -276,6 +341,7 @@ function proposalEvidenceData(_batch: ValidatedProposalBatch, proposal: HabitCan
 		source_dates: sourceDates,
 		...(proposal.evidence_summary === undefined ? {} : { evidence_summary: proposal.evidence_summary }),
 		...(proposal.correction_role ? { correction_role: proposal.correction_role, correction_group_id: proposal.correction_group_id } : {}),
+		...advisorEvidence,
 	};
 }
 
@@ -341,11 +407,13 @@ export async function consolidateProposalBatch(input: CommitInput): Promise<Cons
 	if (!maxRef) throw new Error("Proposal batch missing source refs");
 	const policy = sanitizePolicy(input.semantic?.policy);
 	if (policy.enabled && !input.semantic?.provider) throw new Error("Semantic duplicate provider unavailable");
-	const staged: Array<{ proposal: HabitCandidateProposal; sourceDates: string[]; candidateId: string; evidenceId: string; candidateData: any; evidenceData: any; duplicateMatch?: any }> = [];
+	const staged: Array<{ proposal: HabitCandidateProposal; sourceDates: string[]; candidateId: string; evidenceId: string; candidateData: any; evidenceData: any; advisorEvidence: AdvisorEvidenceMetadata; hasIndependentCorrectionAuthority: boolean; duplicateMatch?: any }> = [];
 	for (let i = 0; i < batch.proposals.length; i++) {
 		const proposal = batch.proposals[i];
 		const sourceDates = sourceRecordsByProposal[i].map((record) => record.created_at);
-		let candidateData = proposalCandidateData(batch, proposal, sourceDates);
+		const advisorEvidence = advisorEvidenceMetadata(sourceRecordsByProposal[i]);
+		const hasIndependentCorrectionAuthority = sourceRecordsByProposal[i].some((record) => record.origin.source !== "advisor_finding");
+		let candidateData = proposalCandidateData(batch, proposal, sourceDates, advisorEvidence);
 		const candidateId = stableId("candidate", habitIdentity(proposal, userId));
 		let evidenceHabitId = candidateId;
 		let duplicateMatch: any;
@@ -363,9 +431,9 @@ export async function consolidateProposalBatch(input: CommitInput): Promise<Cons
 				candidateData = { ...candidateData, review_status: "duplicate_resolution", active: false, injectable: false, semantic_duplicate: storedDuplicateMatch };
 			}
 		}
-		const evidenceData = proposalEvidenceData(batch, proposal, sourceDates, evidenceHabitId);
+		const evidenceData = proposalEvidenceData(batch, proposal, sourceDates, evidenceHabitId, advisorEvidence);
 		const evidenceId = stableId("evidence", { schema_version: 2, user_id: userId, payload: evidenceData });
-		staged.push({ proposal, sourceDates, candidateId, evidenceId, candidateData, evidenceData, duplicateMatch });
+		staged.push({ proposal, sourceDates, candidateId, evidenceId, candidateData, evidenceData, advisorEvidence, hasIndependentCorrectionAuthority, duplicateMatch });
 	}
 	let result: ConsolidationResult | undefined;
 	input.db.exec("BEGIN IMMEDIATE");
@@ -376,12 +444,17 @@ export async function consolidateProposalBatch(input: CommitInput): Promise<Cons
 		let insertedCandidates = 0;
 		let insertedEvidence = 0;
 		for (const item of staged) {
-			if (item.proposal.correction_role === "old_negative" && item.proposal.confidence_bp >= CONTRADICTION_SUPPRESS_MIN_CONFIDENCE_BP) {
+			if (
+				item.proposal.correction_role === "old_negative"
+				&& item.proposal.evidence_stage === "reviewable"
+				&& item.hasIndependentCorrectionAuthority
+				&& item.proposal.confidence_bp >= CONTRADICTION_SUPPRESS_MIN_CONFIDENCE_BP
+			) {
 				const matches = exactActiveCorrectionMatches(input.db, userId, item.proposal);
 				if (matches.length === 1) {
 					const target = matches[0];
 					suppressContradictedHabit(input.db, { userId, before: target, proposal: item.proposal, sourceDates: item.sourceDates, now: batch.created_at });
-					const evidenceData = proposalEvidenceData(batch, item.proposal, item.sourceDates, target.id);
+					const evidenceData = proposalEvidenceData(batch, item.proposal, item.sourceDates, target.id, item.advisorEvidence);
 					const evidenceId = stableId("evidence", { schema_version: 2, user_id: userId, payload: evidenceData });
 					const evidence = insertIdempotentStorageRecord(input.db, "evidence", { id: evidenceId, userId, data: evidenceData, now: batch.created_at });
 					candidateIds.push(target.id);

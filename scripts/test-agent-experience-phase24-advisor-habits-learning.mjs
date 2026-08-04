@@ -24,10 +24,12 @@ import {
   OBSERVATION_UNIQUE_SCAN_CAP_FOR_TEST,
   observationChecksumForTest,
   readValidatedObservationRange,
+  rotateObservationGenerationIfFullyRead,
 } from '../extensions/agent-experience/src/storage/observations.ts';
 import { validateObservationRecords } from '../extensions/agent-experience/src/consolidate/observations.ts';
 import { buildConsolidationUserPrompt } from '../extensions/agent-experience/src/consolidate/model-adapter.ts';
 import { runConsolidationOnce } from '../extensions/agent-experience/src/consolidate/runner.ts';
+import { buildCompactHabitContext } from '../extensions/agent-experience/src/consolidate/context.ts';
 import { listPendingReviewItems } from '../extensions/agent-experience/src/review.ts';
 import {
   appendAdvisorFindingObservation,
@@ -447,13 +449,46 @@ try {
     unique_observations: 20,
     source_dates: ['2026-08-01'],
   }];
-  const correctionInput = { ...normalizeInput, observations: [learningRange.records[0]], habitContext: correctionContext };
+  const correctionInput = {
+    ...normalizeInput,
+    observations: [learningRange.records[0]],
+    habitContext: correctionContext,
+    expected: {
+      file_generation: learningRange.records[0].file_generation,
+      seq_start: 1,
+      seq_end: 1,
+      read_checksum: learningRange.records[0].checksum,
+    },
+  };
   const oneShotCorrection = __normalizeAgentExperienceConsolidationModelOutputForTest({
     ...correctionRaw,
     proposals: [{ ...correctionRaw.proposals[0], source_refs: [{ file_generation: learningRange.records[0].file_generation, seq: 1, checksum: learningRange.records[0].checksum }] }],
   }, correctionInput);
   assert.equal(oneShotCorrection.proposals[0].evidence_stage, 'collecting', 'Advisor evidence can never invoke explicit-correction authority');
   assert.equal(normalizeEvidence(learningRange.records, correctionRaw).proposals[0].evidence_stage, 'collecting', 'repeated Advisor evidence can never create a correction split');
+
+  const correctionLedger = await initExperienceStorage(join(temp, 'advisor-correction-ledger'), { allowInit: true, userId: 'owner' });
+  try {
+    const activeId = 'advisor-correction-active';
+    insertStorageRecord(correctionLedger.db, 'habits', {
+      id: activeId,
+      userId: 'owner',
+      data: habitData(activeId, correctionRaw.proposals[0].old_condition, correctionRaw.proposals[0].old_behavior, lawSnapshotForTest('advisor correction sink law').hash),
+      now: '2026-08-04T10:00:00.000Z',
+    });
+    const committedCorrection = await runConsolidationOnce({
+      root: correctionLedger.root,
+      db: correctionLedger.db,
+      userId: 'owner',
+      observations: correctionInput.observations,
+      modelOutput: oneShotCorrection,
+      model: 'test/learning',
+      now: '2026-08-04T10:30:00.000Z',
+    });
+    assert.equal(committedCorrection.ok, true);
+    assert.equal(correctionLedger.db.prepare('SELECT status FROM habits WHERE user_id=? AND id=?').get('owner', activeId).status, 'active', 'Advisor-only collecting correction must not suppress an active habit at commit');
+    assert.equal(Number(correctionLedger.db.prepare("SELECT COUNT(*) AS count FROM experience_review_audit WHERE user_id='owner' AND action='suppress_contradicted_habit'").get().count), 0, 'Advisor-only collecting correction must not write a suppression audit');
+  } finally { correctionLedger.db.close(); }
 
   const learningLedger = await initExperienceStorage(join(temp, 'advisor-learning-ledger'), { allowInit: true, userId: 'owner' });
   try {
@@ -470,6 +505,78 @@ try {
     assert.equal(listPendingReviewItems(learningLedger.db, { userId: 'owner' }).items.length, 1, 'recurring Advisor evidence may create only an explicit review item');
     assert.equal(Number(learningLedger.db.prepare("SELECT COUNT(*) AS count FROM habits WHERE user_id='owner' AND status='active'").get().count), 0, 'Advisor evidence must never approve or activate a habit');
   } finally { learningLedger.db.close(); }
+
+  const rotatedReplayRoot = join(temp, 'advisor-rotated-replay');
+  const rotatedReplayPaths = { root: rotatedReplayRoot, configPath: join(rotatedReplayRoot, 'agent-experience.toml') };
+  const rotatedReplayFingerprint = 'd'.repeat(64);
+  await writeAgentExperienceConfig({ ...learningConfig, capture_enabled: true }, rotatedReplayPaths);
+  const rotatedReplayLedger = await initExperienceStorage(join(temp, 'advisor-rotated-replay-ledger'), { allowInit: true, userId: 'owner' });
+  try {
+    for (let index = 0; index < 3; index++) {
+      const day = String(index + 1).padStart(2, '0');
+      const createdAt = `2026-08-${day}T08:00:00.000Z`;
+      __resetObservationUniqueDedupeForTest();
+      assert.deepEqual(await appendAdvisorFindingObservation(rotatedReplayRoot, {
+        userId: 'owner',
+        finding: findingFor(rotatedReplayFingerprint),
+        update: updateFor(rotatedReplayFingerprint),
+        createdAt,
+        modelVisibleDelivered: true,
+      }), { appended: true, reason: 'appended' }, 'active-generation replay policy permits a retained-generation replay after rotation');
+      const replayRange = await readValidatedObservationRange(rotatedReplayRoot, { userId: 'owner', maxRecords: 10, maxBytes: 100000 });
+      assert.equal(replayRange.records.length, 1);
+      const replayInput = {
+        model: 'test/learning',
+        userId: 'owner',
+        observations: replayRange.records,
+        habitContext: buildCompactHabitContext(rotatedReplayLedger.db, { userId: 'owner' }),
+        expected: {
+          file_generation: replayRange.manifest.file_generation,
+          seq_start: 1,
+          seq_end: 1,
+          read_checksum: replayRange.records[0].checksum,
+        },
+      };
+      const replayOutput = __normalizeAgentExperienceConsolidationModelOutputForTest({
+        ...recurringRaw,
+        batch_id: `advisor-rotated-replay-${index}`,
+        proposals: [{
+          ...recurringRaw.proposals[0],
+          proposal_id: `advisor-rotated-replay-${index}`,
+          source_refs: [{ file_generation: replayRange.records[0].file_generation, seq: 1, checksum: replayRange.records[0].checksum }],
+        }],
+      }, replayInput);
+      assert.equal(replayOutput.proposals[0].evidence_stage, 'collecting', 'one replayed Advisor fingerprint across rotations/days must remain collecting');
+      const replayCommit = await runConsolidationOnce({
+        root: rotatedReplayLedger.root,
+        db: rotatedReplayLedger.db,
+        userId: 'owner',
+        observations: replayRange.records,
+        modelOutput: replayOutput,
+        model: 'test/learning',
+        now: createdAt,
+      });
+      assert.equal(replayCommit.ok, true);
+      assert.equal(listPendingReviewItems(rotatedReplayLedger.db, { userId: 'owner' }).items.length, 0);
+      const rotation = await rotateObservationGenerationIfFullyRead(rotatedReplayRoot, {
+        userId: 'owner',
+        fileGeneration: replayRange.manifest.file_generation,
+        seq: replayRange.records[0].seq,
+        checksum: replayRange.records[0].checksum,
+        retentionDays: 30,
+        now: `2026-08-${day}T09:00:00.000Z`,
+      });
+      assert.equal(rotation.rotated, true);
+    }
+    const replayContext = buildCompactHabitContext(rotatedReplayLedger.db, { userId: 'owner' });
+    assert.equal(replayContext[0].unique_observations, 1, 'durable candidate context must aggregate Advisor evidence by event fingerprint across generations');
+    assert.equal(replayContext[0].distinct_days, 1, 'replayed fingerprint dates must not inflate durable day recurrence');
+    assert.doesNotMatch(
+      buildConsolidationUserPrompt({ ...normalizeInput, habitContext: replayContext }),
+      new RegExp(rotatedReplayFingerprint),
+      'durable fingerprint identity must remain internal and never enter the Analyze model prompt',
+    );
+  } finally { rotatedReplayLedger.db.close(); }
 
   const cappedRoot = join(temp, 'advisor-learning-cap');
   const cappedPaths = { root: cappedRoot, configPath: join(cappedRoot, 'agent-experience.toml') };

@@ -149,7 +149,7 @@ export function buildConsolidationUserPrompt(input: ConsolidationModelAdapterInp
 		model: input.model,
 		created_at: new Date().toISOString(),
 		observations_read: { seq_start: input.expected.seq_start, seq_end: input.expected.seq_end, checksum: input.expected.read_checksum },
-		existing_habit_context: input.habitContext || [],
+		existing_habit_context: (input.habitContext || []).map(({ advisor_event_fingerprints: _internalFingerprints, ...visible }) => visible),
 		observations: observationsForModelPrompt(input.observations),
 	}, null, 2);
 }
@@ -175,16 +175,22 @@ function normalizeSourceRefs(rawRefs: unknown, input: ConsolidationModelAdapterI
 
 function newEvidenceStats(refs: { seq: number }[], input: ConsolidationModelAdapterInput) {
 	const bySeq = new Map(input.observations.map((record) => [record.seq, record]));
-	const unique = new Map<string, ValidatedObservationRecord>();
+	const nonAdvisorSeqs = new Set<number>();
+	const nonAdvisorDays = new Set<string>();
+	const advisorEvents = new Map<string, string>();
 	for (const ref of refs) {
 		const record = bySeq.get(ref.seq);
 		if (!record) continue;
 		const fingerprint = advisorFingerprint(record);
-		const key = fingerprint ? `advisor:${fingerprint}` : `observation:${record.seq}`;
-		if (!unique.has(key)) unique.set(key, record);
+		const day = new Date(record.created_at).toISOString().slice(0, 10);
+		if (fingerprint) {
+			if (!advisorEvents.has(fingerprint)) advisorEvents.set(fingerprint, day);
+			continue;
+		}
+		nonAdvisorSeqs.add(record.seq);
+		nonAdvisorDays.add(day);
 	}
-	const days = new Set([...unique.values()].map((record) => new Date(record.created_at).toISOString().slice(0, 10)));
-	return { count: unique.size, days };
+	return { nonAdvisorSeqs, nonAdvisorDays, advisorEvents };
 }
 
 function matchingHabitContext(input: ConsolidationModelAdapterInput, candidate: { condition: unknown; behavior: unknown; polarity: unknown }): CompactHabitContextItem | undefined {
@@ -195,8 +201,15 @@ function matchingHabitContext(input: ConsolidationModelAdapterInput, candidate: 
 function hasEnoughRepeatedEvidence(refs: { seq: number }[], input: ConsolidationModelAdapterInput, candidate: { condition: unknown; behavior: unknown; polarity: unknown }): boolean {
 	const fresh = newEvidenceStats(refs, input);
 	const existing = matchingHabitContext(input, candidate);
-	const days = new Set([...(existing?.source_dates || []), ...fresh.days]);
-	return fresh.count + Number(existing?.unique_observations || 0) >= 3 && days.size >= 2;
+	const existingFingerprints = new Set(existing?.advisor_event_fingerprints || []);
+	const newAdvisorEvents = [...fresh.advisorEvents].filter(([fingerprint]) => !existingFingerprints.has(fingerprint));
+	const days = new Set([
+		...(existing?.source_dates || []),
+		...fresh.nonAdvisorDays,
+		...newAdvisorEvents.map(([, day]) => day),
+	]);
+	const count = Number(existing?.unique_observations || 0) + fresh.nonAdvisorSeqs.size + newAdvisorEvents.length;
+	return count >= 3 && days.size >= 2;
 }
 
 function withoutAdvisorEvidence(refs: { seq: number }[], input: ConsolidationModelAdapterInput): { seq: number }[] {
