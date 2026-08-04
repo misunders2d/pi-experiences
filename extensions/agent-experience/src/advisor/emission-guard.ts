@@ -33,22 +33,23 @@ function isStopWord(note: string): boolean {
 }
 
 export class AdvisorEmissionGuard {
-	private readonly ring: string[] = [];
-	private ringCursor = 0;
+	private readonly attemptRing: string[] = [];
+	private attemptRingCursor = 0;
+	private readonly seenEventFingerprints: string[] = [];
+	private seenEventCursor = 0;
 	private consumedEventFingerprint: string | undefined;
-	private lastCommittedEventFingerprint: string | undefined;
 
 	select(attempts: AdvisorAttempt[], update: AdvisorUpdate): AdvisorAttempt | undefined {
 		if (
 			this.consumedEventFingerprint === update.eventFingerprint ||
-			this.lastCommittedEventFingerprint === update.eventFingerprint
+			this.seenEventFingerprints.includes(update.eventFingerprint)
 		) return undefined;
 		if (!Array.isArray(attempts) || attempts.length === 0) return undefined;
 
 		const habitAliases = new Set(update.habits.map((habit) => habit.alias));
 		const validAttempts = attempts.filter((attempt) => {
 			const key = attemptKey(attempt, update.eventFingerprint);
-			if (this.ring.includes(key)) return false;
+			if (this.attemptRing.includes(key)) return false;
 			if (attempt.kind === "habit_violation" && !habitAliases.has(attempt.habitAlias)) return false;
 			if (attempt.kind === "generic_advice" && isStopWord(attempt.note)) return false;
 			return true;
@@ -66,12 +67,15 @@ export class AdvisorEmissionGuard {
 
 	commit(attempt: AdvisorAttempt, update: AdvisorUpdate): void {
 		const key = attemptKey(attempt, update.eventFingerprint);
-		if (!this.ring.includes(key)) {
-			this.ring[this.ringCursor] = key;
-			this.ringCursor = (this.ringCursor + 1) % RING_CAPACITY;
+		if (!this.attemptRing.includes(key)) {
+			this.attemptRing[this.attemptRingCursor] = key;
+			this.attemptRingCursor = (this.attemptRingCursor + 1) % RING_CAPACITY;
+		}
+		if (!this.seenEventFingerprints.includes(update.eventFingerprint)) {
+			this.seenEventFingerprints[this.seenEventCursor] = update.eventFingerprint;
+			this.seenEventCursor = (this.seenEventCursor + 1) % RING_CAPACITY;
 		}
 		this.consumedEventFingerprint = update.eventFingerprint;
-		this.lastCommittedEventFingerprint = update.eventFingerprint;
 	}
 
 	accept(attempts: AdvisorAttempt[], update: AdvisorUpdate): AdvisorAttempt | undefined {
@@ -86,9 +90,10 @@ export class AdvisorEmissionGuard {
 	}
 
 	clear(): void {
-		this.ring.length = 0;
-		this.ringCursor = 0;
+		this.attemptRing.length = 0;
+		this.attemptRingCursor = 0;
+		this.seenEventFingerprints.length = 0;
+		this.seenEventCursor = 0;
 		this.consumedEventFingerprint = undefined;
-		this.lastCommittedEventFingerprint = undefined;
 	}
 }

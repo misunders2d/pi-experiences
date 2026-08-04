@@ -671,6 +671,25 @@ guard.resetForUpdate();
 const normalizedDup = guard.accept([{ kind: 'generic_advice', note: '  Check   THE build!!  ', severity: 'concern' }], guardUpdate3);
 assert.equal(normalizedDup, undefined);
 
+// A non-adjacent replay is suppressed by event identity even if model wording changes
+const replayIdentityGuard = new AdvisorEmissionGuard();
+const replayUpdateA = { ...guardUpdate, eventFingerprint: 'fp-a' };
+assert.deepEqual(
+  replayIdentityGuard.accept([{ kind: 'generic_advice', note: 'First wording.', severity: 'concern' }], replayUpdateA),
+  { kind: 'generic_advice', note: 'First wording.', severity: 'concern' },
+);
+replayIdentityGuard.resetForUpdate();
+const replayUpdateB = { ...guardUpdate, eventFingerprint: 'fp-b' };
+assert.deepEqual(
+  replayIdentityGuard.accept([{ kind: 'generic_advice', note: 'Middle event.', severity: 'concern' }], replayUpdateB),
+  { kind: 'generic_advice', note: 'Middle event.', severity: 'concern' },
+);
+replayIdentityGuard.resetForUpdate();
+assert.equal(
+  replayIdentityGuard.accept([{ kind: 'generic_advice', note: 'Changed replay wording.', severity: 'blocker' }], replayUpdateA),
+  undefined,
+);
+
 // Stop words suppressed
 guard.resetForUpdate();
 const guardUpdate4 = { ...guardUpdate, eventFingerprint: 'fp4' };
