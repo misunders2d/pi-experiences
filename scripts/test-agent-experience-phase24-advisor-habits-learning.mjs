@@ -312,7 +312,9 @@ try {
     harness.setIdle(false);
     await harness.emit('before_agent_start', { prompt, systemPrompt: 'base', systemPromptOptions: {} });
     const user = { role: 'user', content: [{ type: 'text', text: prompt }], timestamp: Date.now() };
+    await harness.emit('message_start', { message: user });
     addMessageEntry(harness.branch, `user-${id}`, user);
+    await harness.emit('message_end', { message: user });
     const assistant = { role: 'assistant', content: [{ type: 'text', text: `assistant ${id}` }, ...(stopReason === 'toolUse' ? [{ type: 'toolCall', id: `call-${id}`, name: 'bash', arguments: { command: 'publish' } }] : [])], stopReason, timestamp: Date.now() + 1 };
     addMessageEntry(harness.branch, `assistant-${id}`, assistant);
     await harness.emit('turn_end', { turnIndex: Number(id) || 0, message: assistant, toolResults: [] });
@@ -333,8 +335,21 @@ try {
     addMessageEntry(concernHarness.branch, 'assistant-advisor-caused', advisorCaused);
     await concernHarness.emit('turn_end', { turnIndex: 2, message: advisorCaused, toolResults: [] });
     assert.equal(concernAdapter.updates.length, 1, 'the full Advisor-caused generation must be excluded from review');
-    await runTurn(concernHarness, '2', 'A genuinely new user request.');
-    await waitUntil(() => concernAdapter.updates.length === 2, 'causal state clear on new user generation');
+    const firstGeneration = concernAdapter.updates[0].generation;
+    const firstCursor = concernAdapter.updates[0].cursor;
+    const queuedPrompt = 'A genuinely queued user steer.';
+    const queuedUser = { role: 'user', content: [{ type: 'text', text: queuedPrompt }], timestamp: Date.now() + 3 };
+    await concernHarness.emit('message_start', { message: queuedUser });
+    addMessageEntry(concernHarness.branch, 'user-queued', queuedUser);
+    await concernHarness.emit('message_end', { message: queuedUser });
+    const queuedAssistant = { role: 'assistant', content: [{ type: 'text', text: 'responding to the queued user' }], stopReason: 'stop', timestamp: Date.now() + 4 };
+    addMessageEntry(concernHarness.branch, 'assistant-queued', queuedAssistant);
+    await concernHarness.emit('turn_end', { turnIndex: 3, message: queuedAssistant, toolResults: [] });
+    await waitUntil(() => concernAdapter.updates.length === 2, 'causal state clear on queued user generation');
+    assert.equal(concernAdapter.updates[1].generation, firstGeneration + 1);
+    assert.ok(concernAdapter.updates[1].cursor > firstCursor);
+    assert.equal(concernAdapter.updates[1].currentRequest, queuedPrompt);
+    assert.equal(concernAdapter.updates[1].causedByAdvisor, false);
     await concernHarness.emit('session_shutdown', { reason: 'quit' });
 
     const planEntry = { type: 'custom', customType: 'plan-mode', data: { enabled: true, todos: [], executing: false }, id: 'plan-state', parentId: null, timestamp: '2026-08-04T00:00:00.000Z' };
@@ -362,6 +377,33 @@ try {
     await waitUntil(() => ambiguousHarness.sent.length === 1, 'ambiguous settled append');
     assert.deepEqual(ambiguousHarness.sent[0].options, { triggerTurn: false });
     await ambiguousHarness.emit('session_shutdown', { reason: 'quit' });
+
+    for (const [beforeEvent, label] of [['session_before_tree', 'tree'], ['session_before_compact', 'compaction']]) {
+      const updates = [];
+      const cancelledAdapter = {
+        contextTokenEstimate: 0,
+        async review(update) {
+          updates.push(update);
+          return updates.length === 1 ? [{ kind: 'generic_advice', severity: 'nit', note: `Pending across cancelled ${label}.` }] : [];
+        },
+        reset() {},
+        async dispose() {},
+      };
+      const cancelledHarness = makeAdvisorHarness(cancelledAdapter);
+      await cancelledHarness.emit('session_start', { reason: 'startup' });
+      await runTurn(cancelledHarness, `${label}-before`, `Prepare ${label}.`);
+      await waitUntil(() => updates.length === 1, `${label} pending finding`);
+      assert.equal(cancelledHarness.sent.length, 0);
+      await cancelledHarness.emit(beforeEvent, { preparation: {}, signal: new AbortController().signal });
+      await runTurn(cancelledHarness, `${label}-cancelled`, `Continue after cancelled ${label}.`, 'stop');
+      await waitUntil(() => updates.length === 2, `${label} reseeded review`);
+      cancelledHarness.setIdle(true);
+      await cancelledHarness.emit('agent_settled');
+      assert.equal(cancelledHarness.sent.length, 1, `cancelled ${label} must retain its pending finding`);
+      assert.equal(cancelledHarness.sent[0].message.details.note, `Pending across cancelled ${label}.`);
+      assert.deepEqual(cancelledHarness.sent[0].options, { triggerTurn: false });
+      await cancelledHarness.emit('session_shutdown', { reason: 'quit' });
+    }
 
     const nitAdapter = fakeAdvisorAdapter({ kind: 'generic_advice', severity: 'nit', note: 'Small release note.' });
     const nitHarness = makeAdvisorHarness(nitAdapter);

@@ -2948,6 +2948,7 @@ type AdvisorGenerationState = {
 	generation: number;
 	startLeafId: string | null;
 	currentRequest: string;
+	initialUserMessagePending: boolean;
 	causedByAdvisor: boolean;
 	cancelled: boolean;
 	activeRequestHabitIds: string[];
@@ -3110,7 +3111,7 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 		const state = advisorStateForContext(ctx);
 		if (!state) return [];
 		const pending = state.pending.splice(0);
-		if (reason === "session_before_switch" || reason === "session_before_fork") state.fallbackPending.push(...pending);
+		if (reason.startsWith("session_before_")) state.fallbackPending.push(...pending);
 		const pendingForCaller = reason === "session_shutdown" ? [...state.fallbackPending.splice(0), ...pending] : pending;
 		const oldRuntime = state.runtime;
 		const oldAdapter = state.adapter;
@@ -3601,25 +3602,34 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 		if (breakScope) breakInAgentActive.add(breakInScopeKey(breakScope));
 		const prompt = event.prompt;
 		const advisorState = advisorStateForContext(ctx);
+		let reseededPending: PendingAdvisorDelivery[] = [];
 		if (advisorState?.needsReseed) {
+			reseededPending = advisorState.fallbackPending.splice(0);
 			if (advisorState.runtime) {
 				advisorState.needsReseed = false;
 				advisorState.cursor = ctx.sessionManager.getBranch().length;
-				for (const pending of advisorState.fallbackPending.splice(0)) appendAdvisorVisibleFallback(pending.message.details);
 			} else {
+				for (const pending of reseededPending) appendAdvisorVisibleFallback(pending.message.details);
+				reseededPending = [];
 				void rebuildAdvisorRuntime(ctx, "cancelled_before_event");
 			}
 		}
 		if (advisorState && !advisorState.needsReseed) {
 			advisorState.generation++;
 			if (advisorState.immuneTurnsRemaining > 0) advisorState.immuneTurnsRemaining--;
-			advisorState.pending = [];
+			advisorState.pending = reseededPending.map((pending) => ({
+				...pending,
+				epoch: advisorState.epoch,
+				generation: advisorState.generation,
+				cursor: advisorState.cursor,
+			}));
 			advisorState.activeGeneration = {
 				scopeKey: advisorState.scopeKey,
 				epoch: advisorState.epoch,
 				generation: advisorState.generation,
 				startLeafId: ctx.sessionManager.getLeafId(),
 				currentRequest: prompt,
+				initialUserMessagePending: true,
 				causedByAdvisor: false,
 				cancelled: !!ctx.signal?.aborted,
 				activeRequestHabitIds: [],
@@ -3642,6 +3652,37 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 		pendingSteeringRuns.set(steeringScope, { prompt, phase: "armed", markerCommitted: false });
 	});
 
+	const startAdvisorQueuedUserGeneration = (message: unknown, ctx: ExtensionContext): void => {
+		if (!message || typeof message !== "object" || !("role" in message) || message.role !== "user") return;
+		const state = advisorStateForContext(ctx);
+		if (!state || state.needsReseed) return;
+		if (state.activeGeneration?.initialUserMessagePending) {
+			state.activeGeneration.initialUserMessagePending = false;
+			return;
+		}
+		state.generation++;
+		if (state.immuneTurnsRemaining > 0) state.immuneTurnsRemaining--;
+		state.cursor = ctx.sessionManager.getBranch().length;
+		state.activeGeneration = {
+			scopeKey: state.scopeKey,
+			epoch: state.epoch,
+			generation: state.generation,
+			startLeafId: ctx.sessionManager.getLeafId(),
+			currentRequest: agentMessageText(message),
+			initialUserMessagePending: false,
+			causedByAdvisor: false,
+			cancelled: !!ctx.signal?.aborted,
+			activeRequestHabitIds: [],
+			terminal: false,
+		};
+		state.pending = state.pending.map((pending) => ({
+			...pending,
+			epoch: state.epoch,
+			generation: state.generation,
+			cursor: state.cursor,
+		}));
+	};
+
 	const markAdvisorCausalMessage = (message: unknown, ctx: ExtensionContext): void => {
 		if (!message || typeof message !== "object" || !("role" in message) || message.role !== "custom" || !("customType" in message) || message.customType !== ADVISOR_FINDING_MESSAGE_TYPE || !("details" in message)) return;
 		try {
@@ -3654,6 +3695,7 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 	};
 
 	pi.on("message_start", (event, ctx) => {
+		startAdvisorQueuedUserGeneration(event.message, ctx);
 		markAdvisorCausalMessage(event.message, ctx);
 	});
 
@@ -3672,6 +3714,11 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 		const identity = resolveAdvisorTurnIdentity(ctx, event.message, event.toolResults, generation);
 		if (!identity) return;
 		state.cursor = identity.cursor;
+		state.pending = state.pending.map((pending) => (
+			pending.epoch === state.epoch && pending.generation === state.generation
+				? { ...pending, cursor: state.cursor }
+				: pending
+		));
 		if (event.message.role !== "assistant") return;
 		const delta = extractAdvisorTurnDelta({
 			scope: state.scope,
