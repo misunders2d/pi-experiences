@@ -1,8 +1,9 @@
+import type { DatabaseSync } from "node:sqlite";
 import { canonicalJson, checksumJson, sha256Hex } from "../storage/checksum.ts";
 import { normalizeUserId } from "../storage/private-root.ts";
 import { containsUnredactedSensitiveText, redactJson } from "../storage/redaction.ts";
 import { buildTypedStorageRow } from "../storage/sqlite.ts";
-import { blobToVector, embeddingInputChecksum, habitEmbeddingInputV1, SEMANTIC_DUPLICATE_METHOD_VERSION, SEMANTIC_EMBEDDING_INPUT_VERSION, semanticPairKey, semanticWordingIdentityChecksum, vectorChecksum, vectorToBlob } from "./core.ts";
+import { blobToVector, embeddingInputChecksum, habitEmbeddingInputV1, habitFieldEmbeddingInputsV1, SEMANTIC_BEHAVIOR_EMBEDDING_INPUT_VERSION, SEMANTIC_CONDITION_EMBEDDING_INPUT_VERSION, SEMANTIC_DUPLICATE_METHOD_VERSION, SEMANTIC_EMBEDDING_INPUT_VERSION, semanticPairKey, semanticWordingIdentityChecksum, vectorChecksum, vectorToBlob } from "./core.ts";
 import type { CachedHabitEmbedding, SemanticHabitRow } from "./types.ts";
 
 function boundedJson(value: unknown, max = 24000): string {
@@ -147,6 +148,58 @@ export function getCachedHabitEmbeddingsBatch(db: any, input: {
 			invalidIds.push(habitId);
 		}
 	}
+	return { embeddings, missingIds, invalidIds };
+}
+
+export interface HabitFieldEmbeddingExpectation {
+	habitId: string;
+	habitRowChecksum: string;
+	condition: string | null;
+	behavior: string | null;
+}
+
+export function getCachedHabitFieldEmbeddingsBatch(db: DatabaseSync, input: {
+	userId: string;
+	provider: string;
+	model: string;
+	dimensions: number;
+	expectations: HabitFieldEmbeddingExpectation[];
+	maxHabits?: number;
+}): {
+	embeddings: Map<string, { condition: CachedHabitEmbedding; behavior: CachedHabitEmbedding }>;
+	missingIds: string[];
+	invalidIds: string[];
+} {
+	const fields = input.expectations.map((expectation) => ({
+		expectation,
+		inputs: habitFieldEmbeddingInputsV1(expectation),
+	}));
+	const read = (field: "condition" | "behavior", version: string) => getCachedHabitEmbeddingsBatch(db, {
+		...input,
+		embeddingInputVersion: version,
+		expectations: fields.map(({ expectation, inputs }) => ({
+			habitId: expectation.habitId,
+			habitRowChecksum: expectation.habitRowChecksum,
+			embeddingInputChecksum: embeddingInputChecksum(inputs[field], version),
+		})),
+	});
+	const condition = read("condition", SEMANTIC_CONDITION_EMBEDDING_INPUT_VERSION);
+	const behavior = read("behavior", SEMANTIC_BEHAVIOR_EMBEDDING_INPUT_VERSION);
+	const missingIds = [...new Set([...condition.missingIds, ...behavior.missingIds])].sort();
+	const invalidIds = [...new Set([...condition.invalidIds, ...behavior.invalidIds])].sort();
+	const unavailable = new Set([...missingIds, ...invalidIds]);
+	const embeddings = new Map<string, { condition: CachedHabitEmbedding; behavior: CachedHabitEmbedding }>();
+	for (const { expectation } of fields) {
+		if (unavailable.has(expectation.habitId)) continue;
+		const conditionEmbedding = condition.embeddings.get(expectation.habitId);
+		const behaviorEmbedding = behavior.embeddings.get(expectation.habitId);
+		if (!conditionEmbedding || !behaviorEmbedding) {
+			invalidIds.push(expectation.habitId);
+			continue;
+		}
+		embeddings.set(expectation.habitId, { condition: conditionEmbedding, behavior: behaviorEmbedding });
+	}
+	invalidIds.sort();
 	return { embeddings, missingIds, invalidIds };
 }
 

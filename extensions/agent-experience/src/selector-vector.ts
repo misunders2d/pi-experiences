@@ -48,6 +48,11 @@ export interface RetrievedSelectorCandidate {
 	similarityBp: number;
 }
 
+export function maxHabitFieldSimilarityBp(queryVector: Float32Array, conditionVector: Float32Array, behaviorVector: Float32Array): number {
+	if (queryVector.length !== LOCAL_EMBEDDING_DIMENSIONS || conditionVector.length !== queryVector.length || behaviorVector.length !== queryVector.length) throw new Error("habit_field_embedding_invalid");
+	return Math.max(cosineBp(queryVector, conditionVector), cosineBp(queryVector, behaviorVector));
+}
+
 function throwIfAborted(signal?: AbortSignal): void {
 	if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : new Error("selector_cancelled");
 }

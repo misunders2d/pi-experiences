@@ -120,7 +120,7 @@ export function insertSelectorHitLog(db: any, input: { userId: string; habitId?:
 	return { id, checksum, ...row };
 }
 
-function selectorCandidateFromRow(row: any): SelectorCandidate {
+export function selectorCandidateFromRow(row: any): SelectorCandidate {
 	const data = parseJson(row.data_json);
 	return redactJson({
 		id: row.id,
@@ -136,7 +136,7 @@ function selectorCandidateFromRow(row: any): SelectorCandidate {
 	}) as SelectorCandidate;
 }
 
-function assertValidHabitStorageRow(row: any): void {
+export function assertValidHabitStorageRow(row: any): void {
 	const data = parseJson(row.data_json);
 	const rebuilt = buildTypedStorageRow("habits", {
 		id: row.id,
