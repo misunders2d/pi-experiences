@@ -6,6 +6,21 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 ## [Unreleased]
 
+### Added
+
+- Added an opt-in Runtime Advisor that uses a separately configurable authenticated Pi model to review bounded incremental primary-turn updates. It emits non-authoritative generic advice or exact approved-habit violation cards, uses only workspace-confined read-only investigation, and never pre-execution-blocks primary tools.
+- Added grouped setup for **Learning from conversations**, **Guidance and Advisor**, **Manage habits**, **Automation and privacy**, and **Status and help**. The Advisor model inherits the habit-assessment model by default and can be overridden independently.
+
+### Safety and privacy
+
+- Advisor findings steer only eligible active concern/blocker continuations; nits and unsafe/canceled/terminal/plan-mode/unsupported states append visibly without forcing another turn. Learning-off writes no Advisor observation, while Learning-on still requires repeated evidence, Analyze, human review, and explicit approval before any habit can change.
+- Private Advisor transcript state, raw model output, candidate aliases, retrieval scores, tool investigations, queue state, and suppressed findings remain process-local and are never persisted.
+
+### Validation
+
+- Added phase 23–25 package gates, packed Advisor/setup allowlists and peer checks, a fresh isolated-package verifier, and real Pi PTY coverage for grouped setup plus collapsed/expanded generic and habit Advisor cards at wide and narrow widths.
+
+
 ## [0.1.49] - 2026-07-21
 
 ### Fixed

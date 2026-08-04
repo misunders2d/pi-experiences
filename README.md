@@ -115,6 +115,27 @@ You can work naturally in chat—“Do you see this pattern?”, “Draft it as 
 
 The panel remains sufficient for every setting and review action. Conversational review uses numbered plain-language items. Normal users never need IDs, checksums, thresholds, endpoints, model servers, or advanced subcommands.
 
+## Start with grouped setup
+
+Run `/experience setup` first. Its first screen groups normal choices in this order:
+
+1. **Learning from conversations** — opt into bounded local examples, choose the learning model, run Analyze, and review suggestions.
+2. **Guidance and Advisor** — configure approved-habit reminders and the optional Runtime Advisor.
+3. **Manage habits** — review approved habits, resolve possible duplicates, and prepare local duplicate prevention.
+4. **Automation and privacy** — choose source retention and explicitly manage optional scheduling or review prompts.
+5. **Status and help** — inspect current feature state and plain-language explanations.
+
+Runtime Advisor is off until you explicitly confirm its disclosure. **Advisor model** is a separate model choice whose default is **Same as habit assessment**: it inherits the current habit-assessment model until you choose an override. While Pi works, this second model reviews bounded incremental transcript updates and can investigate with `read`, `grep`, and `glob`; every result is bounded and workspace-confined, and the tools cannot mutate files.
+
+Generic advice is non-authoritative: its card asks Pi to weigh the suggestion rather than blindly obey it. An approved Experience habit has reviewed authority and shows its exact `When:` / `Do:` wording. A `nit` waits until the primary run is settled. An eligible `concern` or `blocker` may use Pi's public `steer` delivery while a safe run is active; canceled, terminal, plan mode, ambiguous, unsupported, and shutdown states are visible-only and never force another turn.
+
+Learning remains separate. With **Learning from conversations** off, an Advisor finding creates no Advisor observation. With Learning on, one accepted event may append one bounded finding, but the normal repeated-evidence, Analyze, human review, and explicit-approval gates still apply. The extension must never persist the private Advisor transcript, raw model output, candidate aliases, retrieval scores, tool investigations, queues, or suppressed findings.
+
+Stock Pi provides no pre-execution tool blocking for this feature: Advisor cannot veto or pause a primary tool call before it runs. It also does not use `followUp` or `nextTurn`, because either could force an unwanted continuation. Steering can affect only a safely active continuation; otherwise the finding appears after settlement or as a clearly visible-only fallback.
+
+Typed `/experience ...` subcommands remain advanced backward-compatible controls for maintainers and tests. They are not required for normal setup.
+
+
 ## Natural-language setup and habit management
 
 You can set up and manage Pi Experiences by talking to Pi in ordinary language. Ask Pi to explain the setup choices, draft a habit, show habits that need review, approve or reject a numbered suggestion, resolve a possible duplicate, or disable, re-enable, or remove an approved habit. Pi keeps internal identifiers hidden, asks for clarification or confirmation when the intended action matters, and preserves the same safety, stale-state, and audit checks used by the control panel.
@@ -278,7 +299,7 @@ This section is intentionally collapsed. Preserve both this technical contract a
 - `package.json` includes the `pi-package` keyword.
 - `pi.extensions` points at `./extensions`; `pi.skills` points at `./skills`.
 - `pi.image` points at the maintained 1400×800 PNG gallery preview; both PNG and editable accessible SVG sources ship under `docs/images/`.
-- Pi core packages remain wildcard peer dependencies and are not bundled as a second runtime.
+- `@earendil-works/pi-agent-core` and `@earendil-works/pi-ai`/`pi-tui` are direct wildcard peers; `@earendil-works/pi-coding-agent >=0.83.0` supplies the public `agent_settled` lifecycle used by Advisor. Pi peers are external and are not bundled as a second runtime.
 - The package is TypeScript-source-first for Pi's extension loader; the public consolidation CLI is generated into `dist/`.
 - Node engine: `>=22.19.0`.
 - Installation has no `install`, `postinstall`, or `prepare` hook and never downloads model assets.
@@ -296,6 +317,19 @@ This section is intentionally collapsed. Preserve both this technical contract a
 - Selector hit logs never persist raw prompts, sessions, or injected guidance; `prompt_hash` remains `omitted`. A separate TUI-only provenance entry retains selected approved wording solely so the user can trace a steered answer.
 - Missing, corrupt, stale, incompatible, or future-version state fails closed.
 - The selector hot path must not initialize storage or run migrations.
+
+### Runtime Advisor contract
+
+- Grouped setup presents **Learning from conversations**, **Guidance and Advisor**, **Manage habits**, **Automation and privacy**, then **Status and help** before any advanced compatibility controls.
+- Runtime Advisor is independently off by default. **Advisor model** defaults to **Same as habit assessment**, so it inherits that authenticated model selection until an explicit Advisor override is chosen.
+- The second model receives only bounded incremental primary-turn deltas. It never receives durable habit IDs, private paths, raw history outside the delta, or unrelated state.
+- Investigative tools are read-only `read`, `grep`, and `glob`; every path and result is bounded, redacted, and workspace-confined. No write, edit, shell, or execution tool is exposed.
+- Generic advice is non-authoritative and tells the primary to weigh it. An approved Experience habit carries reviewed authority, exact `When:` / `Do:` wording, and exact next-step behavior; direct instructions and law still win.
+- A `nit` is held until the primary is settled. An eligible active-run `concern` or `blocker` may use Pi's documented `steer` channel. Canceled, terminal, plan mode, ambiguous, idle, unsupported-client, replacement, and shutdown states append visibly when safe or use a visible-only fallback.
+- With Learning disabled, there is no Advisor observation. With Learning enabled, one accepted event may create at most one bounded observation; it cannot create a habit and must still pass repeated-evidence, Analyze, review, and explicit approval.
+- The extension must never persist the private Advisor transcript, raw model output, candidate aliases, retrieval scores, tool investigations/results, queue state, or suppressed findings.
+- Stock Pi exposes no pre-execution tool blocking here, so Advisor cannot stop an already selected tool before execution. It never uses `followUp`, `nextTurn`, fake user content, or hidden continuation queues. Steering affects only a safely active continuation; otherwise delivery waits for `agent_settled` with `triggerTurn:false`, or degrades to visible-only.
+
 
 ### Why `profile.md` is not the habit store
 

@@ -2,9 +2,31 @@
 
 Agent Experience learns **reviewed behavioral and working habits** from repeated interaction. It is not a skill store or factual memory store.
 
-## Normal surfaces
+## Grouped setup is the normal starting point
 
-Use natural conversation for direct habit declaration and numbered review:
+Run:
+
+```text
+/experience setup
+```
+
+The first screen groups every normal action before advanced compatibility controls:
+
+1. **Learning from conversations** — local example capture, learning model, Analyze, and suggestion review.
+2. **Guidance and Advisor** — approved-habit reminders plus the optional Runtime Advisor.
+3. **Manage habits** — approved-habit review, possible duplicates, and local duplicate prevention.
+4. **Automation and privacy** — retention, explicit scheduling, and review prompts.
+5. **Status and help** — current state and plain-language explanations.
+
+**Advisor model** is separate and defaults to **Same as habit assessment**. That inheritance follows the current authenticated habit-assessment model until the user selects an Advisor override. Runtime Advisor then uses this second model for bounded incremental review of the primary turn. Its only investigative tools are `read`, `grep`, and `glob`; every result is bounded and workspace-confined, and no mutating tool exists.
+
+Generic advice is non-authoritative and tells Pi to weigh it. An approved Experience habit has reviewed authority and renders its exact `When:` / `Do:` wording and next step. A `nit` waits until the primary is settled; an eligible active-run `concern` or `blocker` may use Pi's public `steer` channel. Canceled, terminal, plan mode, ambiguous, idle, unsupported, replacement, and shutdown states append visibly when safe or become visible-only.
+
+Learning is independently gated. With **Learning from conversations** off, there is no Advisor observation. With Learning on, one accepted event may append at most one bounded observation, but it cannot create a habit; repeated evidence, Analyze, explicit review, and approval remain mandatory. The extension must never persist the private Advisor transcript, raw model output, candidate aliases, retrieval scores, tool investigations, queue state, or suppressed findings.
+
+Stock Pi provides no pre-execution tool blocking to Advisor, so it cannot veto or pause a primary tool call before it runs. The extension never uses `followUp` or `nextTurn`, which could force an unwanted continuation. Steering may influence only a safely active continuation; otherwise a card waits for `agent_settled` with `triggerTurn:false` or uses a clearly visible-only fallback.
+
+Natural conversation remains available for direct habit declaration and numbered review:
 
 1. discuss a pattern;
 2. let Pi show exact `When:` / `Do:` wording;
@@ -13,29 +35,7 @@ Use natural conversation for direct habit declaration and numbered review:
 
 No durable habit is created while drafting. A direct declaration bypasses only repetition evidence; law, conflicts, local duplicate checking, stale-state revalidation, audit, and fail-closed behavior still apply.
 
-The complete control panel/fallback remains:
-
-```text
-/experience setup
-```
-
-The panel contains every normal action:
-
-- save redacted chat examples locally;
-- choose the Pi model used for manual habit learning;
-- choose the Pi model that assesses whether approved habits apply before replies;
-- analyze every example waiting when the action starts through sequential bounded calls;
-- review suggestions;
-- resolve possible duplicates;
-- browse, disable, re-enable, archive, or recheck approved habits;
-- prepare/remove local duplicate prevention;
-- choose 7/14/30-day source-example retention;
-- enable approved-habit reminders;
-- inspect current settings;
-- explain, inspect, explicitly install/enable, repair, disable, or remove the local Linux systemd schedule;
-- turn everything off.
-
-Conversational tools expose only numbered `When:` / `Do:` summaries and supported outcomes. Normal users do not type IDs, checksums, thresholds, endpoints, model-server settings, source references, private paths, or advanced commands.
+Conversational tools expose only numbered `When:` / `Do:` summaries and supported outcomes. Normal users do not type IDs, checksums, thresholds, endpoints, model-server settings, source references, private paths, or advanced commands. Typed `/experience ...` subcommands remain advanced backward-compatible controls for maintainers and tests; setup remains sufficient by itself.
 
 ## Product invariants
 

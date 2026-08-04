@@ -30,6 +30,99 @@ assert.equal(packageJson.devDependencies?.['@earendil-works/pi-agent-core'],'^0.
 assert.match(packageJson.scripts?.['check:agent-experience']||'',/test-agent-experience-phase16-conversation\.mjs/,'complete checks must include conversational habit validation');
 assert.match(packageJson.scripts?.['check:agent-experience']||'',/test-agent-experience-phase22-provider-guidance\.mjs/,'complete checks must include system-level provider guidance validation');
 assert.match(packageJson.scripts?.['check:agent-experience']||'',/test-agent-experience-phase23-advisor-core\.mjs/,'complete checks must include Advisor core validation');
+assert.match(packageJson.scripts?.['check:agent-experience']||'',/test-agent-experience-phase24-advisor-habits-learning\.mjs/,'complete checks must include Advisor habits and learning validation');
+assert.match(packageJson.scripts?.['check:agent-experience']||'',/test-agent-experience-phase25-grouped-setup\.mjs/,'complete checks must include grouped setup validation');
+const packedVerifierSource=await readFile(join(root,'scripts/verify-packed-install.mjs'),'utf8');
+for(const required of [
+  'extensions/agent-experience/src/setup-ui.ts',
+  'extensions/agent-experience/src/advisor/types.ts',
+  'extensions/agent-experience/src/advisor/prompt.ts',
+  'extensions/agent-experience/src/advisor/tools.ts',
+  'extensions/agent-experience/src/advisor/model.ts',
+  'extensions/agent-experience/src/advisor/workspace-tools.ts',
+  'extensions/agent-experience/src/advisor/transcript.ts',
+  'extensions/agent-experience/src/advisor/emission-guard.ts',
+  'extensions/agent-experience/src/advisor/retrieval-query.ts',
+  'extensions/agent-experience/src/advisor/habits.ts',
+  'extensions/agent-experience/src/advisor/message.ts',
+  'extensions/agent-experience/src/advisor/observation.ts',
+  'extensions/agent-experience/src/advisor/runtime.ts',
+  'scripts/test-agent-experience-phase23-advisor-core.mjs',
+  'scripts/test-agent-experience-phase24-advisor-habits-learning.mjs',
+  'scripts/test-agent-experience-phase25-grouped-setup.mjs',
+  'scripts/fixtures/advisor-tui-driver.ts',
+  'scripts/test-advisor-tui-smoke.py',
+])assert.match(packedVerifierSource,new RegExp(required.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')),`packed verifier must require ${required}`);
+assert.match(packedVerifierSource,/'@earendil-works\/pi-agent-core':'\*'/,'packed verifier must enforce the direct pi-agent-core peer');
+assert.match(packedVerifierSource,/'@earendil-works\/pi-coding-agent':'>=0\.83\.0'/,'packed verifier must enforce the supported pi-coding-agent peer');
+const advisorDirectory=join(root,'extensions/agent-experience/src/advisor');
+const advisorSources=(await readdir(advisorDirectory)).filter((name)=>name.endsWith('.ts')).sort();
+const advisorSourceText=(await Promise.all(advisorSources.map((name)=>readFile(join(advisorDirectory,name),'utf8')))).join('\n');
+assert.doesNotMatch(advisorSourceText,/__advisor\.jsonl|advisor[-_.]?(?:transcript|model[-_.]?output)\.jsonl/i,'Advisor source must not name private transcript or raw-model persistence paths');
+const advisorModelSource=await readFile(join(advisorDirectory,'model.ts'),'utf8');
+assert.match(advisorModelSource,/createAdvisorWorkspaceTools/,'Advisor model must obtain confined read-only tools through the wrapper');
+assert.doesNotMatch(advisorModelSource,/create(?:Read|Grep)Tool|nodeGlob/,'Advisor model must not instantiate unwrapped read-only tools');
+assert.doesNotMatch(advisorModelSource,/(?:name\s*:\s*["']|["'])(?:write|edit|bash|shell|exec|delete|remove|move|rename|mkdir|apply_patch)["']/i,'Advisor model must not expose mutating tool names');
+const advisorWorkspaceSource=await readFile(join(advisorDirectory,'workspace-tools.ts'),'utf8');
+assert.match(advisorWorkspaceSource,/return \[read, grep, glob\]/,'Advisor workspace factory must return only wrapped read-only tools');
+const sourceGateText=await readFile(fileURLToPath(import.meta.url),'utf8');
+assert.match(sourceGateText,/external:\[[^\]]*'@earendil-works\/pi-agent-core'/,'Advisor bundle check must externalize direct pi-agent-core');
+const isolatedVerifierSource=await readFile(join(root,'scripts/verify-isolated-package.mjs'),'utf8');
+for(const marker of [
+  'mkdtemp',
+  '--pack-destination',
+  "'install', '--prefix'",
+  '@earendil-works/pi-agent-core@^0.83.0',
+  '@earendil-works/pi-coding-agent@>=0.83.0',
+  'AX_STATE_ROOT',
+  'AX_VERIFY_TEMP_ROOT',
+  'test-installed-tui-smoke.py',
+  'test-advisor-tui-smoke.py',
+  'the repository',
+  'the npm cache',
+  'the global npm prefix',
+  'the live Experience state root',
+])assert.match(isolatedVerifierSource,new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')),`isolated verifier contract missing: ${marker}`);
+for(const marker of [
+  'stagePackageSource',
+  'repositoryManifestBefore',
+  'canonicalizeExistingDirectory',
+  'rejectSymlinkComponents',
+  'safeCleanupTemporaryRoot',
+  'buildChildEnvironment',
+  'PI_CODING_AGENT_DIR',
+  'PI_CODING_AGENT_SESSION_DIR',
+  'PI_OFFLINE',
+  'PI_TELEMETRY',
+  'recursiveManifest',
+  'parseNpmPackJson',
+  'validatePackResult',
+  'artifactManifestEmitted',
+  '--self-test',
+])assert.match(isolatedVerifierSource,new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')),`isolated verifier hardening missing: ${marker}`);
+for(const marker of [
+  'anchoredCleanupScript',
+  'runAnchoredCleanup',
+  'temporaryParentHandle',
+  'temporaryRootHandle',
+  'os.fstat',
+  'dir_fd=parent_fd',
+  'afterValidation',
+  'preserve replacement',
+])assert.match(isolatedVerifierSource,new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')),`isolated verifier anchored-cleanup contract missing: ${marker}`);
+assert.match(isolatedVerifierSource,/rename\(temporaryRoot,\s*movedOriginal\)[\s\S]*readFile\(replacementSentinel/,'cleanup swap self-test must preserve the replacement sentinel');
+assert.doesNotMatch(isolatedVerifierSource,/\.\.\.process\.env/,'isolated children must use an allowlisted environment');
+assert.doesNotMatch(packedVerifierSource,/PI_SKILL_LOADER/,'packed skill validation must use only the freshly installed loader');
+assert.match(packedVerifierSource,/privateAdvisorArtifactPath/,'packed verifier must reject private Advisor artifacts by every relative path');
+const groupedTuiSmokeSource=await readFile(join(root,'scripts/test-installed-tui-smoke.py'),'utf8');
+const advisorTuiSmokeSource=await readFile(join(root,'scripts/test-advisor-tui-smoke.py'),'utf8');
+for(const [name,text] of [['grouped TUI smoke',groupedTuiSmokeSource],['Advisor TUI smoke',advisorTuiSmokeSource]]){
+  assert.match(text,/--session-dir/ ,`${name} must confine Pi sessions explicitly`);
+  assert.match(text,/--offline/ ,`${name} must disable startup network operations`);
+  assert.match(text,/PI_CODING_AGENT_DIR/ ,`${name} must require an isolated Pi agent directory`);
+  assert.match(text,/PI_CODING_AGENT_SESSION_DIR/ ,`${name} must require an isolated Pi session directory`);
+}
+assert.match(advisorTuiSmokeSource,/finally:[\s\S]*write_bytes|finally:[\s\S]*open\(['"]ab['"]\)/,'Advisor PTY smoke must persist raw bytes on failure');
 for(const keyword of ['pi-package','pi-coding-agent','coding-agent','agent-habits','agent-memory','agent-profile','agent-skills','behavioral-learning','context-management','human-in-the-loop','local-first','token-efficiency']){
   assert.ok(packageJson.keywords.includes(keyword),`package discovery keyword missing: ${keyword}`);
 }
@@ -88,6 +181,23 @@ for(const [name,text] of [['extension README',extensionReadme],['public skill',e
   assert.match(text,/non-TUI|interface is not the Pi TUI/is,`${name} must preserve fail-closed interface visibility`);
   assert.match(text,/no daily quota/is,`${name} must preserve unlimited eligible guidance`);
 }
+for(const [name,text] of [['README',readme],['extension README',extensionReadme],['public skill',experienceSkill]]){
+  assert.match(text,/Learning from conversations[\s\S]*Guidance and Advisor[\s\S]*Manage habits[\s\S]*Automation and privacy[\s\S]*Status and help/i,`${name} must present grouped setup before advanced controls`);
+  assert.match(text,/Advisor model[\s\S]*(?:Same as habit assessment|inherit(?:s|ance)[\s\S]*habit.assessment)/i,`${name} must explain separate Advisor model inheritance`);
+  assert.match(text,/second model[\s\S]*incremental/i,`${name} must disclose incremental Advisor review`);
+  assert.match(text,/read[\s\S]*grep[\s\S]*glob[\s\S]*(?:confined|workspace)/i,`${name} must document confined Advisor workspace tools`);
+  assert.match(text,/generic advice[\s\S]*(?:weigh|non-authoritative)[\s\S]*(?:approved|Experience) habit[\s\S]*(?:authorit|exact)/i,`${name} must distinguish generic advice from habit authority`);
+  assert.match(text,/nit[\s\S]*settled[\s\S]*concern[\s\S]*blocker[\s\S]*steer/i,`${name} must explain severity delivery`);
+  assert.match(text,/plan mode[\s\S]*visible/i,`${name} must document visible-only Advisor states`);
+  assert.match(text,/Learning[\s\S]*(?:off|disabled)[\s\S]*no Advisor observation/i,`${name} must preserve the Advisor learning evidence gate`);
+  assert.match(text,/never persist[\s\S]*Advisor transcript[\s\S]*raw model output[\s\S]*aliases[\s\S]*scores/i,`${name} must document Advisor private-state non-persistence`);
+  assert.match(text,/no pre-execution tool blocking/i,`${name} must state stock Pi's non-blocking delivery limit`);
+  assert.match(text,/followUp[\s\S]*nextTurn/i,`${name} must state the unsupported forced-continuation paths`);
+}
+const validationGuide=await readFile(join(root,'extensions/agent-experience/VALIDATION.md'),'utf8');
+assert.match(validationGuide,/verify-isolated-package\.mjs/,'validation guide must use the isolated package gate');
+for(const phrase of ['collapsed and expanded','generic nit, concern, and blocker','habit violation','wide and narrow','one card per update','live Experience state'])assert.match(validationGuide,new RegExp(phrase,'i'),`validation guide missing Advisor PTY evidence: ${phrase}`);
+assert.match(changelog,/^## \[Unreleased\][\s\S]*Runtime Advisor/m,'Unreleased changelog must document Runtime Advisor');
 
 const selectorSource=await readFile(join(root,'extensions/agent-experience/src/selector.ts'),'utf8');
 const configSource=await readFile(join(root,'extensions/agent-experience/src/config.ts'),'utf8');
