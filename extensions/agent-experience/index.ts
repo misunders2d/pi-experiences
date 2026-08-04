@@ -103,6 +103,7 @@ let selectorEmbeddingAdapterOverride: EmbeddingAdapter | undefined;
 let selectorLocalEmbeddingAdapter: LocalEmbeddingAdapter | undefined;
 let selectorLocalEmbeddingRoot: string | undefined;
 let advisorAdapterOverride: AdvisorAgentAdapter | undefined;
+let advisorTransitionValidationGateForTest: (() => Promise<void>) | undefined;
 const selectorDiagnosticsShown = new Set<string>();
 const captureDiagnosticsShown = new Set<string>();
 
@@ -651,6 +652,10 @@ export function __setAgentExperienceSelectorEmbeddingAdapterForTest(adapter: Emb
 
 export function __setAgentExperienceAdvisorAdapterForTest(adapter: AdvisorAgentAdapter | undefined) {
 	advisorAdapterOverride = adapter;
+}
+
+export function __setAgentExperienceAdvisorTransitionValidationGateForTest(gate: (() => Promise<void>) | undefined) {
+	advisorTransitionValidationGateForTest = gate;
 }
 
 export function __advisorCatchupRequiredForTest(syncBacklog: AdvisorRuntimeConfig["syncBacklog"], backlog: number): boolean {
@@ -3075,7 +3080,15 @@ type AdvisorCanceledTransitionDelivery = {
 	scopeKey: string;
 	epoch: number;
 	generation: number;
-	needsReseed: boolean;
+	sourceCursor: number;
+	validatedItem?: PendingAdvisorDelivery;
+	boundResponse?: {
+		cursor: number;
+		leafId: string | null;
+		currentUserEntryId: string;
+		primaryEntryIds: string[];
+		causalEpisodeId: string;
+	};
 };
 
 type AdvisorLifecycleState = {
@@ -3244,7 +3257,7 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 			&& state.latestContext.sessionManager.getLeafId() === transition.leafId;
 	};
 
-	const canceledTransitionDeliveryIsCurrent = (
+	const canceledTransitionDeliveryBaseIsCurrent = (
 		state: AdvisorLifecycleState,
 		token: AdvisorCanceledTransitionDelivery,
 	): boolean => advisorStates.get(token.scopeKey) === state
@@ -3252,8 +3265,41 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 		&& state.scopeKey === token.scopeKey
 		&& state.epoch === token.epoch
 		&& state.generation === token.generation
-		&& state.needsReseed === token.needsReseed
+		&& !state.needsReseed
 		&& !state.shuttingDown;
+
+	const canceledTransitionValidationIsCurrent = (
+		state: AdvisorLifecycleState,
+		token: AdvisorCanceledTransitionDelivery,
+	): boolean => canceledTransitionDeliveryBaseIsCurrent(state, token)
+		&& !token.boundResponse
+		&& state.cursor === token.sourceCursor;
+
+	const canceledTransitionBoundResponseIsCurrent = (
+		state: AdvisorLifecycleState,
+		token: AdvisorCanceledTransitionDelivery,
+		ctx: ExtensionContext,
+	): boolean => {
+		const bound = token.boundResponse;
+		const generation = state.activeGeneration;
+		if (
+			!bound
+			|| !token.validatedItem
+			|| !canceledTransitionDeliveryBaseIsCurrent(state, token)
+			|| !generation
+			|| generation.epoch !== token.epoch
+			|| generation.generation !== token.generation
+			|| !generation.terminal
+			|| !ctx.isIdle()
+			|| state.cursor !== bound.cursor
+			|| ctx.sessionManager.getBranch().length !== bound.cursor
+			|| ctx.sessionManager.getLeafId() !== bound.leafId
+		) return false;
+		const branchIds = new Set(ctx.sessionManager.getBranch().map((entry) => entry.id));
+		return branchIds.has(bound.currentUserEntryId)
+			&& bound.primaryEntryIds.every((entryId) => branchIds.has(entryId))
+			&& bound.causalEpisodeId === `${bound.currentUserEntryId}:${token.generation}`;
+	};
 
 	const appendDeliveredAdvisorObservation = async (
 		finding: AcceptedAdvisorFinding,
@@ -3421,40 +3467,36 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 		return true;
 	};
 
-	const scheduleCanceledTransitionDelivery = (
+	const scheduleCanceledTransitionValidation = (
 		state: AdvisorLifecycleState,
 		retained: PendingAdvisorDelivery[],
-		visibleOnly: boolean,
-		rebuildAfter: boolean,
 	): void => {
-		if (retained.length === 0) {
-			if (rebuildAfter) void rebuildAdvisorRuntime(state.latestContext, "cancelled_before_event");
-			return;
-		}
+		if (retained.length === 0) return;
 		const token: AdvisorCanceledTransitionDelivery = {
 			scopeKey: state.scopeKey,
 			epoch: state.epoch,
 			generation: state.generation,
-			needsReseed: state.needsReseed,
+			sourceCursor: state.cursor,
 		};
 		state.canceledTransitionDelivery = token;
 		void (async () => {
 			try {
 				for (const pending of retained) {
-					const delivered = await deliverPendingAdvisorItem(state, pending, {
-						visibleOnly,
-						isCurrent: () => canceledTransitionDeliveryIsCurrent(state, token),
+					const valid = await revalidateAdvisorDelivery(state, pending, {
+						isCurrent: () => canceledTransitionValidationIsCurrent(state, token),
 					});
-					if (delivered) break;
+					if (!valid) continue;
+					await advisorTransitionValidationGateForTest?.();
+					if (!canceledTransitionValidationIsCurrent(state, token)) return;
+					token.validatedItem = pending;
+					return;
 				}
+			} catch {
+				// Canceled-transition validation is advisory and fails closed.
 			} finally {
-				if (state.canceledTransitionDelivery === token) state.canceledTransitionDelivery = undefined;
-				if (
-					rebuildAfter
-					&& advisorStates.get(state.scopeKey) === state
-					&& state.needsReseed
-					&& !state.shuttingDown
-				) void rebuildAdvisorRuntime(state.latestContext, "cancelled_before_event");
+				if (!token.validatedItem && state.canceledTransitionDelivery === token) {
+					state.canceledTransitionDelivery = undefined;
+				}
 			}
 		})();
 	};
@@ -3962,7 +4004,7 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 		const prompt = event.prompt;
 		const advisorState = advisorStateForContext(ctx);
 		let retained: PendingAdvisorDelivery[] = [];
-		let rebuildAfterDelivery = false;
+		let rebuildAfterSubmission = false;
 		if (advisorState?.canceledTransitionDelivery) advisorState.canceledTransitionDelivery = undefined;
 		if (advisorState?.needsReseed) {
 			const transition = advisorState.beforeTransition;
@@ -3976,7 +4018,7 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 				advisorState.needsReseed = false;
 				advisorState.cursor = ctx.sessionManager.getBranch().length;
 			} else {
-				rebuildAfterDelivery = true;
+				rebuildAfterSubmission = true;
 			}
 		}
 		if (advisorState && !advisorState.needsReseed) {
@@ -3996,8 +4038,10 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 				terminal: false,
 			};
 		}
-		if (advisorState && (retained.length > 0 || rebuildAfterDelivery)) {
-			scheduleCanceledTransitionDelivery(advisorState, retained, rebuildAfterDelivery, rebuildAfterDelivery);
+		if (advisorState && retained.length > 0 && !advisorState.needsReseed) {
+			scheduleCanceledTransitionValidation(advisorState, retained);
+		} else if (advisorState && rebuildAfterSubmission) {
+			void rebuildAdvisorRuntime(advisorState.latestContext, "cancelled_before_event");
 		}
 		// Keep submission path synchronous and cheap so Pi can emit/persist/render
 		// the user message before local embedding and applicability assessment.
@@ -4064,13 +4108,37 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 	pi.on("turn_end", async (event, ctx) => {
 		const state = advisorStateForContext(ctx);
 		const generation = state?.activeGeneration;
-		if (!state || !state.runtime || !generation || generation.scopeKey !== state.scopeKey || generation.epoch !== state.epoch || generation.generation !== state.generation) return;
+		if (!state || !state.runtime || !generation || generation.scopeKey !== state.scopeKey || generation.epoch !== state.epoch || generation.generation !== state.generation) {
+			if (state) state.canceledTransitionDelivery = undefined;
+			return;
+		}
 		generation.cancelled ||= !!ctx.signal?.aborted;
 		generation.terminal = assistantTurnIsTerminal(event.message);
 		const steeringState = pendingSteeringRuns.get(state.scopeKey);
 		generation.activeRequestHabitIds = steeringState?.activeHabitIds ? [...steeringState.activeHabitIds] : [];
 		const identity = resolveAdvisorTurnIdentity(ctx, event.message, event.toolResults, generation);
-		if (!identity) return;
+		if (!identity) {
+			state.canceledTransitionDelivery = undefined;
+			return;
+		}
+		const canceledTransition = state.canceledTransitionDelivery;
+		if (canceledTransition) {
+			if (
+				!canceledTransition.validatedItem
+				|| canceledTransition.boundResponse
+				|| !canceledTransitionValidationIsCurrent(state, canceledTransition)
+			) {
+				state.canceledTransitionDelivery = undefined;
+			} else {
+				canceledTransition.boundResponse = {
+					cursor: identity.cursor,
+					leafId: ctx.sessionManager.getLeafId(),
+					currentUserEntryId: identity.currentUserEntryId,
+					primaryEntryIds: [...identity.primaryEntryIds],
+					causalEpisodeId: identity.causalEpisodeId,
+				};
+			}
+		}
 		state.cursor = identity.cursor;
 		state.pending = state.pending.filter((pending) => pendingAdvisorDeliveryIsCurrent(state, pending));
 		if (event.message.role !== "assistant") return;
@@ -4357,6 +4425,22 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 		if (advisorState) {
 			if (advisorState.activeGeneration) advisorState.activeGeneration.terminal = true;
 			await flushPendingAdvisorMessages(advisorState, false);
+			const canceledTransition = advisorState.canceledTransitionDelivery;
+			if (canceledTransition) {
+				try {
+					const item = canceledTransition.validatedItem;
+					if (item && canceledTransitionBoundResponseIsCurrent(advisorState, canceledTransition, ctx)) {
+						await deliverPendingAdvisorItem(advisorState, item, {
+							visibleOnly: false,
+							isCurrent: () => canceledTransitionBoundResponseIsCurrent(advisorState, canceledTransition, ctx),
+						});
+					}
+				} finally {
+					if (advisorState.canceledTransitionDelivery === canceledTransition) {
+						advisorState.canceledTransitionDelivery = undefined;
+					}
+				}
+			}
 		}
 		const steeringScope = steeringScopeFromContext(ctx);
 		if (steeringScope) pendingSteeringRuns.delete(steeringScope);

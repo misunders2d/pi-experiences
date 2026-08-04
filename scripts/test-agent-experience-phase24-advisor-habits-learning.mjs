@@ -8,6 +8,7 @@ import agentExperienceExtension, {
   __advisorCatchupRequiredForTest,
   __normalizeAgentExperienceConsolidationModelOutputForTest,
   __setAgentExperienceAdvisorAdapterForTest,
+  __setAgentExperienceAdvisorTransitionValidationGateForTest,
 } from '../extensions/agent-experience/index.ts';
 import {
   ADVISOR_FINDING_MESSAGE_TYPE,
@@ -833,6 +834,47 @@ try {
     addMessageEntry(harness.branch, `assistant-${id}`, assistant);
     await harness.emit('turn_end', { turnIndex: Number(id) || 0, message: assistant, toolResults: [] });
   }
+  async function makeBoundCanceledTransitionHarness(label) {
+    await writeAgentExperienceConfig({ ...DEFAULT_AGENT_EXPERIENCE_CONFIG, enabled: true, advisor_enabled: true, advisor_model: 'test/advisor', selector_enabled: true, embedding_enabled: true, capture_enabled: false, break_in_enabled: false });
+    const updates = [];
+    const adapter = {
+      contextTokenEstimate: 0,
+      async review(update) {
+        updates.push(update);
+        return updates.length === 1 ? [{ kind: 'generic_advice', severity: 'nit', note: `Bound transition ${label}.` }] : [];
+      },
+      reset() {},
+      async dispose() {},
+    };
+    const harness = makeAdvisorHarness(adapter);
+    await harness.emit('session_start', { reason: 'startup' });
+    await runTurn(harness, `${label}-before`, `Prepare ${label}.`);
+    await waitUntil(() => updates.length === 1, `${label} pending finding`);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await harness.emit('session_before_tree', { preparation: {}, signal: new AbortController().signal });
+    let validationEntered = false;
+    let releaseValidation;
+    __setAgentExperienceAdvisorTransitionValidationGateForTest(() => {
+      validationEntered = true;
+      return new Promise((resolve) => { releaseValidation = resolve; });
+    });
+    harness.setIdle(false);
+    const prompt = `Continue ${label}.`;
+    await harness.emit('before_agent_start', { prompt, systemPrompt: 'base', systemPromptOptions: {} });
+    const user = { role: 'user', content: [{ type: 'text', text: prompt }], timestamp: Date.now() };
+    await harness.emit('message_start', { message: user });
+    addMessageEntry(harness.branch, `user-${label}-after`, user);
+    await harness.emit('message_end', { message: user });
+    await waitUntil(() => validationEntered, `${label} transition validation`);
+    releaseValidation();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const assistant = { role: 'assistant', content: [{ type: 'text', text: `assistant ${label}` }], stopReason: 'stop', timestamp: Date.now() + 1 };
+    addMessageEntry(harness.branch, `assistant-${label}-after`, assistant);
+    await harness.emit('turn_end', { turnIndex: 2, message: assistant, toolResults: [] });
+    __setAgentExperienceAdvisorTransitionValidationGateForTest(undefined);
+    assert.equal(harness.sent.length, 0, `${label} must remain pending after response binding`);
+    return harness;
+  }
   try {
     process.env.AX_CAPTURE_ENABLED = 'true';
     await writeAgentExperienceConfig({ ...DEFAULT_AGENT_EXPERIENCE_CONFIG, enabled: true, advisor_enabled: true, advisor_model: 'test/advisor', capture_enabled: true, break_in_enabled: false });
@@ -926,15 +968,148 @@ try {
       await new Promise((resolve) => setTimeout(resolve, 0));
       assert.equal(cancelledHarness.sent.length, 0);
       await cancelledHarness.emit(beforeEvent, { preparation: {}, signal: new AbortController().signal });
-      await runTurn(cancelledHarness, `${label}-cancelled`, `Continue after cancelled ${label}.`, 'stop');
+      let validationEntered = false;
+      let releaseValidation;
+      __setAgentExperienceAdvisorTransitionValidationGateForTest(() => {
+        validationEntered = true;
+        return new Promise((resolve) => { releaseValidation = resolve; });
+      });
+      cancelledHarness.setIdle(false);
+      const cancelledPrompt = `Continue after cancelled ${label}.`;
+      await cancelledHarness.emit('before_agent_start', { prompt: cancelledPrompt, systemPrompt: 'base', systemPromptOptions: {} });
+      assert.equal(cancelledHarness.sent.length, 0, `cancelled ${label} must not deliver from before_agent_start`);
+      const cancelledUser = { role: 'user', content: [{ type: 'text', text: cancelledPrompt }], timestamp: Date.now() };
+      await cancelledHarness.emit('message_start', { message: cancelledUser });
+      addMessageEntry(cancelledHarness.branch, `user-${label}-cancelled`, cancelledUser);
+      await cancelledHarness.emit('message_end', { message: cancelledUser });
+      await waitUntil(() => validationEntered, `${label} canceled-transition validation`);
+      releaseValidation();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const cancelledAssistant = { role: 'assistant', content: [{ type: 'text', text: `assistant ${label} cancelled` }], stopReason: 'stop', timestamp: Date.now() + 1 };
+      addMessageEntry(cancelledHarness.branch, `assistant-${label}-cancelled`, cancelledAssistant);
+      await cancelledHarness.emit('turn_end', { turnIndex: 2, message: cancelledAssistant, toolResults: [] });
       await waitUntil(() => updates.length === 2, `${label} reseeded review`);
+      assert.equal(cancelledHarness.sent.length, 0, `cancelled ${label} must not deliver before the replacement response settles`);
       cancelledHarness.setIdle(true);
       await cancelledHarness.emit('agent_settled');
       assert.equal(cancelledHarness.sent.length, 1, `cancelled ${label} must retain and deliver its still-current pending finding exactly once`);
       assert.equal(cancelledHarness.sent[0].message.details.note, `Pending across cancelled ${label}.`);
       assert.deepEqual(cancelledHarness.sent[0].options, { triggerTurn: false });
+      await cancelledHarness.emit('agent_settled');
+      assert.equal(cancelledHarness.sent.length, 1, `duplicate agent_settled must not redeliver canceled ${label}`);
+      __setAgentExperienceAdvisorTransitionValidationGateForTest(undefined);
       await cancelledHarness.emit('session_shutdown', { reason: 'quit' });
     }
+
+    let lateValidationRelease;
+    __setAgentExperienceAdvisorTransitionValidationGateForTest(() => new Promise((resolve) => { lateValidationRelease = resolve; }));
+    const lateValidationUpdates = [];
+    const lateValidationAdapter = {
+      contextTokenEstimate: 0,
+      async review(update) {
+        lateValidationUpdates.push(update);
+        return lateValidationUpdates.length === 1 ? [{ kind: 'generic_advice', severity: 'nit', note: 'Late canceled-transition validation.' }] : [];
+      },
+      reset() {},
+      async dispose() {},
+    };
+    const lateValidationHarness = makeAdvisorHarness(lateValidationAdapter);
+    await lateValidationHarness.emit('session_start', { reason: 'startup' });
+    await runTurn(lateValidationHarness, 'late-validation-before', 'Prepare a tree change.');
+    await waitUntil(() => lateValidationUpdates.length === 1, 'late-validation pending finding');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await lateValidationHarness.emit('session_before_tree', { preparation: {}, signal: new AbortController().signal });
+    lateValidationHarness.setIdle(false);
+    const latePrompt = 'Continue after the canceled tree.';
+    await lateValidationHarness.emit('before_agent_start', { prompt: latePrompt, systemPrompt: 'base', systemPromptOptions: {} });
+    const lateUser = { role: 'user', content: [{ type: 'text', text: latePrompt }], timestamp: Date.now() };
+    await lateValidationHarness.emit('message_start', { message: lateUser });
+    addMessageEntry(lateValidationHarness.branch, 'user-late-validation-after', lateUser);
+    await lateValidationHarness.emit('message_end', { message: lateUser });
+    await waitUntil(() => typeof lateValidationRelease === 'function', 'deferred canceled-transition validation');
+    const lateAssistant = { role: 'assistant', content: [{ type: 'text', text: 'assistant late validation after' }], stopReason: 'stop', timestamp: Date.now() + 1 };
+    addMessageEntry(lateValidationHarness.branch, 'assistant-late-validation-after', lateAssistant);
+    await lateValidationHarness.emit('turn_end', { turnIndex: 2, message: lateAssistant, toolResults: [] });
+    lateValidationRelease();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    lateValidationHarness.setIdle(true);
+    await lateValidationHarness.emit('agent_settled');
+    assert.equal(lateValidationHarness.sent.length, 0, 'validation that resolves after turn_end must not deliver');
+    assert.equal(lateValidationHarness.visibleEntries.length, 0, 'validation that resolves after turn_end must not render a fallback');
+    await lateValidationHarness.emit('session_shutdown', { reason: 'quit' });
+    __setAgentExperienceAdvisorTransitionValidationGateForTest(undefined);
+
+    let boundValidationEntered = false;
+    let boundValidationRelease;
+    __setAgentExperienceAdvisorTransitionValidationGateForTest(() => {
+      boundValidationEntered = true;
+      return new Promise((resolve) => { boundValidationRelease = resolve; });
+    });
+    const boundMutationUpdates = [];
+    const boundMutationAdapter = {
+      contextTokenEstimate: 0,
+      async review(update) {
+        boundMutationUpdates.push(update);
+        return boundMutationUpdates.length === 1 ? [{ kind: 'generic_advice', severity: 'nit', note: 'Bound before authority mutation.' }] : [];
+      },
+      reset() {},
+      async dispose() {},
+    };
+    const boundMutationHarness = makeAdvisorHarness(boundMutationAdapter);
+    await boundMutationHarness.emit('session_start', { reason: 'startup' });
+    await runTurn(boundMutationHarness, 'bound-mutation-before', 'Prepare another tree change.');
+    await waitUntil(() => boundMutationUpdates.length === 1, 'bound-mutation pending finding');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await boundMutationHarness.emit('session_before_tree', { preparation: {}, signal: new AbortController().signal });
+    boundMutationHarness.setIdle(false);
+    await boundMutationHarness.emit('before_agent_start', { prompt: 'Continue under the current authority.', systemPrompt: 'base', systemPromptOptions: {} });
+    const boundUser = { role: 'user', content: [{ type: 'text', text: 'Continue under the current authority.' }], timestamp: Date.now() };
+    await boundMutationHarness.emit('message_start', { message: boundUser });
+    addMessageEntry(boundMutationHarness.branch, 'user-bound-mutation-after', boundUser);
+    await boundMutationHarness.emit('message_end', { message: boundUser });
+    await waitUntil(() => boundValidationEntered, 'bound transition validation');
+    boundValidationRelease();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const boundAssistant = { role: 'assistant', content: [{ type: 'text', text: 'assistant bound mutation after' }], stopReason: 'stop', timestamp: Date.now() + 1 };
+    addMessageEntry(boundMutationHarness.branch, 'assistant-bound-mutation-after', boundAssistant);
+    await boundMutationHarness.emit('turn_end', { turnIndex: 2, message: boundAssistant, toolResults: [] });
+    assert.equal(boundMutationHarness.sent.length, 0, 'validated canceled-transition finding must remain pending until agent_settled');
+    await writeAgentExperienceConfig({ ...DEFAULT_AGENT_EXPERIENCE_CONFIG, enabled: true, advisor_enabled: true, advisor_model: 'test/advisor', selector_enabled: true, embedding_enabled: true, selector_min_confidence_bp: 7600, capture_enabled: false, break_in_enabled: false });
+    boundMutationHarness.setIdle(true);
+    await boundMutationHarness.emit('agent_settled');
+    assert.equal(boundMutationHarness.sent.length, 0, 'authority mutation between response binding and settle must revoke model-visible delivery');
+    assert.equal(boundMutationHarness.visibleEntries.length, 0, 'authority mutation between response binding and settle must revoke fallback delivery');
+    await boundMutationHarness.emit('session_shutdown', { reason: 'quit' });
+    __setAgentExperienceAdvisorTransitionValidationGateForTest(undefined);
+
+    const laterGenerationHarness = await makeBoundCanceledTransitionHarness('later-generation');
+    await laterGenerationHarness.emit('before_agent_start', { prompt: 'Start a later generation.', systemPrompt: 'base', systemPromptOptions: {} });
+    laterGenerationHarness.setIdle(true);
+    await laterGenerationHarness.emit('agent_settled');
+    assert.equal(laterGenerationHarness.sent.length, 0, 'a later generation must revoke a bound canceled-transition finding');
+    assert.equal(laterGenerationHarness.visibleEntries.length, 0);
+    await laterGenerationHarness.emit('session_shutdown', { reason: 'quit' });
+
+    const lifecycleDropHarness = await makeBoundCanceledTransitionHarness('lifecycle-drop');
+    await lifecycleDropHarness.emit('session_before_switch', { reason: 'resume', targetSessionFile: '/tmp/replacement.jsonl' });
+    lifecycleDropHarness.setIdle(true);
+    await lifecycleDropHarness.emit('agent_settled');
+    assert.equal(lifecycleDropHarness.sent.length, 0, 'a lifecycle transition must revoke a bound canceled-transition finding');
+    assert.equal(lifecycleDropHarness.visibleEntries.length, 0);
+    await lifecycleDropHarness.emit('session_shutdown', { reason: 'quit' });
+
+    const rebuildDropHarness = await makeBoundCanceledTransitionHarness('rebuild-drop');
+    await rebuildDropHarness.emit('model_select', { model: rebuildDropHarness.ctx.model, source: 'set' });
+    rebuildDropHarness.setIdle(true);
+    await rebuildDropHarness.emit('agent_settled');
+    assert.equal(rebuildDropHarness.sent.length, 0, 'a runtime reset and rebuild must revoke a bound canceled-transition finding');
+    assert.equal(rebuildDropHarness.visibleEntries.length, 0);
+    await rebuildDropHarness.emit('session_shutdown', { reason: 'quit' });
+
+    const shutdownDropHarness = await makeBoundCanceledTransitionHarness('shutdown-drop');
+    await shutdownDropHarness.emit('session_shutdown', { reason: 'quit' });
+    assert.equal(shutdownDropHarness.sent.length, 0, 'shutdown must revoke bound model-visible canceled-transition delivery');
+    assert.equal(shutdownDropHarness.visibleEntries.length, 0, 'shutdown must not misrepresent a bound canceled-transition finding as delivered');
 
     const cursorUpdates = [];
     const cursorAdapter = {
@@ -1143,6 +1318,7 @@ try {
     await selectorDisableHarness.emit('session_shutdown', { reason: 'quit' });
   } finally {
     __setAgentExperienceAdvisorAdapterForTest(undefined);
+    __setAgentExperienceAdvisorTransitionValidationGateForTest(undefined);
     for (const [key, value] of Object.entries(advisorEnv)) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
