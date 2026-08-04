@@ -19,9 +19,11 @@ const ADVICE_SEVERITIES = new Set<AdvisorSeverity>(["nit", "concern", "blocker"]
 const HABIT_SEVERITIES = new Set<AdvisorSeverity>(["concern", "blocker"]);
 const HABIT_ALIAS = /^h[1-8]$/;
 
+const MAX_ADVISOR_EMISSION_ATTEMPTS = 8;
+
 export class AdvisorAttemptBuffer {
 	private readonly allowedHabitAliases: Set<string>;
-	private attempt: AdvisorAttempt | undefined;
+	private readonly attempts: AdvisorAttempt[] = [];
 	private closed = false;
 	private drained = false;
 
@@ -33,8 +35,9 @@ export class AdvisorAttemptBuffer {
 	}
 
 	private record(attempt: AdvisorAttempt): void {
-		if (this.closed || this.attempt) throw new Error("Advisor emission already recorded");
-		this.attempt = attempt;
+		if (this.closed) throw new Error("Advisor emission buffer is closed");
+		if (this.attempts.length >= MAX_ADVISOR_EMISSION_ATTEMPTS) throw new Error("Advisor emission attempt budget exhausted");
+		this.attempts.push(attempt);
 	}
 
 	async advise(input: AdviseInput): Promise<void> {
@@ -58,12 +61,12 @@ export class AdvisorAttemptBuffer {
 		if (this.drained) return [];
 		this.drained = true;
 		this.closed = true;
-		return this.attempt ? [this.attempt] : [];
+		return this.attempts.splice(0);
 	}
 
 	clear(): void {
 		this.closed = true;
-		this.attempt = undefined;
+		this.attempts.length = 0;
 	}
 }
 

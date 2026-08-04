@@ -137,7 +137,7 @@ function retrievalCandidate(item: { row: HabitStorageRow; candidate: SelectorCan
 }
 
 function assertAdvisorEnabled(config: AgentExperienceConfig): void {
-	if (!config.enabled || !config.advisor_enabled || !config.embedding_enabled) throw new Error("advisor_habit_vectors_disabled");
+	if (!config.enabled || !config.advisor_enabled || !config.selector_enabled || !config.embedding_enabled) throw new Error("advisor_habit_vectors_disabled");
 }
 
 export async function prepareAdvisorHabitVectors(db: DatabaseSync, input: {
@@ -213,6 +213,7 @@ export async function retrieveAdvisorHabitCandidates(db: DatabaseSync, input: {
 	tokenizerAssetDir: string;
 	signal?: AbortSignal;
 }): Promise<AdvisorHabitRetrievalCandidate[]> {
+	assertAdvisorEnabled(input.config);
 	const userId = normalizeUserId(input.userId);
 	const law = revalidateLawSnapshotSync(input.law);
 	const allEligible = eligibleCurrentLawRows(db, { userId, law, config: input.config });
@@ -270,6 +271,7 @@ export function revalidateAdvisorHabitFinding(db: DatabaseSync, input: {
 }): AdvisorHabitCandidate {
 	const fail = (): never => { throw new Error("advisor_habit_snapshot_changed"); };
 	const userId = normalizeUserId(input.userId);
+	try { assertAdvisorEnabled(input.config); } catch { return fail(); }
 	let law: LawSnapshot;
 	try { law = revalidateLawSnapshotSync(input.law); } catch { return fail(); }
 	const habitId = input.originalIdByAlias.get(input.alias);

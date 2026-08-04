@@ -88,18 +88,21 @@ assert.throws(() => formatAdvisorUpdate({ ...update, habits: [{ ...habits[0], al
 
 const buffer = new AdvisorAttemptBuffer(['h1']);
 await buffer.advise({ note: 'Run the packed-install check.', severity: 'concern' });
-await assert.rejects(
-  () => buffer.reportHabitViolation({ habit_alias: 'h1', severity: 'blocker' }),
-  /emission/i,
-);
-await assert.rejects(
-  () => buffer.advise({ note: 'Repeated advice.', severity: 'nit' }),
-  /emission/i,
-);
+await buffer.reportHabitViolation({ habit_alias: 'h1', severity: 'blocker' });
 assert.deepEqual(buffer.drain(), [
   { kind: 'generic_advice', note: 'Run the packed-install check.', severity: 'concern' },
-]);
+  { kind: 'habit_violation', habitAlias: 'h1', severity: 'blocker' },
+], 'the guard must receive every bounded attempt so a later valid habit can outrank generic advice');
 assert.deepEqual(buffer.drain(), []);
+const budgetBuffer = new AdvisorAttemptBuffer(['h1']);
+for (let index = 0; index < 8; index++) {
+  await budgetBuffer.advise({ note: `Bounded attempt ${index + 1}.`, severity: 'nit' });
+}
+await assert.rejects(
+  () => budgetBuffer.advise({ note: 'Past the bounded attempt budget.', severity: 'nit' }),
+  /budget/i,
+);
+assert.equal(budgetBuffer.drain().length, 8, 'the attempt buffer must retain a small bounded list');
 const aliasBuffer = new AdvisorAttemptBuffer(['h1']);
 await assert.rejects(
   () => aliasBuffer.reportHabitViolation({ habit_alias: 'h2', severity: 'blocker' }),
@@ -113,10 +116,11 @@ assert.equal(emissionTools[0].parameters.properties.note.maxLength, 1200);
 assert.equal(emissionTools[1].parameters.additionalProperties, false);
 assert.equal(emissionTools[1].parameters.properties.habit_alias.pattern, '^h[1-8]$');
 assert.equal((await emissionTools[0].execute('emit-1', { note: 'Check it.' })).content[0].text, 'Recorded.');
-await assert.rejects(
-  () => emissionTools[0].execute('emit-2', { note: 'Second check.' }),
-  /emission/i,
-);
+assert.equal((await emissionTools[1].execute('emit-2', { habit_alias: 'h1', severity: 'blocker' })).content[0].text, 'Recorded.');
+assert.deepEqual(emissionBuffer.drain(), [
+  { kind: 'generic_advice', note: 'Check it.', severity: 'concern' },
+  { kind: 'habit_violation', habitAlias: 'h1', severity: 'blocker' },
+]);
 assert.rejects(() => emissionBuffer.advise({ note: '', severity: 'concern' }), /note/i);
 assert.rejects(() => emissionBuffer.reportHabitViolation({ habit_alias: 'durable-hidden', severity: 'blocker' }), /alias/i);
 
@@ -328,14 +332,7 @@ try {
     assert.deepEqual(agent.state.tools.map((tool) => tool.name), ['read', 'grep', 'glob', 'advise', 'report_habit_violation']);
     await agent.options.streamFn(fakeModel, { messages: [] }, { signal: new AbortController().signal });
     await agent.state.tools[3].execute('emit-advice', { note: 'Run the packed-install check.', severity: 'concern' });
-    await assert.rejects(
-      () => agent.state.tools[4].execute('emit-mixed', { habit_alias: 'h1', severity: 'blocker' }),
-      /emission/i,
-    );
-    await assert.rejects(
-      () => agent.state.tools[3].execute('emit-repeated', { note: 'Repeated.', severity: 'nit' }),
-      /emission/i,
-    );
+    await agent.state.tools[4].execute('emit-mixed', { habit_alias: 'h1', severity: 'blocker' });
     agent.state.messages.push({ role: 'assistant', content: [{ type: 'text', text: 'Extra prose is not another finding.' }] });
   });
   const adapter = createPiAdvisorAgentAdapter(ctx, {
@@ -352,7 +349,8 @@ try {
   assert.equal(adapter.contextTokenEstimate, 0);
   assert.deepEqual(await adapter.review(update), [
     { kind: 'generic_advice', note: 'Run the packed-install check.', severity: 'concern' },
-  ]);
+    { kind: 'habit_violation', habitAlias: 'h1', severity: 'blocker' },
+  ], 'the adapter must return every bounded emission attempt for host priority arbitration');
   assert.deepEqual(registryCalls.slice(0, 2), [['find', 'provider', 'reviewer'], ['auth', 'reviewer']]);
   assert.equal(streamOptions.apiKey, 'auth-secret');
   assert.deepEqual(streamOptions.headers, { 'x-auth': 'yes' });

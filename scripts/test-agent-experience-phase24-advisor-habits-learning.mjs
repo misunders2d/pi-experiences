@@ -169,7 +169,7 @@ try {
   }
 
   const law = lawSnapshotForTest('phase24 advisor habit law'), staleLaw = lawSnapshotForTest('phase24 stale law');
-  const config = { ...DEFAULT_AGENT_EXPERIENCE_CONFIG, enabled: true, advisor_enabled: true, embedding_enabled: true, selector_min_confidence_bp: 7500, selector_staleness_max: 0.8 };
+  const config = { ...DEFAULT_AGENT_EXPERIENCE_CONFIG, enabled: true, advisor_enabled: true, selector_enabled: true, embedding_enabled: true, selector_min_confidence_bp: 7500, selector_staleness_max: 0.8 };
   const storage = await initExperienceStorage(join(temp, 'state'), { allowInit: true, userId: 'owner' });
   try {
     const definitions = [
@@ -190,6 +190,18 @@ try {
     const embedding = fakeEmbeddingAdapter();
     assert.deepEqual(await prepareAdvisorHabitVectors(storage.db, { userId: 'owner', law, config, embeddingAdapter: embedding, now: '2026-08-04T00:30:00.000Z' }), { total: 2, cached: 0, prepared: 2 });
     assert.deepEqual(await prepareAdvisorHabitVectors(storage.db, { userId: 'owner', law, config, embeddingAdapter: embedding, now: '2026-08-04T00:31:00.000Z' }), { total: 2, cached: 2, prepared: 0 });
+
+    const selectorDisabledConfig = { ...config, selector_enabled: false };
+    await assert.rejects(
+      () => prepareAdvisorHabitVectors(storage.db, { userId: 'owner', law, config: selectorDisabledConfig, embeddingAdapter: embedding, now: '2026-08-04T00:31:30.000Z' }),
+      /advisor_habit_vectors_disabled/,
+      'approved-habit vector preparation must require the independent approved-habits switch',
+    );
+    await assert.rejects(
+      () => retrieveAdvisorHabitCandidates(storage.db, { userId: 'owner', delta: delta('[tool_call:bash] publish packed install'), activeRequestHabitIds: ['active-request-id'], law, config: selectorDisabledConfig, embeddingAdapter: embedding, tokenizerAssetDir }),
+      /advisor_habit_vectors_disabled/,
+      'Advisor retrieval must expose zero approved habits while Use approved habits is OFF',
+    );
 
     embedding.calls.length = 0;
     const retrieved = await retrieveAdvisorHabitCandidates(storage.db, { userId: 'owner', delta: delta(`${'ignored prose '.repeat(1200)}\n[tool_call:bash] {"action":"publish","artifact":"packed install"}`), activeRequestHabitIds: [], law, config, embeddingAdapter: embedding, tokenizerAssetDir });
@@ -218,6 +230,11 @@ try {
     assert.ok(behaviorCandidate, 'behavior candidate must survive the bounded rank');
     const strictInput = { userId: 'owner', alias: behaviorCandidate.alias, candidates: ranked, originalIdByAlias: aliased.originalIdByAlias, law, config, responseGeneration: 7, cursor: 19, advisorEpoch: 4 };
     assert.equal(revalidateAdvisorHabitFinding(storage.db, strictInput).behavior, 'Verify the packed install before publishing');
+    assert.throws(
+      () => revalidateAdvisorHabitFinding(storage.db, { ...strictInput, config: selectorDisabledConfig }),
+      /advisor_habit_snapshot_changed/,
+      'a selector disable after retrieval but before delivery must revoke the in-flight habit finding',
+    );
     for (const [label, mutate] of [
       ['status', () => replaceHabit(storage.db, 'behavior-id', { status: 'disabled', active: false })],
       ['wording', () => replaceHabit(storage.db, 'behavior-id', { behavior: 'Changed approved wording.' })],
@@ -706,13 +723,19 @@ try {
     assert.fail(`timed out waiting for ${label}`);
   }
   function makeAdvisorHarness(adapter, initialEntries = []) {
-    const handlers = new Map(), messageRenderers = new Map(), entryRenderers = new Map(), sent = [], visibleEntries = [];
+    const handlers = new Map(), commands = new Map(), messageRenderers = new Map(), entryRenderers = new Map(), sent = [], visibleEntries = [];
     const branch = [...initialEntries];
+    const setupChoices = [], setupNotes = [];
     let idle = true;
+    const advisorModels = [
+      { provider: 'test', id: 'advisor', name: 'Advisor', api: 'test', contextWindow: 128000, input: ['text'] },
+      { provider: 'test', id: 'advisor-v2', name: 'Advisor v2', api: 'test', contextWindow: 128000, input: ['text'] },
+      { provider: 'test', id: 'primary', name: 'Primary', api: 'test', contextWindow: 128000, input: ['text'] },
+    ];
     const pi = {
       on(event, handler) { const list = handlers.get(event) || []; list.push(handler); handlers.set(event, list); },
       registerTool() {},
-      registerCommand() {},
+      registerCommand(name, options) { commands.set(name, options); },
       registerMessageRenderer(type, renderer) { messageRenderers.set(type, renderer); },
       registerEntryRenderer(type, renderer) { entryRenderers.set(type, renderer); },
       sendMessage(message, options) { sent.push({ message, options }); },
@@ -737,13 +760,25 @@ try {
       cwd: temp,
       mode: 'tui',
       hasUI: true,
-      model: { provider: 'test', id: 'primary', api: 'test', contextWindow: 128000 },
-      modelRegistry: {},
+      model: advisorModels[2],
+      modelRegistry: {
+        getAvailable: () => advisorModels,
+        find: (provider, id) => advisorModels.find((model) => model.provider === provider && model.id === id),
+        hasConfiguredAuth: () => true,
+        async getApiKeyAndHeaders() { return { ok: true, apiKey: 'test-not-used' }; },
+      },
       sessionManager,
       signal: undefined,
       isIdle: () => idle,
       hasPendingMessages: () => false,
-      ui: { notify() {} },
+      ui: {
+        notify(message, level) { setupNotes.push({ message, level }); },
+        async select(_title, options) {
+          const choice = setupChoices.shift();
+          if (choice === undefined) return undefined;
+          return options.find((option) => option === choice || option.startsWith(`${choice}:`)) ?? choice;
+        },
+      },
     };
     async function emit(type, event = {}) {
       let result;
@@ -755,7 +790,11 @@ try {
     }
     __setAgentExperienceAdvisorAdapterForTest(adapter);
     agentExperienceExtension(pi);
-    return { handlers, messageRenderers, entryRenderers, sent, visibleEntries, branch, ctx, emit, setIdle(value) { idle = value; } };
+    return {
+      handlers, commands, messageRenderers, entryRenderers, sent, visibleEntries, branch, ctx, emit, setupNotes,
+      queueSetup(...choices) { setupChoices.push(...choices); },
+      setIdle(value) { idle = value; },
+    };
   }
   function fakeAdvisorAdapter(attempt) {
     const updates = [];
@@ -764,6 +803,22 @@ try {
       contextTokenEstimate: 0,
       async review(update) { updates.push(update); return [attempt]; },
       reset() {},
+      async dispose() {},
+    };
+  }
+  function deferredAdvisorAdapter() {
+    const updates = [], resolvers = [];
+    let resetCalls = 0;
+    return {
+      updates,
+      resolvers,
+      get resetCalls() { return resetCalls; },
+      contextTokenEstimate: 0,
+      async review(update) {
+        updates.push(update);
+        return new Promise((resolve) => resolvers.push(resolve));
+      },
+      reset() { resetCalls++; },
       async dispose() {},
     };
   }
@@ -874,11 +929,32 @@ try {
       await waitUntil(() => updates.length === 2, `${label} reseeded review`);
       cancelledHarness.setIdle(true);
       await cancelledHarness.emit('agent_settled');
-      assert.equal(cancelledHarness.sent.length, 1, `cancelled ${label} must retain its pending finding`);
-      assert.equal(cancelledHarness.sent[0].message.details.note, `Pending across cancelled ${label}.`);
-      assert.deepEqual(cancelledHarness.sent[0].options, { triggerTurn: false });
+      assert.equal(cancelledHarness.sent.length, 0, `a later ${label} cursor must discard the immutable pending finding`);
       await cancelledHarness.emit('session_shutdown', { reason: 'quit' });
     }
+
+    const cursorUpdates = [];
+    const cursorAdapter = {
+      contextTokenEstimate: 0,
+      async review(update) {
+        cursorUpdates.push(update);
+        return cursorUpdates.length === 1 ? [{ kind: 'generic_advice', severity: 'nit', note: 'Finding from the intermediate tool-use turn.' }] : [];
+      },
+      reset() {},
+      async dispose() {},
+    };
+    const cursorHarness = makeAdvisorHarness(cursorAdapter);
+    await cursorHarness.emit('session_start', { reason: 'startup' });
+    await runTurn(cursorHarness, 'cursor-first', 'Complete the release with tools.');
+    await waitUntil(() => cursorUpdates.length === 1, 'intermediate pending finding');
+    const continuation = { role: 'assistant', content: [{ type: 'text', text: 'assistant corrected the issue before settling' }], stopReason: 'stop', timestamp: Date.now() + 10 };
+    addMessageEntry(cursorHarness.branch, 'assistant-cursor-second', continuation);
+    await cursorHarness.emit('turn_end', { turnIndex: 2, message: continuation, toolResults: [] });
+    await waitUntil(() => cursorUpdates.length === 2, 'later cursor review');
+    cursorHarness.setIdle(true);
+    await cursorHarness.emit('agent_settled');
+    assert.equal(cursorHarness.sent.length, 0, 'a pending finding must retain its original cursor and be discarded after a later turn advances it');
+    await cursorHarness.emit('session_shutdown', { reason: 'quit' });
 
     const nitAdapter = fakeAdvisorAdapter({ kind: 'generic_advice', severity: 'nit', note: 'Small release note.' });
     const nitHarness = makeAdvisorHarness(nitAdapter);
@@ -947,6 +1023,94 @@ try {
     const shutdown = staleHarness.emit('session_shutdown', { reason: 'quit' });
     await finishStaleReview(6, 'shutdown');
     await shutdown;
+
+    delete process.env.AX_ENABLED;
+    delete process.env.AX_ADVISOR_ENABLED;
+    delete process.env.AX_ADVISOR_MODEL;
+    process.env.AX_CAPTURE_ENABLED = 'false';
+
+    const authorityAdapter = deferredAdvisorAdapter();
+    await writeAgentExperienceConfig({ ...DEFAULT_AGENT_EXPERIENCE_CONFIG, enabled: true, advisor_enabled: true, advisor_model: 'test/advisor', selector_enabled: true, embedding_enabled: true, capture_enabled: false, break_in_enabled: false });
+    const authorityHarness = makeAdvisorHarness(authorityAdapter);
+    await authorityHarness.emit('session_start', { reason: 'startup' });
+    await runTurn(authorityHarness, 'authority-pending', 'Check the current authority signature.');
+    await waitUntil(() => authorityAdapter.resolvers.length === 1, 'authority-signature deferred review');
+    await writeAgentExperienceConfig({ ...DEFAULT_AGENT_EXPERIENCE_CONFIG, enabled: true, advisor_enabled: true, advisor_model: 'test/advisor', selector_enabled: true, embedding_enabled: true, selector_min_confidence_bp: 7600, capture_enabled: false, break_in_enabled: false });
+    authorityAdapter.resolvers[0]([{ kind: 'generic_advice', severity: 'concern', note: 'Finding from the old authority signature.' }]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(authorityHarness.sent.length, 0, 'every generic finding must reload and compare the full runtime/authority signature before delivery');
+    await authorityHarness.emit('session_shutdown', { reason: 'quit' });
+
+    await writeAgentExperienceConfig({ ...DEFAULT_AGENT_EXPERIENCE_CONFIG, enabled: true, advisor_enabled: true, advisor_model: 'test/advisor', selector_enabled: true, embedding_enabled: true, capture_enabled: false, break_in_enabled: false });
+    const deliveryRevalidationAdapter = fakeAdvisorAdapter({ kind: 'generic_advice', severity: 'nit', note: 'Pending until the primary settles.' });
+    const deliveryRevalidationHarness = makeAdvisorHarness(deliveryRevalidationAdapter);
+    await deliveryRevalidationHarness.emit('session_start', { reason: 'startup' });
+    await runTurn(deliveryRevalidationHarness, 'delivery-revalidation', 'Settle after checking configuration.');
+    await waitUntil(() => deliveryRevalidationAdapter.updates.length === 1, 'pending delivery revalidation');
+    await writeAgentExperienceConfig({ ...DEFAULT_AGENT_EXPERIENCE_CONFIG, enabled: true, advisor_enabled: true, advisor_model: 'test/advisor', selector_enabled: false, embedding_enabled: true, capture_enabled: false, break_in_enabled: false });
+    deliveryRevalidationHarness.setIdle(true);
+    await deliveryRevalidationHarness.emit('agent_settled');
+    assert.equal(deliveryRevalidationHarness.sent.length, 0, 'pending findings must reload the full authority signature immediately before send');
+    await deliveryRevalidationHarness.emit('session_shutdown', { reason: 'quit' });
+
+    await writeAgentExperienceConfig({ ...DEFAULT_AGENT_EXPERIENCE_CONFIG, enabled: false, advisor_enabled: false, advisor_model: 'test/advisor', capture_enabled: false, break_in_enabled: false });
+    const enabledMidSessionAdapter = fakeAdvisorAdapter({ kind: 'generic_advice', severity: 'concern', note: 'Advisor became active immediately.' });
+    const enabledMidSessionHarness = makeAdvisorHarness(enabledMidSessionAdapter);
+    await enabledMidSessionHarness.emit('session_start', { reason: 'startup' });
+    enabledMidSessionHarness.queueSetup('Guidance and Advisor', 'Runtime Advisor', 'Turn Runtime Advisor ON', 'Back', 'Done');
+    await enabledMidSessionHarness.commands.get('experience').handler('setup', enabledMidSessionHarness.ctx);
+    await runTurn(enabledMidSessionHarness, 'enabled-mid-session', 'Review this turn immediately.');
+    await waitUntil(() => enabledMidSessionAdapter.updates.length === 1, 'mid-session Advisor activation');
+    assert.equal(enabledMidSessionHarness.sent.length, 1, 'a successful setup enable must synchronously rebuild an active runtime');
+    await enabledMidSessionHarness.emit('session_shutdown', { reason: 'quit' });
+
+    await writeAgentExperienceConfig({ ...DEFAULT_AGENT_EXPERIENCE_CONFIG, enabled: true, advisor_enabled: true, advisor_model: 'test/advisor', capture_enabled: false, break_in_enabled: false });
+    const disableAdapter = deferredAdvisorAdapter();
+    const disableHarness = makeAdvisorHarness(disableAdapter);
+    await disableHarness.emit('session_start', { reason: 'startup' });
+    await runTurn(disableHarness, 'disable-pending', 'Begin a deferred review before disable.');
+    await waitUntil(() => disableAdapter.resolvers.length === 1, 'setup-disable deferred review');
+    disableHarness.queueSetup('Guidance and Advisor', 'Runtime Advisor', 'Back', 'Done');
+    await disableHarness.commands.get('experience').handler('setup', disableHarness.ctx);
+    assert.ok(disableAdapter.resetCalls > 0, 'successful setup disable must synchronously abort/reset the old runtime');
+    disableAdapter.resolvers[0]([{ kind: 'generic_advice', severity: 'blocker', note: 'Old result after Advisor disable.' }]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(disableHarness.sent.length, 0, 'Advisor disable must revoke the pending generic finding');
+    await runTurn(disableHarness, 'disabled-next-turn', 'No Advisor review should start now.', 'stop');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(disableAdapter.resolvers.length, 1, 'setup disable must not rebuild a disabled runtime');
+    await disableHarness.emit('session_shutdown', { reason: 'quit' });
+
+    await writeAgentExperienceConfig({ ...DEFAULT_AGENT_EXPERIENCE_CONFIG, enabled: true, advisor_enabled: true, advisor_model: 'test/advisor', capture_enabled: false, break_in_enabled: false });
+    const modelChangeAdapter = deferredAdvisorAdapter();
+    const modelChangeHarness = makeAdvisorHarness(modelChangeAdapter);
+    await modelChangeHarness.emit('session_start', { reason: 'startup' });
+    await runTurn(modelChangeHarness, 'model-change-pending', 'Begin a deferred review before model change.');
+    await waitUntil(() => modelChangeAdapter.resolvers.length === 1, 'setup-model deferred review');
+    modelChangeHarness.queueSetup('Guidance and Advisor', 'Advisor model', 'Choose separate authenticated model', 'test/advisor-v2', 'Back', 'Done');
+    await modelChangeHarness.commands.get('experience').handler('setup', modelChangeHarness.ctx);
+    assert.ok(modelChangeAdapter.resetCalls > 0, 'successful Advisor-model mutation must synchronously abort/reset the old runtime');
+    modelChangeAdapter.resolvers[0]([{ kind: 'generic_advice', severity: 'concern', note: 'Old-model result.' }]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(modelChangeHarness.sent.length, 0, 'Advisor model change must revoke the old-model pending finding');
+    await runTurn(modelChangeHarness, 'model-change-active', 'Use the rebuilt Advisor runtime.', 'stop');
+    await waitUntil(() => modelChangeAdapter.resolvers.length === 2, 'rebuilt Advisor runtime after model change');
+    modelChangeAdapter.resolvers[1]([]);
+    await modelChangeHarness.emit('session_shutdown', { reason: 'quit' });
+
+    await writeAgentExperienceConfig({ ...DEFAULT_AGENT_EXPERIENCE_CONFIG, enabled: true, advisor_enabled: true, advisor_model: 'test/advisor', selector_enabled: true, embedding_enabled: true, capture_enabled: false, break_in_enabled: false });
+    const selectorDisableAdapter = deferredAdvisorAdapter();
+    const selectorDisableHarness = makeAdvisorHarness(selectorDisableAdapter);
+    await selectorDisableHarness.emit('session_start', { reason: 'startup' });
+    await runTurn(selectorDisableHarness, 'selector-disable-pending', 'Begin review before approved habits are disabled.');
+    await waitUntil(() => selectorDisableAdapter.resolvers.length === 1, 'setup-selector deferred review');
+    selectorDisableHarness.queueSetup('Guidance and Advisor', 'Use approved habits', 'Back', 'Done');
+    await selectorDisableHarness.commands.get('experience').handler('setup', selectorDisableHarness.ctx);
+    assert.ok(selectorDisableAdapter.resetCalls > 0, 'selector authority mutation must synchronously reset and rebuild the Advisor runtime');
+    selectorDisableAdapter.resolvers[0]([{ kind: 'generic_advice', severity: 'concern', note: 'Old selector-authority result.' }]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(selectorDisableHarness.sent.length, 0, 'selector disable must revoke every pending finding from the old authority signature');
+    await selectorDisableHarness.emit('session_shutdown', { reason: 'quit' });
   } finally {
     __setAgentExperienceAdvisorAdapterForTest(undefined);
     for (const [key, value] of Object.entries(advisorEnv)) {
