@@ -83,6 +83,7 @@ export async function setAgentExperienceEnabled(enabled: boolean, paths = getAge
 		...DEFAULT_AGENT_EXPERIENCE_CONFIG,
 		...current.config,
 		enabled,
+		advisor_enabled: enabled && current.config.enabled ? current.config.advisor_enabled : false,
 		// Disabling the master switch always drops feature flags. Enabling the master switch
 		// does not implicitly enable capture or any future runtime behavior.
 		capture_enabled: enabled ? current.config.capture_enabled : false,
@@ -96,6 +97,18 @@ export async function setAgentExperienceEnabled(enabled: boolean, paths = getAge
 	return { config, path: paths.configPath };
 }
 
+export async function setAgentExperienceAdvisorEnabled(advisorEnabled: boolean, paths = getAgentExperiencePaths()): Promise<{ config: AgentExperienceConfig; path: string }> {
+	const current = await readAgentExperienceConfig(paths);
+	const config = {
+		...DEFAULT_AGENT_EXPERIENCE_CONFIG,
+		...current.config,
+		enabled: advisorEnabled ? true : current.config.enabled,
+		advisor_enabled: advisorEnabled,
+	};
+	await writeAgentExperienceConfig(config, paths);
+	return { config, path: paths.configPath };
+}
+
 export async function setAgentExperienceSimpleOn(paths = getAgentExperiencePaths()): Promise<{ config: AgentExperienceConfig; path: string }> {
 	const current = await readAgentExperienceConfig(paths);
 	const config = {
@@ -103,6 +116,7 @@ export async function setAgentExperienceSimpleOn(paths = getAgentExperiencePaths
 		...current.config,
 		enabled: true,
 		capture_enabled: true,
+		advisor_enabled: current.config.enabled ? current.config.advisor_enabled : false,
 		// Simple on is capture-only for a fresh/disabled setup, but it must not silently
 		// dismantle an explicitly installed schedule or its prerequisite gates.
 		selector_enabled: current.config.timer_enabled ? current.config.selector_enabled : false,
@@ -137,6 +151,7 @@ export async function setAgentExperienceCaptureActive(captureActive: boolean, pa
 		// If capture has to enable the master switch, do not accidentally make a stale
 		// selector/guidance flag effective. Guidance remains an explicit toggle.
 		selector_enabled: enablesMaster ? false : current.config.selector_enabled,
+		advisor_enabled: enablesMaster ? false : current.config.advisor_enabled,
 	};
 	await writeAgentExperienceConfig(config, paths);
 	return { config, path: paths.configPath };

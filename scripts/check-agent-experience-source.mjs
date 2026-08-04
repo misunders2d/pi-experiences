@@ -23,8 +23,13 @@ assert.match(changelog,/^## \[Unreleased\]$/m,'changelog must preserve an Unrele
 assert.match(changelog,new RegExp(`^## \\[${packageJson.version.replaceAll('.', '\\.')}\\]`, 'm'),'changelog must contain the current published package version');
 assert.equal(packageJson.description,'Human-reviewed habits for Pi coding agents—a local-first behavioral learning layer alongside skills and memory.','package description must preserve the discoverable habits category');
 assert.equal(packageJson.dependencies?.typebox,'1.1.38','conversational tool schemas must declare their TypeBox runtime directly');
+assert.equal(packageJson.peerDependencies?.['@earendil-works/pi-coding-agent'],'>=0.83.0','agent_settled requires pi-coding-agent >=0.83.0');
+assert.equal(packageJson.devDependencies?.['@earendil-works/pi-coding-agent'],'^0.83.0','development must test the first supported public agent_settled API line');
+assert.equal(packageJson.peerDependencies?.['@earendil-works/pi-agent-core'],'*','Advisor runtime must declare pi-agent-core as a direct peer');
+assert.equal(packageJson.devDependencies?.['@earendil-works/pi-agent-core'],'^0.83.0','development must match the supported pi-agent-core line');
 assert.match(packageJson.scripts?.['check:agent-experience']||'',/test-agent-experience-phase16-conversation\.mjs/,'complete checks must include conversational habit validation');
 assert.match(packageJson.scripts?.['check:agent-experience']||'',/test-agent-experience-phase22-provider-guidance\.mjs/,'complete checks must include system-level provider guidance validation');
+assert.match(packageJson.scripts?.['check:agent-experience']||'',/test-agent-experience-phase23-advisor-core\.mjs/,'complete checks must include Advisor core validation');
 for(const keyword of ['pi-package','pi-coding-agent','coding-agent','agent-habits','agent-memory','agent-profile','agent-skills','behavioral-learning','context-management','human-in-the-loop','local-first','token-efficiency']){
   assert.ok(packageJson.keywords.includes(keyword),`package discovery keyword missing: ${keyword}`);
 }
@@ -127,6 +132,6 @@ for(const [name,expected] of Object.entries(expectedGlue)){
   const bytes=await readFile(join(root,'runtime/vendor/onnxruntime-web',name));
   assert.equal(createHash('sha256').update(bytes).digest('hex'),expected,`vendored runtime hash mismatch: ${name}`);
 }
-await esbuild.build({entryPoints:[join(root,'extensions/agent-experience/index.ts')],bundle:true,platform:'node',format:'esm',target:['node22'],write:false,logLevel:'silent',external:['@earendil-works/pi-ai/*','@earendil-works/pi-coding-agent','@earendil-works/pi-tui']});
+await esbuild.build({entryPoints:[join(root,'extensions/agent-experience/index.ts')],bundle:true,platform:'node',format:'esm',target:['node22'],write:false,logLevel:'silent',external:['@earendil-works/pi-ai/*','@earendil-works/pi-agent-core','@earendil-works/pi-coding-agent','@earendil-works/pi-tui']});
 await esbuild.build({entryPoints:[join(root,'runtime/agent-experience/local-embedding-worker.mjs')],bundle:false,platform:'node',format:'esm',target:['node22'],write:false,logLevel:'silent'});
 console.log('agent-experience source/import/package checks passed');
