@@ -219,10 +219,11 @@ export async function retrieveAdvisorHabitCandidates(db: DatabaseSync, input: {
 	const eligible = allEligible.slice(0, MAX_SELECTOR_ELIGIBLE_HABITS);
 	const byId = new Map(allEligible.map((item) => [item.row.id, item]));
 	const active: AdvisorHabitRetrievalCandidate[] = [];
-	const activeIds = [...new Set(input.activeRequestHabitIds)].slice(0, MAX_ACTIVE_REQUEST_HABIT_IDS);
-	for (const id of activeIds) {
+	for (const id of new Set(input.activeRequestHabitIds)) {
 		const item = byId.get(id);
-		if (item) active.push(retrievalCandidate(item, input.delta, 10_000));
+		if (!item) continue;
+		active.push(retrievalCandidate(item, input.delta, 10_000));
+		if (active.length >= MAX_ACTIVE_REQUEST_HABIT_IDS) break;
 	}
 	try {
 		await prepareAdvisorHabitVectors(db, { userId, law, config: input.config, embeddingAdapter: input.embeddingAdapter, now: new Date().toISOString(), signal: input.signal });

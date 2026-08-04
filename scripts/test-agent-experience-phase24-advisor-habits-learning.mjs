@@ -139,8 +139,16 @@ try {
     assert.throws(() => revalidateAdvisorHabitFinding(storage.db, { ...strictInput, cursor: 20 }), /advisor_habit_snapshot_changed/);
     assert.throws(() => revalidateAdvisorHabitFinding(storage.db, { ...strictInput, advisorEpoch: 5 }), /advisor_habit_snapshot_changed/);
 
-    const fallback = await retrieveAdvisorHabitCandidates(storage.db, { userId: 'owner', delta: delta('[tool_call:bash] publish packed install'), activeRequestHabitIds: ['active-request-id'], law, config, embeddingAdapter: fakeEmbeddingAdapter({ failQuery: true }), tokenizerAssetDir });
-    assert.deepEqual(fallback.map((item) => item.habitId), ['active-request-id'], 'retrieval failure must retain still-valid active-request habits');
+    const fallback = await retrieveAdvisorHabitCandidates(storage.db, {
+      userId: 'owner',
+      delta: delta('[tool_call:bash] publish packed install'),
+      activeRequestHabitIds: ['disabled-id', 'pending-id', 'superseded-id', 'stale-id', 'corrupt-id', 'low-confidence-id', 'stale-freshness-id', 'missing-id', 'active-request-id'],
+      law,
+      config,
+      embeddingAdapter: fakeEmbeddingAdapter({ failQuery: true }),
+      tokenizerAssetDir,
+    });
+    assert.deepEqual(fallback.map((item) => item.habitId), ['active-request-id'], 'ineligible leading IDs must not consume the active-request fallback limit');
   } finally { storage.db.close(); }
 } finally { await rm(temp, { recursive: true, force: true }); }
 console.log('agent-experience phase24 advisor habit learning checks passed');
