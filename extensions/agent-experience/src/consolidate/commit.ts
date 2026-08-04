@@ -92,7 +92,7 @@ function advisorEvidenceMetadata(records: ValidatedObservationRecord[]): Advisor
 	const advisorSourceRefKeys: string[] = [];
 	const nonAdvisorSourceDates: string[] = [];
 	for (const record of records) {
-		if (record.origin.source !== "advisor_finding") {
+		if (record.origin?.source !== "advisor_finding") {
 			nonAdvisorSourceDates.push(record.created_at);
 			continue;
 		}
@@ -418,7 +418,7 @@ export async function consolidateProposalBatch(input: CommitInput): Promise<Cons
 		const proposal = batch.proposals[i];
 		const sourceDates = sourceRecordsByProposal[i].map((record) => record.created_at);
 		const advisorEvidence = advisorEvidenceMetadata(sourceRecordsByProposal[i]);
-		const hasIndependentCorrectionAuthority = sourceRecordsByProposal[i].some((record) => record.origin.source !== "advisor_finding");
+		const hasIndependentCorrectionAuthority = sourceRecordsByProposal[i].some((record) => record.origin?.source !== "advisor_finding");
 		let candidateData = proposalCandidateData(batch, proposal, sourceDates, advisorEvidence);
 		const candidateId = stableId("candidate", habitIdentity(proposal, userId));
 		let evidenceHabitId = candidateId;

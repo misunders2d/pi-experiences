@@ -25,13 +25,82 @@ function normalizeConfigKey(raw, section) {
   return mapped in DEFAULT_AGENT_EXPERIENCE_CONFIG ? mapped : void 0;
 }
 function applyConfigValue(config, key, parsed) {
-  if (key === "observation_retention_days" && typeof parsed === "number" && [7, 14, 30].includes(Math.trunc(parsed))) config.observation_retention_days = Math.trunc(parsed);
-  else if (key === "analyze_batch_max_records" && typeof parsed === "number" && Number.isFinite(parsed)) config.analyze_batch_max_records = Math.max(1, Math.min(500, Math.trunc(parsed)));
-  else if (key === "analyze_batch_max_bytes" && typeof parsed === "number" && Number.isFinite(parsed)) config.analyze_batch_max_bytes = Math.max(65537, Math.min(2e6, Math.trunc(parsed)));
-  else if (BOOLEAN_KEYS.has(key) && typeof parsed === "boolean") config[key] = parsed;
-  else if (NUMBER_KEYS.has(key) && typeof parsed === "number" && Number.isFinite(parsed)) config[key] = parsed;
-  else if (key === "selector_mode" && (parsed === "instant" || parsed === "smart")) config[key] = parsed;
-  else if (!BOOLEAN_KEYS.has(key) && !NUMBER_KEYS.has(key) && key !== "selector_mode" && typeof parsed === "string") config[key] = parsed;
+  switch (key) {
+    case "advisor_timeout_ms":
+      if (typeof parsed === "number" && Number.isFinite(parsed)) config.advisor_timeout_ms = Math.max(5e3, Math.min(12e4, Math.trunc(parsed)));
+      return;
+    case "advisor_immune_turns":
+      if (typeof parsed === "number" && Number.isFinite(parsed)) config.advisor_immune_turns = Math.max(0, Math.min(10, Math.trunc(parsed)));
+      return;
+    case "advisor_sync_backlog":
+      if (parsed === "off" || parsed === 1 || parsed === 3 || parsed === 5) {
+        config.advisor_sync_backlog = parsed;
+        return;
+      }
+      throw new Error(`Invalid advisor_sync_backlog: expected "off", 1, 3, or 5`);
+    case "observation_retention_days":
+      if (typeof parsed === "number" && [7, 14, 30].includes(Math.trunc(parsed))) config.observation_retention_days = Math.trunc(parsed);
+      return;
+    case "analyze_batch_max_records":
+      if (typeof parsed === "number" && Number.isFinite(parsed)) config.analyze_batch_max_records = Math.max(1, Math.min(500, Math.trunc(parsed)));
+      return;
+    case "analyze_batch_max_bytes":
+      if (typeof parsed === "number" && Number.isFinite(parsed)) config.analyze_batch_max_bytes = Math.max(65537, Math.min(2e6, Math.trunc(parsed)));
+      return;
+    case "enabled":
+      if (typeof parsed === "boolean") config.enabled = parsed;
+      return;
+    case "advisor_enabled":
+      if (typeof parsed === "boolean") config.advisor_enabled = parsed;
+      return;
+    case "capture_enabled":
+      if (typeof parsed === "boolean") config.capture_enabled = parsed;
+      return;
+    case "selector_enabled":
+      if (typeof parsed === "boolean") config.selector_enabled = parsed;
+      return;
+    case "embedding_enabled":
+      if (typeof parsed === "boolean") config.embedding_enabled = parsed;
+      return;
+    case "consolidation_enabled":
+      if (typeof parsed === "boolean") config.consolidation_enabled = parsed;
+      return;
+    case "timer_enabled":
+      if (typeof parsed === "boolean") config.timer_enabled = parsed;
+      return;
+    case "break_in_enabled":
+      if (typeof parsed === "boolean") config.break_in_enabled = parsed;
+      return;
+    case "selector_timeout_ms":
+      if (typeof parsed === "number" && Number.isFinite(parsed)) config.selector_timeout_ms = parsed;
+      return;
+    case "selector_min_confidence_bp":
+      if (typeof parsed === "number" && Number.isFinite(parsed)) config.selector_min_confidence_bp = parsed;
+      return;
+    case "selector_min_overlap_score":
+      if (typeof parsed === "number" && Number.isFinite(parsed)) config.selector_min_overlap_score = parsed;
+      return;
+    case "selector_max_habits":
+      if (typeof parsed === "number" && Number.isFinite(parsed)) config.selector_max_habits = parsed;
+      return;
+    case "selector_staleness_max":
+      if (typeof parsed === "number" && Number.isFinite(parsed)) config.selector_staleness_max = parsed;
+      return;
+    case "selector_mode":
+      if (parsed === "instant" || parsed === "smart") config.selector_mode = parsed;
+      return;
+    case "advisor_model":
+      if (typeof parsed === "string") config.advisor_model = parsed;
+      return;
+    case "selector_model":
+      if (typeof parsed === "string") config.selector_model = parsed;
+      return;
+    case "consolidation_model":
+      if (typeof parsed === "string") config.consolidation_model = parsed;
+      return;
+    case "law_path":
+      if (typeof parsed === "string") config.law_path = parsed;
+  }
 }
 function applyAgentExperienceEnvOverrides(config, env = process.env) {
   const out = { ...config };
@@ -60,11 +129,16 @@ function parseAgentExperienceConfig(text, env) {
   }
   return applyAgentExperienceEnvOverrides(config, env ?? {});
 }
-var DEFAULT_AGENT_EXPERIENCE_CONFIG, BOOLEAN_KEYS, NUMBER_KEYS, SECTION_KEY_MAP, ENV_KEY_MAP;
+var DEFAULT_AGENT_EXPERIENCE_CONFIG, SECTION_KEY_MAP, ENV_KEY_MAP;
 var init_config = __esm({
   "extensions/agent-experience/src/config.ts"() {
     DEFAULT_AGENT_EXPERIENCE_CONFIG = Object.freeze({
       enabled: false,
+      advisor_enabled: false,
+      advisor_model: "",
+      advisor_timeout_ms: 6e4,
+      advisor_sync_backlog: "off",
+      advisor_immune_turns: 3,
       capture_enabled: false,
       selector_enabled: false,
       embedding_enabled: false,
@@ -84,26 +158,12 @@ var init_config = __esm({
       consolidation_model: "openai-codex/gpt-5.5",
       law_path: "law.md"
     });
-    BOOLEAN_KEYS = /* @__PURE__ */ new Set([
-      "enabled",
-      "capture_enabled",
-      "selector_enabled",
-      "embedding_enabled",
-      "consolidation_enabled",
-      "timer_enabled",
-      "break_in_enabled"
-    ]);
-    NUMBER_KEYS = /* @__PURE__ */ new Set([
-      "selector_timeout_ms",
-      "selector_min_confidence_bp",
-      "selector_min_overlap_score",
-      "selector_max_habits",
-      "selector_staleness_max",
-      "observation_retention_days",
-      "analyze_batch_max_records",
-      "analyze_batch_max_bytes"
-    ]);
     SECTION_KEY_MAP = {
+      "advisor.enabled": "advisor_enabled",
+      "advisor.model": "advisor_model",
+      "advisor.timeout_ms": "advisor_timeout_ms",
+      "advisor.sync_backlog": "advisor_sync_backlog",
+      "advisor.immune_turns": "advisor_immune_turns",
       "selector.mode": "selector_mode",
       "selector.model": "selector_model",
       "selector.timeout_ms": "selector_timeout_ms",
@@ -113,6 +173,11 @@ var init_config = __esm({
       "selector.staleness_max": "selector_staleness_max"
     };
     ENV_KEY_MAP = {
+      AX_ADVISOR_ENABLED: "advisor_enabled",
+      AX_ADVISOR_MODEL: "advisor_model",
+      AX_ADVISOR_TIMEOUT_MS: "advisor_timeout_ms",
+      AX_ADVISOR_SYNC_BACKLOG: "advisor_sync_backlog",
+      AX_ADVISOR_IMMUNE_TURNS: "advisor_immune_turns",
       AX_SELECTOR_MODE: "selector_mode",
       AX_SELECTOR_MODEL: "selector_model",
       AX_SELECTOR_TIMEOUT_MS: "selector_timeout_ms",
@@ -1724,10 +1789,22 @@ function buildTypedStorageRow(table, input) {
 init_private_root();
 init_checksum();
 init_observations();
+init_redaction();
 import { lstat as lstat7, readFile as readFile5 } from "node:fs/promises";
-var ALLOWED_ORIGINS = /* @__PURE__ */ new Set(["test", "manual", "local_interactive"]);
-var SUPPORTED_PAYLOAD_KINDS = /* @__PURE__ */ new Set(["conversation_pair_v1"]);
+var ALLOWED_ORIGINS = /* @__PURE__ */ new Set(["test", "manual", "local_interactive", "advisor_finding"]);
+var SUPPORTED_PAYLOAD_KINDS = /* @__PURE__ */ new Set(["conversation_pair_v1", "advisor_finding_v1"]);
 var OBSERVATION_KEYS = /* @__PURE__ */ new Set(["id", "seq", "user_id", "origin", "prev_pair_ref", "payload_redacted", "created_at", "checksum"]);
+var ORIGIN_KEYS = /* @__PURE__ */ new Set(["source", "command"]);
+var ADVISOR_PAYLOAD_KEYS = /* @__PURE__ */ new Set([
+  "kind",
+  "finding_kind",
+  "severity",
+  "current_request_redacted",
+  "primary_behavior_redacted",
+  "advice_redacted",
+  "event_fingerprint",
+  "primary_created_at"
+]);
 function assertSafeGeneration(generation) {
   if (typeof generation !== "string" || !/^[A-Za-z0-9._-]{1,80}$/.test(generation)) {
     throw new Error("Invalid observation file_generation");
@@ -1745,9 +1822,33 @@ function assertExactObservationKeys(record) {
     if (!OBSERVATION_KEYS.has(key)) throw new Error(`Observation record has unsupported field: ${key}`);
   }
 }
-function validatePayloadKind(record) {
-  const kind = record.payload_redacted?.kind;
+function validateOriginAndPayload(record) {
+  const origin = record.origin;
+  if (!origin || typeof origin !== "object" || Array.isArray(origin)) throw new Error("Unsupported observation origin");
+  for (const key of Object.keys(origin)) {
+    if (!ORIGIN_KEYS.has(key)) throw new Error("Unsupported observation origin field");
+  }
+  if (typeof origin.source !== "string" || !ALLOWED_ORIGINS.has(origin.source)) throw new Error("Unsupported observation origin");
+  if (origin.command !== void 0 && typeof origin.command !== "string") throw new Error("Invalid observation origin command");
+  if (origin.source === "advisor_finding" && Object.keys(origin).length !== 1) throw new Error("Advisor finding observation origin must be exact");
+  const payload = record.payload_redacted;
+  const kind = payload?.kind;
   if (typeof kind !== "string" || !SUPPORTED_PAYLOAD_KINDS.has(kind)) throw new Error("Unsupported observation payload kind");
+  if (origin.source === "advisor_finding" !== (kind === "advisor_finding_v1")) throw new Error("Observation origin and payload kind mismatch");
+  if (kind !== "advisor_finding_v1") return;
+  for (const key of Object.keys(payload)) {
+    if (!ADVISOR_PAYLOAD_KEYS.has(key)) throw new Error("Unsupported Advisor finding payload field");
+  }
+  if (Object.keys(payload).length !== ADVISOR_PAYLOAD_KEYS.size) throw new Error("Incomplete Advisor finding payload");
+  if (payload.finding_kind !== "generic_advice" && payload.finding_kind !== "habit_violation") throw new Error("Invalid Advisor finding kind");
+  if (payload.severity !== "nit" && payload.severity !== "concern" && payload.severity !== "blocker") throw new Error("Invalid Advisor finding severity");
+  if (typeof payload.current_request_redacted !== "string" || payload.current_request_redacted.length > 1e3) throw new Error("Invalid Advisor current request");
+  if (typeof payload.primary_behavior_redacted !== "string" || payload.primary_behavior_redacted.length > 3e3) throw new Error("Invalid Advisor primary behavior");
+  if (typeof payload.advice_redacted !== "string" || payload.advice_redacted.length > 1200) throw new Error("Invalid Advisor advice");
+  if (typeof payload.event_fingerprint !== "string" || !/^[0-9a-f]{64}$/.test(payload.event_fingerprint)) throw new Error("Invalid Advisor event fingerprint");
+  if (typeof payload.primary_created_at !== "string" || !Number.isFinite(Date.parse(payload.primary_created_at)) || new Date(payload.primary_created_at).toISOString() !== payload.primary_created_at) throw new Error("Invalid Advisor primary timestamp");
+  if (JSON.stringify(payload).length > 6e3) throw new Error("Advisor finding payload exceeds size limit");
+  if (containsUnredactedSensitiveText(payload)) throw new Error("Advisor finding payload contains sensitive text");
 }
 function validateObservationRecords(input) {
   const userId = normalizeUserId(input.userId);
@@ -1761,8 +1862,7 @@ function validateObservationRecords(input) {
     assertExactObservationKeys(record);
     if (!Number.isInteger(record.seq) || record.seq !== expectedSeq) throw new Error("Invalid observation seq chain");
     if (record.user_id !== userId) throw new Error("Observation user_id mismatch");
-    if (!record.origin || !ALLOWED_ORIGINS.has(record.origin.source)) throw new Error("Unsupported observation origin");
-    validatePayloadKind(record);
+    validateOriginAndPayload(record);
     const expectedPrev = previous ? pairRef2(previous) : null;
     if (record.prev_pair_ref !== expectedPrev) throw new Error("Invalid observation prev_pair_ref chain");
     const { checksum, ...withoutChecksum } = record;
@@ -2409,7 +2509,7 @@ function rowSnapshot(rows) {
 function comparisonRows(db, input) {
   return selectSemanticHabitRows(db, { userId: input.userId, statuses: input.statuses || SEMANTIC_COMPARISON_STATUSES }).filter((row) => row.id !== input.target.id).filter((row) => row.status !== "archived" && row.status !== "suppressed_by_law").filter((row) => row.polarity === input.target.polarity).filter((row) => !(row.status === "candidate" && input.target.status === "candidate")).filter((row) => !getKeptSeparateDuplicate(db, { userId: input.userId, habitId: input.target.id, otherHabitId: row.id, provider: input.policy.provider, model: input.policy.model, dimensions: input.policy.dimensions }));
 }
-async function prepareHabitEmbeddings(db, input) {
+async function prepareHabitFieldEmbeddings(db, input) {
   const policy = sanitizePolicy(input.policy);
   assertProviderMatches(policy, input.provider);
   const partial = /* @__PURE__ */ new Map();
@@ -2552,7 +2652,7 @@ async function runAtomicSemanticActivation(db, input) {
     const comparators = comparisonRows(db, { userId: input.userId, target, policy });
     let prepared;
     try {
-      prepared = await prepareHabitEmbeddings(db, { userId: input.userId, habits: [target, ...comparators], policy, provider: input.provider, signal: input.signal, batchSize: LOCAL_EMBEDDING_MAX_BATCH });
+      prepared = await prepareHabitFieldEmbeddings(db, { userId: input.userId, habits: [target, ...comparators], policy, provider: input.provider, signal: input.signal, batchSize: LOCAL_EMBEDDING_MAX_BATCH });
     } catch (error) {
       const blocked = auditUnavailable(db, { ...input, policy, reason: String(error?.message || error) });
       return { ...blocked, transitioned: false };
@@ -2591,7 +2691,7 @@ async function findSemanticDuplicateMatches(db, input) {
   const policy = sanitizePolicy(input.policy);
   if (!policy.enabled) return [];
   const comparators = comparisonRows(db, { userId: input.userId, target: input.target, policy, statuses: input.statuses || SEMANTIC_COMPARISON_STATUSES });
-  const prepared = await prepareHabitEmbeddings(db, { userId: input.userId, habits: [input.target, ...comparators], policy, provider: input.provider, signal: input.signal, batchSize: LOCAL_EMBEDDING_MAX_BATCH });
+  const prepared = await prepareHabitFieldEmbeddings(db, { userId: input.userId, habits: [input.target, ...comparators], policy, provider: input.provider, signal: input.signal, batchSize: LOCAL_EMBEDDING_MAX_BATCH });
   for (const item of prepared.values()) persistPreparedEmbedding(db, { userId: input.userId, prepared: item, policy, now: input.now });
   return computeMatches({ target: input.target, comparators, prepared, policy });
 }
@@ -2758,6 +2858,42 @@ function uniqueArrayByCanonical(values) {
   }
   return out;
 }
+function observationRefKey(record) {
+  return `${record.file_generation}:${record.seq}:${record.checksum}`;
+}
+function advisorEvidenceMetadata(records) {
+  const advisorEvents2 = /* @__PURE__ */ new Map();
+  const advisorSourceRefKeys = [];
+  const nonAdvisorSourceDates = [];
+  for (const record of records) {
+    if (record.origin?.source !== "advisor_finding") {
+      nonAdvisorSourceDates.push(record.created_at);
+      continue;
+    }
+    advisorSourceRefKeys.push(observationRefKey(record));
+    const payload = record.payload_redacted && typeof record.payload_redacted === "object" && !Array.isArray(record.payload_redacted) ? record.payload_redacted : {};
+    const fingerprint = payload.event_fingerprint;
+    if (typeof fingerprint === "string" && /^[0-9a-f]{64}$/.test(fingerprint) && !advisorEvents2.has(fingerprint)) {
+      advisorEvents2.set(fingerprint, { event_fingerprint: fingerprint, created_at: record.created_at });
+    }
+  }
+  return {
+    advisor_events: [...advisorEvents2.values()],
+    advisor_source_ref_keys: [...new Set(advisorSourceRefKeys)],
+    non_advisor_source_dates: [...new Set(nonAdvisorSourceDates)].sort()
+  };
+}
+function mergeAdvisorEvents(values) {
+  const events = /* @__PURE__ */ new Map();
+  for (const value of values) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    const event = value;
+    if (typeof event.event_fingerprint !== "string" || !/^[0-9a-f]{64}$/.test(event.event_fingerprint)) continue;
+    if (typeof event.created_at !== "string" || !Number.isFinite(Date.parse(event.created_at))) continue;
+    if (!events.has(event.event_fingerprint)) events.set(event.event_fingerprint, { event_fingerprint: event.event_fingerprint, created_at: event.created_at });
+  }
+  return [...events.values()];
+}
 function mergeCandidateData(existingResidual, incoming) {
   const merged = { ...incoming && typeof incoming === "object" && !Array.isArray(incoming) ? incoming : {} };
   for (const key of [
@@ -2779,6 +2915,20 @@ function mergeCandidateData(existingResidual, incoming) {
   }
   merged.source_refs = uniqueArrayByCanonical([...Array.isArray(existingResidual?.source_refs) ? existingResidual.source_refs : [], ...Array.isArray(incoming?.source_refs) ? incoming.source_refs : []]);
   merged.source_dates = uniqueArrayByCanonical([...Array.isArray(existingResidual?.source_dates) ? existingResidual.source_dates : [], ...Array.isArray(incoming?.source_dates) ? incoming.source_dates : []]).sort();
+  merged.advisor_events = mergeAdvisorEvents([
+    ...Array.isArray(existingResidual?.advisor_events) ? existingResidual.advisor_events : [],
+    ...Array.isArray(incoming?.advisor_events) ? incoming.advisor_events : []
+  ]);
+  merged.advisor_source_ref_keys = uniqueArrayByCanonical([
+    ...Array.isArray(existingResidual?.advisor_source_ref_keys) ? existingResidual.advisor_source_ref_keys : [],
+    ...Array.isArray(incoming?.advisor_source_ref_keys) ? incoming.advisor_source_ref_keys : []
+  ]);
+  const existingHasAdvisorMetadata = existingResidual && (Object.prototype.hasOwnProperty.call(existingResidual, "advisor_events") || Object.prototype.hasOwnProperty.call(existingResidual, "advisor_source_ref_keys"));
+  const existingNonAdvisorSourceDates = existingHasAdvisorMetadata ? Array.isArray(existingResidual?.non_advisor_source_dates) ? existingResidual.non_advisor_source_dates : [] : Array.isArray(existingResidual?.source_dates) ? existingResidual.source_dates : [];
+  merged.non_advisor_source_dates = uniqueArrayByCanonical([
+    ...existingNonAdvisorSourceDates,
+    ...Array.isArray(incoming?.non_advisor_source_dates) ? incoming.non_advisor_source_dates : []
+  ]).sort();
   return merged;
 }
 function insertIdempotentStorageRecord(db, table, input) {
@@ -2903,7 +3053,7 @@ function validateSourceRefs(proposal, observationMap) {
     return observation;
   });
 }
-function proposalCandidateData(batch, proposal, sourceDates2) {
+function proposalCandidateData(batch, proposal, sourceDates2, advisorEvidence) {
   return {
     schema_version: 2,
     record_kind: "candidate_habit_v1",
@@ -2922,10 +3072,11 @@ function proposalCandidateData(batch, proposal, sourceDates2) {
     evidence_stage: proposal.evidence_stage || "reviewable",
     source_refs: proposal.source_refs,
     source_dates: sourceDates2,
-    ...proposal.correction_role ? { correction_role: proposal.correction_role, correction_group_id: proposal.correction_group_id } : {}
+    ...proposal.correction_role ? { correction_role: proposal.correction_role, correction_group_id: proposal.correction_group_id } : {},
+    ...advisorEvidence
   };
 }
-function proposalEvidenceData(_batch, proposal, sourceDates2, habitId) {
+function proposalEvidenceData(_batch, proposal, sourceDates2, habitId, advisorEvidence) {
   return {
     schema_version: 2,
     record_kind: "candidate_evidence_v1",
@@ -2940,7 +3091,8 @@ function proposalEvidenceData(_batch, proposal, sourceDates2, habitId) {
     source_refs: proposal.source_refs,
     source_dates: sourceDates2,
     ...proposal.evidence_summary === void 0 ? {} : { evidence_summary: proposal.evidence_summary },
-    ...proposal.correction_role ? { correction_role: proposal.correction_role, correction_group_id: proposal.correction_group_id } : {}
+    ...proposal.correction_role ? { correction_role: proposal.correction_role, correction_group_id: proposal.correction_group_id } : {},
+    ...advisorEvidence
   };
 }
 function exactActiveCorrectionMatches(db, userId, proposal) {
@@ -3007,7 +3159,9 @@ async function consolidateProposalBatch(input) {
   for (let i = 0; i < batch.proposals.length; i++) {
     const proposal = batch.proposals[i];
     const sourceDates2 = sourceRecordsByProposal[i].map((record) => record.created_at);
-    let candidateData = proposalCandidateData(batch, proposal, sourceDates2);
+    const advisorEvidence = advisorEvidenceMetadata(sourceRecordsByProposal[i]);
+    const hasIndependentCorrectionAuthority = sourceRecordsByProposal[i].some((record) => record.origin?.source !== "advisor_finding");
+    let candidateData = proposalCandidateData(batch, proposal, sourceDates2, advisorEvidence);
     const candidateId = stableId2("candidate", habitIdentity(proposal, userId));
     let evidenceHabitId = candidateId;
     let duplicateMatch;
@@ -3025,9 +3179,9 @@ async function consolidateProposalBatch(input) {
         candidateData = { ...candidateData, review_status: "duplicate_resolution", active: false, injectable: false, semantic_duplicate: storedDuplicateMatch };
       }
     }
-    const evidenceData = proposalEvidenceData(batch, proposal, sourceDates2, evidenceHabitId);
+    const evidenceData = proposalEvidenceData(batch, proposal, sourceDates2, evidenceHabitId, advisorEvidence);
     const evidenceId = stableId2("evidence", { schema_version: 2, user_id: userId, payload: evidenceData });
-    staged.push({ proposal, sourceDates: sourceDates2, candidateId, evidenceId, candidateData, evidenceData, duplicateMatch });
+    staged.push({ proposal, sourceDates: sourceDates2, candidateId, evidenceId, candidateData, evidenceData, advisorEvidence, hasIndependentCorrectionAuthority, duplicateMatch });
   }
   let result;
   input.db.exec("BEGIN IMMEDIATE");
@@ -3038,12 +3192,12 @@ async function consolidateProposalBatch(input) {
     let insertedCandidates = 0;
     let insertedEvidence = 0;
     for (const item of staged) {
-      if (item.proposal.correction_role === "old_negative" && item.proposal.confidence_bp >= CONTRADICTION_SUPPRESS_MIN_CONFIDENCE_BP) {
+      if (item.proposal.correction_role === "old_negative" && item.proposal.evidence_stage === "reviewable" && item.hasIndependentCorrectionAuthority && item.proposal.confidence_bp >= CONTRADICTION_SUPPRESS_MIN_CONFIDENCE_BP) {
         const matches = exactActiveCorrectionMatches(input.db, userId, item.proposal);
         if (matches.length === 1) {
           const target = matches[0];
           suppressContradictedHabit(input.db, { userId, before: target, proposal: item.proposal, sourceDates: item.sourceDates, now: batch.created_at });
-          const evidenceData = proposalEvidenceData(batch, item.proposal, item.sourceDates, target.id);
+          const evidenceData = proposalEvidenceData(batch, item.proposal, item.sourceDates, target.id, item.advisorEvidence);
           const evidenceId = stableId2("evidence", { schema_version: 2, user_id: userId, payload: evidenceData });
           const evidence2 = insertIdempotentStorageRecord(input.db, "evidence", { id: evidenceId, userId, data: evidenceData, now: batch.created_at });
           candidateIds.push(target.id);
@@ -3502,7 +3656,8 @@ init_private_root();
 init_redaction();
 function parseJson(value) {
   try {
-    return JSON.parse(String(value || "{}"));
+    const parsed = JSON.parse(String(value || "{}"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
   } catch {
     return {};
   }
@@ -3510,13 +3665,42 @@ function parseJson(value) {
 function normalizeText(value) {
   return String(value ?? "").trim().replace(/\s+/g, " ").toLowerCase();
 }
+function refKey(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return void 0;
+  const ref = value;
+  if (typeof ref.file_generation !== "string" || !Number.isInteger(ref.seq) || typeof ref.checksum !== "string") return void 0;
+  return `${ref.file_generation}:${ref.seq}:${ref.checksum}`;
+}
+function advisorEvents(data) {
+  const values = Array.isArray(data.advisor_events) ? data.advisor_events : [];
+  const events = /* @__PURE__ */ new Map();
+  for (const value of values) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    const event = value;
+    if (typeof event.event_fingerprint !== "string" || !/^[0-9a-f]{64}$/.test(event.event_fingerprint)) continue;
+    if (typeof event.created_at !== "string" || !Number.isFinite(Date.parse(event.created_at))) continue;
+    if (!events.has(event.event_fingerprint)) events.set(event.event_fingerprint, { event_fingerprint: event.event_fingerprint, created_at: event.created_at });
+  }
+  return [...events.values()];
+}
+function stringValues(value) {
+  if (!Array.isArray(value)) return [];
+  const strings = [];
+  for (const item of value) {
+    if (typeof item === "string") strings.push(item);
+  }
+  return strings;
+}
 function uniqueRefs(data) {
-  const refs = Array.isArray(data?.source_refs) ? data.source_refs : [];
-  return new Set(refs.map((ref) => `${ref?.file_generation}:${ref?.seq}:${ref?.checksum}`)).size;
+  const refs = Array.isArray(data.source_refs) ? data.source_refs : [];
+  const advisorRefKeys = new Set(stringValues(data.advisor_source_ref_keys));
+  const nonAdvisorRefs = new Set(refs.map(refKey).filter((key) => !!key && !advisorRefKeys.has(key)));
+  return nonAdvisorRefs.size + advisorEvents(data).length;
 }
 function sourceDates(data) {
-  const dates = Array.isArray(data?.source_dates) ? data.source_dates : [];
-  return [...new Set(dates.map((date) => String(date).slice(0, 10)).filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date)))].sort().slice(-30);
+  const hasAdvisorMetadata = Object.prototype.hasOwnProperty.call(data, "advisor_events") || Object.prototype.hasOwnProperty.call(data, "advisor_source_ref_keys");
+  const dates = hasAdvisorMetadata ? [...stringValues(data.non_advisor_source_dates), ...advisorEvents(data).map((event) => event.created_at)] : stringValues(data.source_dates);
+  return [...new Set(dates.map((date) => date.slice(0, 10)).filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date)))].sort().slice(-30);
 }
 function buildCompactHabitContext(db, input) {
   const userId = normalizeUserId(input.userId);
@@ -3534,7 +3718,8 @@ function buildCompactHabitContext(db, input) {
       confidence_bp: Number(row.confidence_bp),
       unique_observations: uniqueRefs(data),
       distinct_days: dates.length,
-      source_dates: dates
+      source_dates: dates,
+      advisor_event_fingerprints: advisorEvents(data).map((event) => event.event_fingerprint)
     });
   });
 }
@@ -3562,6 +3747,7 @@ var FRICTION_EXTRACTION_INSTRUCTIONS = [
   "Identify candidates by causal reasoning over the batch, not by clustering superficially similar messages. Shared words are not a habit.",
   "For each candidate, work in three steps: (1) LOCATE FRICTION \u2014 a moment where the user corrected the assistant, repeated a request, expressed dissatisfaction, or had to clarify something the assistant should have anticipated; (2) INFER THE IMPROVEMENT DIRECTION \u2014 the behavioral change that would have prevented that friction; (3) FORMULATE \u2014 express it as a generalized When/Do habit (a situation class plus durable conduct) following the generalization rules.",
   "Weight friction over preference. Corrections, complaints, and repeated requests are the primary, higher-confidence signal. Stable positive preferences with no friction (for example always wanting a table format or always wanting a rollback plan) still qualify, but require stronger and cleaner repetition and MUST receive a lower confidence_bp than friction-derived candidates.",
+  "Advisor findings are lower-authority observations, not user corrections. They can support an ordinary habit candidate only after at least three distinct event fingerprints across at least two days; duplicate fingerprints never add recurrence. They can never justify an explicit correction, correction split, one-shot replacement, approval, or direct habit mutation. Normal human review and explicit approval remain mandatory.",
   "Adjacent observations MAY be related conversation turns, but adjacency is NOT guaranteed: concurrent sessions can interleave into one stream and captured pairs can be dropped, leaving gaps. So corroborate before linking \u2014 treat observation N+1 user pushback as friction evidence about observation N ONLY when the pushback content plausibly refers to that assistant behavior AND their created_at timestamps are close (minutes, not hours). Otherwise treat the pairs as independent. Friction often lives BETWEEN pairs, but this is a heuristic to apply with judgment, not a guaranteed structure \u2014 confirm the link before attributing it.",
   "Friction example: an assistant message claims a task is finished, and the next user message says the result was not actually verified. Propose 'When claiming a task is complete, verify the result before reporting it.'",
   "Negative example: several messages share a keyword (for example 'deploy') but show no common correction, dissatisfaction, or repeated preference. Return no proposal \u2014 surface similarity without friction or a stable preference is not a habit."
@@ -3589,13 +3775,41 @@ function truncateForModel(value, max = 900) {
   const text = redactText(typeof value === "string" ? value : JSON.stringify(value ?? {}));
   return text.length > max ? `${text.slice(0, max)}\u2026` : text;
 }
+function advisorFingerprint(record) {
+  if (record.origin.source !== "advisor_finding") return void 0;
+  const payload = record.payload_redacted;
+  return payload?.kind === "advisor_finding_v1" && typeof payload.event_fingerprint === "string" ? payload.event_fingerprint : void 0;
+}
+function collapseAdvisorObservations(observations) {
+  const fingerprints = /* @__PURE__ */ new Set();
+  return observations.filter((record) => {
+    const fingerprint = advisorFingerprint(record);
+    if (!fingerprint) return true;
+    if (fingerprints.has(fingerprint)) return false;
+    fingerprints.add(fingerprint);
+    return true;
+  });
+}
 function observationsForModelPrompt(observations) {
-  return observations.map((record) => {
-    const payload = record.payload_redacted;
+  return collapseAdvisorObservations(observations).map((record) => {
+    const payload = record.payload_redacted && typeof record.payload_redacted === "object" && !Array.isArray(record.payload_redacted) ? record.payload_redacted : {};
+    if (payload?.kind === "advisor_finding_v1") {
+      return {
+        seq: record.seq,
+        checksum: record.checksum,
+        created_at: record.created_at,
+        origin: "advisor_finding",
+        user: truncateForModel(payload.current_request_redacted, 900),
+        assistant: truncateForModel(payload.primary_behavior_redacted, 1200),
+        advisor_finding: truncateForModel(payload.advice_redacted, 900),
+        severity: payload.severity
+      };
+    }
     return {
       seq: record.seq,
       checksum: record.checksum,
       created_at: record.created_at,
+      origin: record.origin.source,
       user: truncateForModel(payload?.user_text_redacted, 900),
       assistant: truncateForModel(payload?.assistant_text_redacted, 1200)
     };
@@ -3667,7 +3881,7 @@ function buildConsolidationUserPrompt(input) {
     model: input.model,
     created_at: (/* @__PURE__ */ new Date()).toISOString(),
     observations_read: { seq_start: input.expected.seq_start, seq_end: input.expected.seq_end, checksum: input.expected.read_checksum },
-    existing_habit_context: input.habitContext || [],
+    existing_habit_context: (input.habitContext || []).map(({ advisor_event_fingerprints: _internalFingerprints, ...visible }) => visible),
     observations: observationsForModelPrompt(input.observations)
   }, null, 2);
 }
@@ -3690,9 +3904,22 @@ function normalizeSourceRefs(rawRefs, input) {
 }
 function newEvidenceStats(refs, input) {
   const bySeq = new Map(input.observations.map((record) => [record.seq, record]));
-  const uniqueSeqs = [...new Set(refs.map((ref) => ref.seq))];
-  const days = new Set(uniqueSeqs.map((seq) => bySeq.get(seq)?.created_at).filter(Boolean).map((iso) => new Date(String(iso)).toISOString().slice(0, 10)));
-  return { count: uniqueSeqs.length, days };
+  const nonAdvisorSeqs = /* @__PURE__ */ new Set();
+  const nonAdvisorDays = /* @__PURE__ */ new Set();
+  const advisorEvents2 = /* @__PURE__ */ new Map();
+  for (const ref of refs) {
+    const record = bySeq.get(ref.seq);
+    if (!record) continue;
+    const fingerprint = advisorFingerprint(record);
+    const day = new Date(record.created_at).toISOString().slice(0, 10);
+    if (fingerprint) {
+      if (!advisorEvents2.has(fingerprint)) advisorEvents2.set(fingerprint, day);
+      continue;
+    }
+    nonAdvisorSeqs.add(record.seq);
+    nonAdvisorDays.add(day);
+  }
+  return { nonAdvisorSeqs, nonAdvisorDays, advisorEvents: advisorEvents2 };
 }
 function matchingHabitContext(input, candidate) {
   const identity = compactContextIdentity(candidate);
@@ -3701,8 +3928,19 @@ function matchingHabitContext(input, candidate) {
 function hasEnoughRepeatedEvidence(refs, input, candidate) {
   const fresh = newEvidenceStats(refs, input);
   const existing = matchingHabitContext(input, candidate);
-  const days = /* @__PURE__ */ new Set([...existing?.source_dates || [], ...fresh.days]);
-  return fresh.count + Number(existing?.unique_observations || 0) >= 3 && days.size >= 2;
+  const existingFingerprints = new Set(existing?.advisor_event_fingerprints || []);
+  const newAdvisorEvents = [...fresh.advisorEvents].filter(([fingerprint]) => !existingFingerprints.has(fingerprint));
+  const days = /* @__PURE__ */ new Set([
+    ...existing?.source_dates || [],
+    ...fresh.nonAdvisorDays,
+    ...newAdvisorEvents.map(([, day]) => day)
+  ]);
+  const count = Number(existing?.unique_observations || 0) + fresh.nonAdvisorSeqs.size + newAdvisorEvents.length;
+  return count >= 3 && days.size >= 2;
+}
+function withoutAdvisorEvidence(refs, input) {
+  const bySeq = new Map(input.observations.map((record) => [record.seq, record]));
+  return refs.filter((ref) => bySeq.get(ref.seq)?.origin.source !== "advisor_finding");
 }
 function normalizeConfidence(value) {
   if (!Number.isInteger(value) || value < 0 || value > 1e4) throw new Error("habit_learning_model_invalid_confidence");
@@ -3717,9 +3955,10 @@ function normalizeConsolidationModelOutput(raw, input) {
       const new_condition = requireNonEmptyString(proposal.new_condition, "new_condition");
       const new_behavior = requireNonEmptyString(proposal.new_behavior, "new_behavior");
       const confidence_bp = normalizeConfidence(proposal.confidence_bp);
-      const repeatedReplacement = hasEnoughRepeatedEvidence(source_refs, input, { condition: new_condition, behavior: new_behavior, polarity: 1 });
+      const correctionAuthorityRefs = withoutAdvisorEvidence(source_refs, input);
+      const repeatedReplacement = hasEnoughRepeatedEvidence(correctionAuthorityRefs, input, { condition: new_condition, behavior: new_behavior, polarity: 1 });
       const oldContext = matchingHabitContext(input, { condition: old_condition, behavior: old_behavior, polarity: 1 });
-      const explicitCorrection = confidence_bp >= 8500 && source_refs.length >= 1 && oldContext?.status === "active";
+      const explicitCorrection = confidence_bp >= 8500 && correctionAuthorityRefs.length >= 1 && oldContext?.status === "active";
       const evidence_stage2 = repeatedReplacement || explicitCorrection ? "reviewable" : "collecting";
       return [{
         proposal_id: requireNonEmptyString(proposal.proposal_id, "proposal_id"),
