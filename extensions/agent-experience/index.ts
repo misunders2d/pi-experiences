@@ -92,6 +92,7 @@ import {
 	type AdvisorFindingDetails,
 } from "./src/advisor/message.ts";
 import type { AcceptedAdvisorFinding, AdvisorPrimaryDelta, AdvisorRuntimeConfig, AdvisorScope, AdvisorUpdate } from "./src/advisor/types.ts";
+import { appendAdvisorFindingObservation } from "./src/advisor/observation.ts";
 
 const captureBuffer = new CapturePairBuffer();
 let selectorModelAdapter: SelectorModelAdapter | undefined;
@@ -2961,6 +2962,9 @@ type PendingAdvisorDelivery = {
 	epoch: number;
 	generation: number;
 	cursor: number;
+	finding: AcceptedAdvisorFinding;
+	update: AdvisorUpdate;
+	createdAt: string;
 };
 
 type AdvisorLifecycleState = {
@@ -3091,7 +3095,26 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 			&& state.cursor === pending.cursor;
 	};
 
-	const flushPendingAdvisorMessages = (state: AdvisorLifecycleState, visibleOnly: boolean): void => {
+	const appendDeliveredAdvisorObservation = async (
+		finding: AcceptedAdvisorFinding,
+		update: AdvisorUpdate,
+		createdAt: string,
+	): Promise<void> => {
+		try {
+			await appendAdvisorFindingObservation(getAgentExperiencePaths().root, {
+				userId: update.scope.userId,
+				finding,
+				update,
+				createdAt,
+				modelVisibleDelivered: true,
+			});
+		} catch {
+			// Advisor delivery is already model-visible. Observation failure must
+			// fail closed without retrying delivery or mutating habit state.
+		}
+	};
+
+	const flushPendingAdvisorMessages = async (state: AdvisorLifecycleState, visibleOnly: boolean): Promise<void> => {
 		const pending = state.pending.splice(0);
 		for (const item of pending) {
 			if (!pendingAdvisorDeliveryIsCurrent(state, item)) continue;
@@ -3103,7 +3126,9 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 				pi.sendMessage(item.message, { triggerTurn: false });
 			} catch {
 				appendAdvisorVisibleFallback(item.message.details);
+				continue;
 			}
+			await appendDeliveredAdvisorObservation(item.finding, item.update, item.createdAt);
 		}
 	};
 
@@ -3386,18 +3411,21 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 					shuttingDown: state.shuttingDown,
 				});
 				if (!advisorUpdateIsCurrent(state, update)) return;
+				const createdAt = message.details.created_at;
 				if (decision.mode === "steer") {
 					try {
 						pi.sendMessage(message, { triggerTurn: false, deliverAs: "steer" });
-						if (state.activeGeneration?.generation === update.generation) state.activeGeneration.causedByAdvisor = true;
-						state.immuneTurnsRemaining = state.runtimeConfig.immuneTurns + 1;
 					} catch {
-						state.pending.push({ message, scopeKey: state.scopeKey, epoch: update.epoch, generation: update.generation, cursor: update.cursor });
+						state.pending.push({ message, finding: accepted, update, createdAt, scopeKey: state.scopeKey, epoch: update.epoch, generation: update.generation, cursor: update.cursor });
+						return;
 					}
+					if (state.activeGeneration?.generation === update.generation) state.activeGeneration.causedByAdvisor = true;
+					state.immuneTurnsRemaining = state.runtimeConfig.immuneTurns + 1;
+					await appendDeliveredAdvisorObservation(accepted, update, createdAt);
 					return;
 				}
 				if (decision.mode === "append_when_settled") {
-					state.pending.push({ message, scopeKey: state.scopeKey, epoch: update.epoch, generation: update.generation, cursor: update.cursor });
+					state.pending.push({ message, finding: accepted, update, createdAt, scopeKey: state.scopeKey, epoch: update.epoch, generation: update.generation, cursor: update.cursor });
 					return;
 				}
 				if (decision.mode === "append_now") {
@@ -3405,7 +3433,9 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 						pi.sendMessage(message, { triggerTurn: false });
 					} catch {
 						appendAdvisorVisibleFallback(message.details);
+						return;
 					}
+					await appendDeliveredAdvisorObservation(accepted, update, createdAt);
 					return;
 				}
 				appendAdvisorVisibleFallback(message.details);
@@ -4002,7 +4032,7 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 		const advisorState = advisorStateForContext(ctx);
 		if (advisorState) {
 			if (advisorState.activeGeneration) advisorState.activeGeneration.terminal = true;
-			flushPendingAdvisorMessages(advisorState, false);
+			await flushPendingAdvisorMessages(advisorState, false);
 		}
 		const steeringScope = steeringScopeFromContext(ctx);
 		if (steeringScope) pendingSteeringRuns.delete(steeringScope);

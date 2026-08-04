@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DEFAULT_AGENT_EXPERIENCE_CONFIG } from '../extensions/agent-experience/src/config.ts';
 import agentExperienceExtension, {
   __advisorCatchupRequiredForTest,
+  __normalizeAgentExperienceConsolidationModelOutputForTest,
   __setAgentExperienceAdvisorAdapterForTest,
 } from '../extensions/agent-experience/index.ts';
 import {
@@ -17,6 +18,21 @@ import {
   validateAdvisorFindingDetails,
 } from '../extensions/agent-experience/src/advisor/message.ts';
 import { writeAgentExperienceConfig } from '../extensions/agent-experience/src/paths.ts';
+import {
+  __resetObservationUniqueDedupeForTest,
+  appendObservation,
+  OBSERVATION_UNIQUE_SCAN_CAP_FOR_TEST,
+  observationChecksumForTest,
+  readValidatedObservationRange,
+} from '../extensions/agent-experience/src/storage/observations.ts';
+import { validateObservationRecords } from '../extensions/agent-experience/src/consolidate/observations.ts';
+import { buildConsolidationUserPrompt } from '../extensions/agent-experience/src/consolidate/model-adapter.ts';
+import { runConsolidationOnce } from '../extensions/agent-experience/src/consolidate/runner.ts';
+import { listPendingReviewItems } from '../extensions/agent-experience/src/review.ts';
+import {
+  appendAdvisorFindingObservation,
+  buildAdvisorFindingObservation,
+} from '../extensions/agent-experience/src/advisor/observation.ts';
 import { lawSnapshotForTest } from '../extensions/agent-experience/src/review.ts';
 import {
   buildAdvisorHabitAliases,
@@ -224,6 +240,267 @@ try {
     assert.deepEqual(fallback.map((item) => item.habitId), ['active-request-id'], 'ineligible leading IDs must not consume the active-request fallback limit');
   } finally { storage.db.close(); }
 
+  const learningRoot = join(temp, 'advisor-learning-observations');
+  const learningPaths = { root: learningRoot, configPath: join(learningRoot, 'agent-experience.toml') };
+  const learningConfig = { ...DEFAULT_AGENT_EXPERIENCE_CONFIG, enabled: true, capture_enabled: false };
+  const firstFingerprint = '1'.repeat(64);
+  const findingFor = (eventFingerprint, overrides = {}) => ({
+    kind: 'generic_advice',
+    severity: 'concern',
+    note: 'Check concrete evidence before reporting completion.',
+    eventFingerprint,
+    ...overrides,
+  });
+  const updateFor = (eventFingerprint, overrides = {}) => ({
+    ...findingUpdate,
+    inProgress: false,
+    primaryDelta: 'Reported completion before checking the produced artifact.',
+    currentRequest: 'Prepare the release safely.',
+    eventFingerprint,
+    causedByAdvisor: false,
+    ...overrides,
+  });
+  await writeAgentExperienceConfig(learningConfig, learningPaths);
+  assert.deepEqual(
+    await appendAdvisorFindingObservation(learningRoot, {
+      userId: 'owner',
+      finding: findingFor(firstFingerprint),
+      update: updateFor(firstFingerprint),
+      createdAt: '2026-08-03T08:00:00.000Z',
+      modelVisibleDelivered: true,
+    }),
+    { appended: false, reason: 'learning_disabled' },
+    'Learning-off must not append Advisor evidence',
+  );
+  assert.ok(!(await readdir(learningRoot)).includes('observations.jsonl'), 'Learning-off must not initialize an observation stream');
+
+  await writeAgentExperienceConfig({ ...learningConfig, capture_enabled: true }, learningPaths);
+  const boundedPayload = buildAdvisorFindingObservation(
+    findingFor(firstFingerprint, { note: `${'Use checked output, not assumptions. '.repeat(100)} person@example.invalid token=abcdefghijk` }),
+    updateFor(firstFingerprint, {
+      currentRequest: `${'Release request '.repeat(300)} person@example.invalid`,
+      primaryDelta: `${'Assistant behavior with \\ quoted output. '.repeat(500)} Bearer abcdefghijklmnop`,
+    }),
+    '2026-08-03T08:00:00.000Z',
+  );
+  assert.equal(boundedPayload.kind, 'advisor_finding_v1');
+  assert.equal(boundedPayload.finding_kind, 'generic_advice');
+  assert.equal(boundedPayload.severity, 'concern');
+  assert.ok(boundedPayload.primary_behavior_redacted.length <= 3000);
+  assert.ok(boundedPayload.advice_redacted.length <= 1200);
+  assert.ok(JSON.stringify(boundedPayload).length <= 6000, 'Advisor payload must remain bounded after JSON escaping');
+  assert.doesNotMatch(JSON.stringify(boundedPayload), /person@example\.invalid|abcdefghijk|abcdefghijklmnop/);
+
+  const firstAppend = await appendAdvisorFindingObservation(learningRoot, {
+    userId: 'owner',
+    finding: findingFor(firstFingerprint),
+    update: updateFor(firstFingerprint),
+    createdAt: '2026-08-03T08:00:00.000Z',
+    modelVisibleDelivered: true,
+  });
+  assert.deepEqual(firstAppend, { appended: true, reason: 'appended' });
+  __resetObservationUniqueDedupeForTest();
+  assert.deepEqual(
+    await appendAdvisorFindingObservation(learningRoot, {
+      userId: 'owner',
+      finding: findingFor(firstFingerprint),
+      update: updateFor(firstFingerprint),
+      createdAt: '2026-08-03T08:01:00.000Z',
+      modelVisibleDelivered: true,
+    }),
+    { appended: false, reason: 'duplicate' },
+    'restart/resume replay must be rejected by durable active-generation evidence',
+  );
+  assert.deepEqual(
+    await appendAdvisorFindingObservation(learningRoot, {
+      userId: 'owner',
+      finding: findingFor('9'.repeat(64)),
+      update: updateFor('9'.repeat(64), { causedByAdvisor: true }),
+      createdAt: '2026-08-03T08:02:00.000Z',
+      modelVisibleDelivered: true,
+    }),
+    { appended: false, reason: 'advisor_caused' },
+  );
+  assert.deepEqual(
+    await appendAdvisorFindingObservation(learningRoot, {
+      userId: 'owner',
+      finding: findingFor('8'.repeat(64)),
+      update: updateFor('8'.repeat(64)),
+      createdAt: '2026-08-03T08:03:00.000Z',
+      modelVisibleDelivered: false,
+    }),
+    { appended: false, reason: 'not_model_visible' },
+    'UI-only fallback cards must never become learning evidence',
+  );
+
+  for (const [eventFingerprint, createdAt] of [
+    ['2'.repeat(64), '2026-08-03T09:00:00.000Z'],
+    ['3'.repeat(64), '2026-08-04T09:00:00.000Z'],
+  ]) {
+    assert.deepEqual(await appendAdvisorFindingObservation(learningRoot, {
+      userId: 'owner',
+      finding: findingFor(eventFingerprint),
+      update: updateFor(eventFingerprint),
+      createdAt,
+      modelVisibleDelivered: true,
+    }), { appended: true, reason: 'appended' });
+  }
+  const learningRange = await readValidatedObservationRange(learningRoot, { userId: 'owner', maxRecords: 10, maxBytes: 100000 });
+  assert.equal(learningRange.records.length, 3, 'one durable record must be stored per distinct causal fingerprint');
+  const firstLearningRecord = learningRange.records[0];
+  assert.deepEqual(firstLearningRecord.origin, { source: 'advisor_finding' });
+  assert.equal(firstLearningRecord.payload_redacted.kind, 'advisor_finding_v1');
+  assert.equal(firstLearningRecord.payload_redacted.finding_kind, 'generic_advice');
+  assert.equal(firstLearningRecord.payload_redacted.severity, 'concern');
+  assert.match(firstLearningRecord.id, /^advisor-[0-9a-f]{64}$/);
+  assert.ok(!firstLearningRecord.id.includes(firstFingerprint), 'observation ID must not disclose the source fingerprint');
+  assert.doesNotMatch(JSON.stringify(firstLearningRecord), /provider|habit_id|alias|vector|score|thinking/);
+
+  const rawLearningRecords = learningRange.records.map(({ file_generation: _generation, ...record }) => record);
+  assert.equal(validateObservationRecords({ records: rawLearningRecords, userId: 'owner', fileGeneration: learningRange.manifest.file_generation }).length, 3);
+  const invalidOriginBase = { ...rawLearningRecords[0], origin: { source: 'advisor_finding', command: 'analyze' } };
+  const invalidOrigin = { ...invalidOriginBase, checksum: observationChecksumForTest(Object.fromEntries(Object.entries(invalidOriginBase).filter(([key]) => key !== 'checksum'))) };
+  assert.throws(() => validateObservationRecords({ records: [invalidOrigin], userId: 'owner', fileGeneration: learningRange.manifest.file_generation }), /origin/i);
+  const mismatchedKindBase = { ...rawLearningRecords[0], origin: { source: 'test' } };
+  const mismatchedKind = { ...mismatchedKindBase, checksum: observationChecksumForTest(Object.fromEntries(Object.entries(mismatchedKindBase).filter(([key]) => key !== 'checksum'))) };
+  assert.throws(() => validateObservationRecords({ records: [mismatchedKind], userId: 'owner', fileGeneration: learningRange.manifest.file_generation }), /origin|payload kind/i);
+
+  const promptRecords = [...learningRange.records, {
+    ...learningRange.records[0],
+    seq: 4,
+    checksum: '4'.repeat(64),
+    created_at: '2026-08-04T10:00:00.000Z',
+  }];
+  const normalizeInput = {
+    model: 'test/learning',
+    userId: 'owner',
+    observations: learningRange.records,
+    habitContext: [],
+    expected: {
+      file_generation: learningRange.manifest.file_generation,
+      seq_start: 1,
+      seq_end: 3,
+      read_checksum: learningRange.records[2].checksum,
+    },
+  };
+  const promptObservations = JSON.parse(buildConsolidationUserPrompt({ ...normalizeInput, observations: promptRecords })).observations;
+  assert.equal(promptObservations.length, 3, 'Analyze must collapse duplicate Advisor fingerprints before prompting');
+  assert.deepEqual(Object.keys(promptObservations[0]).sort(), ['advisor_finding', 'assistant', 'checksum', 'created_at', 'origin', 'seq', 'severity', 'user']);
+  assert.equal(promptObservations[0].origin, 'advisor_finding');
+  assert.equal(promptObservations[0].advisor_finding, 'Check concrete evidence before reporting completion.');
+
+  const recurringRaw = {
+    batch_id: 'advisor-recurring',
+    proposals: [{
+      proposal_id: 'advisor-recurring-1',
+      kind: 'habit_candidate',
+      candidate_key: 'verify-before-completion',
+      condition: 'When reporting whether work is complete',
+      behavior: 'Check concrete evidence before reporting completion',
+      polarity: 1,
+      confidence_bp: 9300,
+      source_refs: learningRange.records.map((record) => ({ file_generation: record.file_generation, seq: record.seq, checksum: record.checksum })),
+      evidence_summary: 'The same behavior recurred in three distinct checked events.',
+    }],
+  };
+  const recurringOutput = __normalizeAgentExperienceConsolidationModelOutputForTest(recurringRaw, normalizeInput);
+  assert.equal(recurringOutput.proposals[0].evidence_stage, 'reviewable', 'three distinct fingerprints across two days may reach review');
+
+  const evidenceRecords = (fingerprints, dates) => fingerprints.map((eventFingerprint, index) => ({
+    ...learningRange.records[0],
+    seq: index + 1,
+    checksum: String(index + 5).repeat(64).slice(0, 64),
+    created_at: dates[index],
+    payload_redacted: { ...learningRange.records[0].payload_redacted, event_fingerprint: eventFingerprint },
+  }));
+  const normalizeEvidence = (records, raw = recurringRaw) => __normalizeAgentExperienceConsolidationModelOutputForTest({
+    ...raw,
+    proposals: raw.proposals.map((proposal) => ({
+      ...proposal,
+      source_refs: records.map((record) => ({ file_generation: record.file_generation, seq: record.seq, checksum: record.checksum })),
+    })),
+  }, { ...normalizeInput, observations: records, expected: { ...normalizeInput.expected, read_checksum: records.at(-1).checksum } });
+  const replayRows = evidenceRecords(['7'.repeat(64), '7'.repeat(64), '7'.repeat(64)], ['2026-08-02T08:00:00.000Z', '2026-08-03T08:00:00.000Z', '2026-08-04T08:00:00.000Z']);
+  assert.equal(normalizeEvidence(replayRows).proposals[0].evidence_stage, 'collecting', 'duplicate Advisor rows must collapse by fingerprint for recurrence');
+  const sameDayRows = evidenceRecords(['5'.repeat(64), '6'.repeat(64), '7'.repeat(64)], ['2026-08-04T08:00:00.000Z', '2026-08-04T09:00:00.000Z', '2026-08-04T10:00:00.000Z']);
+  assert.equal(normalizeEvidence(sameDayRows).proposals[0].evidence_stage, 'collecting', 'same-day Advisor evidence must not satisfy the day threshold');
+
+  const correctionRaw = {
+    batch_id: 'advisor-correction',
+    proposals: [{
+      proposal_id: 'advisor-correction-1',
+      kind: 'correction_split',
+      candidate_key: 'advisor-correction',
+      old_condition: 'When reporting whether work is complete',
+      old_behavior: 'Report completion before checking evidence',
+      new_condition: 'When reporting whether work is complete',
+      new_behavior: 'Check concrete evidence before reporting completion',
+      confidence_bp: 9900,
+      source_refs: [],
+    }],
+  };
+  const correctionContext = [{
+    condition: correctionRaw.proposals[0].old_condition,
+    behavior: correctionRaw.proposals[0].old_behavior,
+    polarity: 1,
+    status: 'active',
+    unique_observations: 20,
+    source_dates: ['2026-08-01'],
+  }];
+  const correctionInput = { ...normalizeInput, observations: [learningRange.records[0]], habitContext: correctionContext };
+  const oneShotCorrection = __normalizeAgentExperienceConsolidationModelOutputForTest({
+    ...correctionRaw,
+    proposals: [{ ...correctionRaw.proposals[0], source_refs: [{ file_generation: learningRange.records[0].file_generation, seq: 1, checksum: learningRange.records[0].checksum }] }],
+  }, correctionInput);
+  assert.equal(oneShotCorrection.proposals[0].evidence_stage, 'collecting', 'Advisor evidence can never invoke explicit-correction authority');
+  assert.equal(normalizeEvidence(learningRange.records, correctionRaw).proposals[0].evidence_stage, 'collecting', 'repeated Advisor evidence can never create a correction split');
+
+  const learningLedger = await initExperienceStorage(join(temp, 'advisor-learning-ledger'), { allowInit: true, userId: 'owner' });
+  try {
+    const committed = await runConsolidationOnce({
+      root: learningLedger.root,
+      db: learningLedger.db,
+      userId: 'owner',
+      observations: learningRange.records,
+      modelOutput: recurringOutput,
+      model: 'test/learning',
+      now: '2026-08-04T11:00:00.000Z',
+    });
+    assert.equal(committed.ok, true);
+    assert.equal(listPendingReviewItems(learningLedger.db, { userId: 'owner' }).items.length, 1, 'recurring Advisor evidence may create only an explicit review item');
+    assert.equal(Number(learningLedger.db.prepare("SELECT COUNT(*) AS count FROM habits WHERE user_id='owner' AND status='active'").get().count), 0, 'Advisor evidence must never approve or activate a habit');
+  } finally { learningLedger.db.close(); }
+
+  const cappedRoot = join(temp, 'advisor-learning-cap');
+  const cappedPaths = { root: cappedRoot, configPath: join(cappedRoot, 'agent-experience.toml') };
+  await writeAgentExperienceConfig({ ...learningConfig, capture_enabled: true }, cappedPaths);
+  for (let index = 0; index <= OBSERVATION_UNIQUE_SCAN_CAP_FOR_TEST; index++) {
+    await appendObservation(cappedRoot, {
+      userId: 'owner',
+      origin: { source: 'test' },
+      payload: {
+        kind: 'conversation_pair_v1',
+        close_reason: 'agent_settled',
+        user_text_redacted: `request ${index}`,
+        assistant_text_redacted: `response ${index}`,
+        user_char_count: 10,
+        assistant_char_count: 11,
+        input_created_at: '2026-08-04T00:00:00.000Z',
+        completed_at: '2026-08-04T00:00:01.000Z',
+      },
+      id: `cap-${index}`,
+      createdAt: '2026-08-04T00:00:01.000Z',
+    });
+  }
+  __resetObservationUniqueDedupeForTest();
+  assert.deepEqual(await appendAdvisorFindingObservation(cappedRoot, {
+    userId: 'owner',
+    finding: findingFor('f'.repeat(64)),
+    update: updateFor('f'.repeat(64)),
+    createdAt: '2026-08-04T12:00:00.000Z',
+    modelVisibleDelivered: true,
+  }), { appended: false, reason: 'scan_cap_exceeded' }, 'durable dedupe must fail closed when its bounded reverse scan cannot cover the active generation');
+
   const advisorEnv = Object.fromEntries(['AX_STATE_ROOT', 'AX_ENABLED', 'AX_ADVISOR_ENABLED', 'AX_ADVISOR_MODEL', 'AX_ADVISOR_SYNC_BACKLOG', 'AX_CAPTURE_ENABLED', 'AX_BREAK_IN_ENABLED'].map((key) => [key, process.env[key]]));
   Object.assign(process.env, {
     AX_STATE_ROOT: join(temp, 'advisor-state'),
@@ -320,6 +597,8 @@ try {
     await harness.emit('turn_end', { turnIndex: Number(id) || 0, message: assistant, toolResults: [] });
   }
   try {
+    process.env.AX_CAPTURE_ENABLED = 'true';
+    await writeAgentExperienceConfig({ ...DEFAULT_AGENT_EXPERIENCE_CONFIG, enabled: true, advisor_enabled: true, advisor_model: 'test/advisor', capture_enabled: true, break_in_enabled: false });
     const concernAdapter = fakeAdvisorAdapter({ kind: 'generic_advice', severity: 'concern', note: 'Inspect the packed output.' });
     const concernHarness = makeAdvisorHarness(concernAdapter);
     assert.ok(concernHarness.messageRenderers.has(ADVISOR_FINDING_MESSAGE_TYPE));
@@ -331,6 +610,20 @@ try {
     assert.equal(concernHarness.sent[0].message.customType, ADVISOR_FINDING_MESSAGE_TYPE);
     assert.deepEqual(concernHarness.sent[0].options, { triggerTurn: false, deliverAs: 'steer' });
     assert.doesNotMatch(JSON.stringify(concernHarness.sent[0]), /followUp|nextTurn|sendUserMessage/);
+    let deliveredLearningRange;
+    for (let index = 0; index < 100; index++) {
+      try {
+        const candidate = await readValidatedObservationRange(join(temp, 'advisor-state'), { userId: 'owner', maxRecords: 10, maxBytes: 100000 });
+        if (candidate.records.length > 0) {
+          deliveredLearningRange = candidate;
+          break;
+        }
+      } catch {}
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    assert.equal(deliveredLearningRange?.records[0].origin.source, 'advisor_finding', 'successful model-visible delivery must append Advisor evidence');
+    process.env.AX_CAPTURE_ENABLED = 'false';
+    await writeAgentExperienceConfig({ ...DEFAULT_AGENT_EXPERIENCE_CONFIG, enabled: true, advisor_enabled: true, advisor_model: 'test/advisor', capture_enabled: false, break_in_enabled: false });
     const advisorCaused = { role: 'assistant', content: [{ type: 'text', text: 'responding to Advisor only' }], stopReason: 'stop', timestamp: Date.now() + 2 };
     addMessageEntry(concernHarness.branch, 'assistant-advisor-caused', advisorCaused);
     await concernHarness.emit('turn_end', { turnIndex: 2, message: advisorCaused, toolResults: [] });
