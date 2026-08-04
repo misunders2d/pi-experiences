@@ -68,9 +68,11 @@ function habitData(id, condition, behavior, lawHash, overrides = {}) {
     approved_identity: { candidate_id: id, condition: condition.trim().replace(/\s+/g, ' ').toLowerCase(), behavior: behavior.trim().replace(/\s+/g, ' ').toLowerCase(), polarity, approved_at: '2026-08-04T00:00:00.000Z' },
     source_refs: refs(), source_dates: ['2026-08-01T00:00:00.000Z', '2026-08-02T00:00:00.000Z', '2026-08-03T00:00:00.000Z'], ...overrides };
 }
-function replaceHabit(db, id, patch) {
+function replaceHabit(db, id, patch, remove = []) {
   const before = db.prepare('SELECT * FROM habits WHERE user_id = ? AND id = ?').get('owner', id);
-  const row = buildTypedStorageRow('habits', { id, userId: 'owner', data: { ...JSON.parse(before.data_json), ...patch }, createdAt: before.created_at, updatedAt: '2026-08-04T01:00:00.000Z' });
+  const data = { ...JSON.parse(before.data_json), ...patch };
+  for (const key of remove) delete data[key];
+  const row = buildTypedStorageRow('habits', { id, userId: 'owner', data, createdAt: before.created_at, updatedAt: '2026-08-04T01:00:00.000Z' });
   db.prepare(`UPDATE habits SET record_kind=?, schema_version=?, status=?, habit_id=?, condition=?, behavior=?, polarity=?, confidence_bp=?, activation=?, staleness=?, data_json=?, checksum=?, created_at=?, updated_at=? WHERE user_id=? AND id=?`).run(
     row.record_kind, row.schema_version, row.status, row.habit_id, row.condition, row.behavior, row.polarity, row.confidence_bp, row.activation, row.staleness, row.data_json, row.checksum, row.created_at, row.updated_at, 'owner', id);
 }
@@ -577,6 +579,79 @@ try {
       'durable fingerprint identity must remain internal and never enter the Analyze model prompt',
     );
   } finally { rotatedReplayLedger.db.close(); }
+
+  const legacyMergeLedger = await initExperienceStorage(join(temp, 'advisor-legacy-merge-ledger'), { allowInit: true, userId: 'owner' });
+  try {
+    const initial = await runConsolidationOnce({
+      root: legacyMergeLedger.root,
+      db: legacyMergeLedger.db,
+      userId: 'owner',
+      observations: learningRange.records,
+      modelOutput: recurringOutput,
+      model: 'test/learning',
+      now: '2026-08-04T13:00:00.000Z',
+    });
+    assert.equal(initial.ok, true);
+    const candidate = legacyMergeLedger.db.prepare("SELECT id FROM habits WHERE user_id='owner' AND condition=? AND behavior=?").get(recurringRaw.proposals[0].condition, recurringRaw.proposals[0].behavior);
+    const legacyRefs = [
+      { file_generation: 'legacy-ordinary', seq: 1, checksum: 'a'.repeat(64) },
+      { file_generation: 'legacy-ordinary', seq: 2, checksum: 'b'.repeat(64) },
+    ];
+    replaceHabit(legacyMergeLedger.db, candidate.id, {
+      status: 'candidate',
+      review_status: 'collecting_evidence',
+      active: false,
+      source_refs: legacyRefs,
+      source_dates: ['2026-07-01T08:00:00.000Z', '2026-07-02T08:00:00.000Z'],
+    }, ['advisor_events', 'advisor_source_ref_keys', 'non_advisor_source_dates']);
+    const legacyContext = buildCompactHabitContext(legacyMergeLedger.db, { userId: 'owner' });
+    assert.equal(legacyContext[0].unique_observations, 2);
+    assert.equal(legacyContext[0].distinct_days, 2);
+    assert.deepEqual(legacyContext[0].advisor_event_fingerprints, []);
+
+    const advisorRecord = {
+      ...learningRange.records[0],
+      file_generation: 'legacy-advisor-merge',
+      seq: 1,
+      prev_pair_ref: null,
+      created_at: '2026-07-03T08:00:00.000Z',
+    };
+    const legacyMergeInput = {
+      ...normalizeInput,
+      observations: [advisorRecord],
+      habitContext: legacyContext,
+      expected: {
+        file_generation: advisorRecord.file_generation,
+        seq_start: 1,
+        seq_end: 1,
+        read_checksum: advisorRecord.checksum,
+      },
+    };
+    const legacyMergeOutput = __normalizeAgentExperienceConsolidationModelOutputForTest({
+      ...recurringRaw,
+      batch_id: 'advisor-legacy-merge',
+      proposals: [{
+        ...recurringRaw.proposals[0],
+        proposal_id: 'advisor-legacy-merge',
+        source_refs: [{ file_generation: advisorRecord.file_generation, seq: 1, checksum: advisorRecord.checksum }],
+      }],
+    }, legacyMergeInput);
+    const merged = await runConsolidationOnce({
+      root: legacyMergeLedger.root,
+      db: legacyMergeLedger.db,
+      userId: 'owner',
+      observations: [advisorRecord],
+      modelOutput: legacyMergeOutput,
+      model: 'test/learning',
+      now: '2026-07-03T09:00:00.000Z',
+    });
+    assert.equal(merged.ok, true);
+    const mergedContext = buildCompactHabitContext(legacyMergeLedger.db, { userId: 'owner' });
+    assert.equal(mergedContext[0].unique_observations, 3, 'legacy ordinary source refs must survive a later Advisor merge');
+    assert.equal(mergedContext[0].distinct_days, 3, 'legacy ordinary source dates must survive a later Advisor merge');
+    assert.deepEqual(mergedContext[0].advisor_event_fingerprints, [firstFingerprint], 'ordinary legacy evidence must never be reclassified as Advisor fingerprint evidence');
+    assert.doesNotMatch(buildConsolidationUserPrompt({ ...legacyMergeInput, habitContext: mergedContext }), new RegExp(firstFingerprint), 'internal Advisor fingerprints must remain absent from model context');
+  } finally { legacyMergeLedger.db.close(); }
 
   const cappedRoot = join(temp, 'advisor-learning-cap');
   const cappedPaths = { root: cappedRoot, configPath: join(cappedRoot, 'agent-experience.toml') };

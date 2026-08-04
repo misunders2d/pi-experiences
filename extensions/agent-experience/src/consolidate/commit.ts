@@ -153,8 +153,14 @@ function mergeCandidateData(existingResidual: any, incoming: any): unknown {
 		...(Array.isArray(existingResidual?.advisor_source_ref_keys) ? existingResidual.advisor_source_ref_keys : []),
 		...(Array.isArray(incoming?.advisor_source_ref_keys) ? incoming.advisor_source_ref_keys : []),
 	]);
+	const existingHasAdvisorMetadata = existingResidual
+		&& (Object.prototype.hasOwnProperty.call(existingResidual, "advisor_events")
+			|| Object.prototype.hasOwnProperty.call(existingResidual, "advisor_source_ref_keys"));
+	const existingNonAdvisorSourceDates = existingHasAdvisorMetadata
+		? (Array.isArray(existingResidual?.non_advisor_source_dates) ? existingResidual.non_advisor_source_dates : [])
+		: (Array.isArray(existingResidual?.source_dates) ? existingResidual.source_dates : []);
 	merged.non_advisor_source_dates = uniqueArrayByCanonical([
-		...(Array.isArray(existingResidual?.non_advisor_source_dates) ? existingResidual.non_advisor_source_dates : []),
+		...existingNonAdvisorSourceDates,
 		...(Array.isArray(incoming?.non_advisor_source_dates) ? incoming.non_advisor_source_dates : []),
 	]).sort();
 	return merged;
