@@ -923,13 +923,16 @@ try {
       await cancelledHarness.emit('session_start', { reason: 'startup' });
       await runTurn(cancelledHarness, `${label}-before`, `Prepare ${label}.`);
       await waitUntil(() => updates.length === 1, `${label} pending finding`);
+      await new Promise((resolve) => setTimeout(resolve, 0));
       assert.equal(cancelledHarness.sent.length, 0);
       await cancelledHarness.emit(beforeEvent, { preparation: {}, signal: new AbortController().signal });
       await runTurn(cancelledHarness, `${label}-cancelled`, `Continue after cancelled ${label}.`, 'stop');
       await waitUntil(() => updates.length === 2, `${label} reseeded review`);
       cancelledHarness.setIdle(true);
       await cancelledHarness.emit('agent_settled');
-      assert.equal(cancelledHarness.sent.length, 0, `a later ${label} cursor must discard the immutable pending finding`);
+      assert.equal(cancelledHarness.sent.length, 1, `cancelled ${label} must retain and deliver its still-current pending finding exactly once`);
+      assert.equal(cancelledHarness.sent[0].message.details.note, `Pending across cancelled ${label}.`);
+      assert.deepEqual(cancelledHarness.sent[0].options, { triggerTurn: false });
       await cancelledHarness.emit('session_shutdown', { reason: 'quit' });
     }
 
@@ -947,6 +950,7 @@ try {
     await cursorHarness.emit('session_start', { reason: 'startup' });
     await runTurn(cursorHarness, 'cursor-first', 'Complete the release with tools.');
     await waitUntil(() => cursorUpdates.length === 1, 'intermediate pending finding');
+    await new Promise((resolve) => setTimeout(resolve, 0));
     const continuation = { role: 'assistant', content: [{ type: 'text', text: 'assistant corrected the issue before settling' }], stopReason: 'stop', timestamp: Date.now() + 10 };
     addMessageEntry(cursorHarness.branch, 'assistant-cursor-second', continuation);
     await cursorHarness.emit('turn_end', { turnIndex: 2, message: continuation, toolResults: [] });
@@ -961,6 +965,7 @@ try {
     await nitHarness.emit('session_start', { reason: 'startup' });
     await runTurn(nitHarness, 'nit', 'Prepare release notes.');
     await waitUntil(() => nitAdapter.updates.length === 1, 'nit review');
+    await new Promise((resolve) => setTimeout(resolve, 0));
     await nitHarness.emit('session_before_switch', { reason: 'resume', targetSessionFile: '/tmp/replacement.jsonl' });
     assert.equal(nitHarness.sent.length, 0, 'nit must never trigger or steer a turn');
     await nitHarness.emit('session_shutdown', { reason: 'quit' });
@@ -968,6 +973,30 @@ try {
     assert.equal(nitHarness.visibleEntries.at(-1).customType, ADVISOR_FINDING_VISIBLE_ENTRY_TYPE);
     assert.deepEqual(nitHarness.visibleEntries.at(-1).data, validateAdvisorFindingDetails(nitHarness.visibleEntries.at(-1).data));
     assert.doesNotMatch(JSON.stringify(nitHarness.visibleEntries.at(-1)), /delivered|guidance reached|followUp|nextTurn/);
+
+    delete process.env.AX_ENABLED;
+    delete process.env.AX_ADVISOR_ENABLED;
+    delete process.env.AX_ADVISOR_MODEL;
+    process.env.AX_CAPTURE_ENABLED = 'false';
+    for (const [label, mutate] of [
+      ['master config disable', (config) => ({ ...config, enabled: false, advisor_enabled: false })],
+      ['Advisor model change', (config) => ({ ...config, advisor_model: 'test/advisor-v2' })],
+      ['selector authority disable', (config) => ({ ...config, selector_enabled: false })],
+    ]) {
+      const baseline = { ...DEFAULT_AGENT_EXPERIENCE_CONFIG, enabled: true, advisor_enabled: true, advisor_model: 'test/advisor', selector_enabled: true, embedding_enabled: true, capture_enabled: false, break_in_enabled: false };
+      await writeAgentExperienceConfig(baseline);
+      const fallbackAdapter = fakeAdvisorAdapter({ kind: 'generic_advice', severity: 'nit', note: `Pending before ${label}.` });
+      const fallbackHarness = makeAdvisorHarness(fallbackAdapter);
+      await fallbackHarness.emit('session_start', { reason: 'startup' });
+      await runTurn(fallbackHarness, `fallback-${label}`, `Prepare ${label}.`);
+      await waitUntil(() => fallbackAdapter.updates.length === 1, `${label} pending fallback`);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await writeAgentExperienceConfig(mutate(baseline));
+      await fallbackHarness.emit('session_shutdown', { reason: 'quit' });
+      assert.equal(fallbackHarness.sent.length, 0, `${label} must revoke model-visible pending delivery`);
+      assert.equal(fallbackHarness.visibleEntries.length, 0, `${label} must revoke UI fallback before session shutdown renders it`);
+    }
+    await writeAgentExperienceConfig({ ...DEFAULT_AGENT_EXPERIENCE_CONFIG, enabled: true, advisor_enabled: true, advisor_model: 'test/advisor', capture_enabled: false, break_in_enabled: false });
 
     const staleResolvers = [];
     const staleAdapter = {
@@ -1047,6 +1076,7 @@ try {
     await deliveryRevalidationHarness.emit('session_start', { reason: 'startup' });
     await runTurn(deliveryRevalidationHarness, 'delivery-revalidation', 'Settle after checking configuration.');
     await waitUntil(() => deliveryRevalidationAdapter.updates.length === 1, 'pending delivery revalidation');
+    await new Promise((resolve) => setTimeout(resolve, 0));
     await writeAgentExperienceConfig({ ...DEFAULT_AGENT_EXPERIENCE_CONFIG, enabled: true, advisor_enabled: true, advisor_model: 'test/advisor', selector_enabled: false, embedding_enabled: true, capture_enabled: false, break_in_enabled: false });
     deliveryRevalidationHarness.setIdle(true);
     await deliveryRevalidationHarness.emit('agent_settled');
@@ -1061,7 +1091,7 @@ try {
     await enabledMidSessionHarness.commands.get('experience').handler('setup', enabledMidSessionHarness.ctx);
     await runTurn(enabledMidSessionHarness, 'enabled-mid-session', 'Review this turn immediately.');
     await waitUntil(() => enabledMidSessionAdapter.updates.length === 1, 'mid-session Advisor activation');
-    assert.equal(enabledMidSessionHarness.sent.length, 1, 'a successful setup enable must synchronously rebuild an active runtime');
+    await waitUntil(() => enabledMidSessionHarness.sent.length === 1, 'synchronous runtime delivery after setup enable');
     await enabledMidSessionHarness.emit('session_shutdown', { reason: 'quit' });
 
     await writeAgentExperienceConfig({ ...DEFAULT_AGENT_EXPERIENCE_CONFIG, enabled: true, advisor_enabled: true, advisor_model: 'test/advisor', capture_enabled: false, break_in_enabled: false });

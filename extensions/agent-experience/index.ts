@@ -3058,7 +3058,17 @@ type PendingAdvisorDelivery = {
 	cursor: number;
 	finding: AcceptedAdvisorFinding;
 	update: AdvisorUpdate;
+	habitCandidates?: AdvisorHabitRetrievalCandidate[];
 	createdAt: string;
+};
+
+type AdvisorBeforeTransition = {
+	reason: string;
+	scopeKey: string;
+	epoch: number;
+	generation: number;
+	cursor: number;
+	leafId: string | null;
 };
 
 type AdvisorLifecycleState = {
@@ -3075,6 +3085,7 @@ type AdvisorLifecycleState = {
 	activeGeneration?: AdvisorGenerationState;
 	pending: PendingAdvisorDelivery[];
 	fallbackPending: PendingAdvisorDelivery[];
+	beforeTransition?: AdvisorBeforeTransition;
 	habitCandidatesByFingerprint: Map<string, AdvisorHabitRetrievalCandidate[]>;
 	backlog: number;
 	immuneTurnsRemaining: number;
@@ -3206,6 +3217,25 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 			&& state.cursor === pending.cursor;
 	};
 
+	const advisorBeforeTransitionIsUnchanged = (
+		state: AdvisorLifecycleState,
+		transition: AdvisorBeforeTransition,
+		pending: PendingAdvisorDelivery,
+	): boolean => {
+		const liveScope = breakInScopeFromContext(state.latestContext);
+		return state.beforeTransition === transition
+			&& state.needsReseed
+			&& !!liveScope
+			&& advisorScopeKey(liveScope) === transition.scopeKey
+			&& state.scopeKey === transition.scopeKey
+			&& pending.scopeKey === transition.scopeKey
+			&& pending.epoch === transition.epoch
+			&& pending.generation === transition.generation
+			&& pending.cursor === transition.cursor
+			&& state.latestContext.sessionManager.getBranch().length === transition.cursor
+			&& state.latestContext.sessionManager.getLeafId() === transition.leafId;
+	};
+
 	const appendDeliveredAdvisorObservation = async (
 		finding: AcceptedAdvisorFinding,
 		update: AdvisorUpdate,
@@ -3228,18 +3258,7 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 	const flushPendingAdvisorMessages = async (state: AdvisorLifecycleState, visibleOnly: boolean): Promise<void> => {
 		const pending = state.pending.splice(0);
 		for (const item of pending) {
-			if (!await revalidateAdvisorDelivery(state, item)) continue;
-			if (visibleOnly) {
-				appendAdvisorVisibleFallback(item.message.details);
-				continue;
-			}
-			try {
-				pi.sendMessage(item.message, { triggerTurn: false });
-			} catch {
-				appendAdvisorVisibleFallback(item.message.details);
-				continue;
-			}
-			await appendDeliveredAdvisorObservation(item.finding, item.update, item.createdAt);
+			await deliverPendingAdvisorItem(state, item, { visibleOnly });
 		}
 	};
 
@@ -3247,7 +3266,21 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 		const state = advisorStateForContext(ctx);
 		if (!state) return [];
 		const pending = state.pending.splice(0);
-		if (reason.startsWith("session_before_")) state.fallbackPending.push(...pending);
+		const beforeTransition = reason.startsWith("session_before_");
+		if (beforeTransition) {
+			state.beforeTransition = {
+				reason,
+				scopeKey: state.scopeKey,
+				epoch: state.epoch,
+				generation: state.generation,
+				cursor: state.cursor,
+				leafId: ctx.sessionManager.getLeafId(),
+			};
+			state.fallbackPending.push(...pending);
+		} else {
+			state.beforeTransition = undefined;
+			if (reason !== "session_shutdown") state.fallbackPending = [];
+		}
 		const pendingForCaller = reason === "session_shutdown" ? [...state.fallbackPending.splice(0), ...pending] : pending;
 		const oldRuntime = state.runtime;
 		const oldAdapter = state.adapter;
@@ -3260,7 +3293,7 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 		oldAdapter?.reset();
 		state.runtime = undefined;
 		state.adapter = undefined;
-		if (reason.startsWith("session_before_") && state.host) {
+		if (beforeTransition && state.host) {
 			try {
 				const replacement = advisorAdapterOverride ?? createPiAdvisorAgentAdapter(ctx, {
 					cwd: ctx.cwd,
@@ -3279,37 +3312,50 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 		return pendingForCaller;
 	};
 
-	const currentAdvisorConfig = async (state: AdvisorLifecycleState, reason: string): Promise<AgentExperienceConfig | undefined> => {
+	const currentAdvisorConfig = async (
+		state: AdvisorLifecycleState,
+		reason: string,
+		resetOnChange = true,
+	): Promise<AgentExperienceConfig | undefined> => {
 		let config: AgentExperienceConfig;
 		try {
 			({ config } = await readAgentExperienceConfig(getAgentExperiencePaths()));
 		} catch {
-			abortAdvisorState(state.latestContext, reason);
-			await rebuildAdvisorRuntime(state.latestContext, reason);
+			if (resetOnChange) {
+				abortAdvisorState(state.latestContext, reason);
+				await rebuildAdvisorRuntime(state.latestContext, reason);
+			}
 			return undefined;
 		}
 		if (advisorConfigSignature(config) !== state.configSignature) {
-			abortAdvisorState(state.latestContext, reason);
-			await rebuildAdvisorRuntime(state.latestContext, reason);
+			if (resetOnChange) {
+				abortAdvisorState(state.latestContext, reason);
+				await rebuildAdvisorRuntime(state.latestContext, reason);
+			}
 			return undefined;
 		}
 		return config;
 	};
 
-	const revalidateAdvisorDelivery = async (state: AdvisorLifecycleState, item: PendingAdvisorDelivery): Promise<boolean> => {
-		if (!pendingAdvisorDeliveryIsCurrent(state, item)) return false;
-		const config = await currentAdvisorConfig(state, "advisor_delivery_config_change");
-		if (!config || !pendingAdvisorDeliveryIsCurrent(state, item)) return false;
+	const revalidateAdvisorDelivery = async (
+		state: AdvisorLifecycleState,
+		item: PendingAdvisorDelivery,
+		options: { isCurrent?: () => boolean; resetOnConfigChange?: boolean } = {},
+	): Promise<boolean> => {
+		const isCurrent = options.isCurrent ?? (() => pendingAdvisorDeliveryIsCurrent(state, item));
+		if (!isCurrent()) return false;
+		const config = await currentAdvisorConfig(state, "advisor_delivery_config_change", options.resetOnConfigChange ?? true);
+		if (!config || !isCurrent()) return false;
 		if (item.finding.kind === "habit_violation") {
 			let storageDb: DatabaseSync | undefined;
 			try {
 				const paths = getAgentExperiencePaths();
 				const storage = await openExistingExperienceStorage(paths.root, { userId: state.scope.userId });
 				storageDb = storage.db;
-				if (!pendingAdvisorDeliveryIsCurrent(state, item)) return false;
+				if (!isCurrent()) return false;
 				const law = await readConfiguredLawSnapshot(storage.root, config);
-				if (!pendingAdvisorDeliveryIsCurrent(state, item)) return false;
-				const candidates = state.habitCandidatesByFingerprint.get(item.update.eventFingerprint);
+				if (!isCurrent()) return false;
+				const candidates = item.habitCandidates ?? state.habitCandidatesByFingerprint.get(item.update.eventFingerprint);
 				if (!candidates) return false;
 				const candidate = revalidateAdvisorHabitFinding(storageDb, {
 					userId: state.scope.userId,
@@ -3334,15 +3380,32 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 			} finally {
 				storageDb?.close();
 			}
-			if (!await currentAdvisorConfig(state, "advisor_delivery_config_change")) return false;
+			if (!await currentAdvisorConfig(state, "advisor_delivery_config_change", options.resetOnConfigChange ?? true)) return false;
 		}
-		return pendingAdvisorDeliveryIsCurrent(state, item);
+		return isCurrent();
+	};
+
+	const deliverPendingAdvisorItem = async (
+		state: AdvisorLifecycleState,
+		item: PendingAdvisorDelivery,
+		options: { visibleOnly: boolean; isCurrent?: () => boolean; resetOnConfigChange?: boolean },
+	): Promise<boolean> => {
+		if (!await revalidateAdvisorDelivery(state, item, options)) return false;
+		if (options.visibleOnly) return appendAdvisorVisibleFallback(item.message.details);
+		try {
+			pi.sendMessage(item.message, { triggerTurn: false });
+		} catch {
+			return appendAdvisorVisibleFallback(item.message.details);
+		}
+		await appendDeliveredAdvisorObservation(item.finding, item.update, item.createdAt);
+		return true;
 	};
 
 	const disposeAdvisorState = async (state: AdvisorLifecycleState): Promise<void> => {
 		state.shuttingDown = true;
 		state.pending = [];
 		state.fallbackPending = [];
+		state.beforeTransition = undefined;
 		state.habitCandidatesByFingerprint.clear();
 		const runtime = state.runtime;
 		const adapter = state.adapter;
@@ -3581,6 +3644,9 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 					message,
 					finding: accepted,
 					update,
+					habitCandidates: accepted.kind === "habit_violation"
+						? state.habitCandidatesByFingerprint.get(update.eventFingerprint)
+						: undefined,
 					createdAt: message.details.created_at,
 					scopeKey: state.scopeKey,
 					epoch: update.epoch,
@@ -3831,27 +3897,36 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 		},
 	});
 
-	pi.on("before_agent_start", (event, ctx) => {
+	pi.on("before_agent_start", async (event, ctx) => {
 		const breakScope = breakInScopeFromContext(ctx);
 		if (breakScope) breakInAgentActive.add(breakInScopeKey(breakScope));
 		const prompt = event.prompt;
-		const advisorState = advisorStateForContext(ctx);
-		let reseededPending: PendingAdvisorDelivery[] = [];
+		let advisorState = advisorStateForContext(ctx);
 		if (advisorState?.needsReseed) {
-			reseededPending = advisorState.fallbackPending.splice(0);
+			const transition = advisorState.beforeTransition;
+			const retained = advisorState.fallbackPending.splice(0);
+			if (transition) {
+				for (const pending of retained) {
+					const isCurrent = () => advisorBeforeTransitionIsUnchanged(advisorState!, transition, pending);
+					await deliverPendingAdvisorItem(advisorState, pending, {
+						visibleOnly: !advisorState.runtime,
+						isCurrent,
+					});
+				}
+			}
+			advisorState.beforeTransition = undefined;
+			advisorState.pending = [];
 			if (advisorState.runtime) {
 				advisorState.needsReseed = false;
 				advisorState.cursor = ctx.sessionManager.getBranch().length;
 			} else {
-				for (const pending of reseededPending) appendAdvisorVisibleFallback(pending.message.details);
-				reseededPending = [];
-				void rebuildAdvisorRuntime(ctx, "cancelled_before_event");
+				advisorState = await rebuildAdvisorRuntime(ctx, "cancelled_before_event");
 			}
 		}
 		if (advisorState && !advisorState.needsReseed) {
 			advisorState.generation++;
 			if (advisorState.immuneTurnsRemaining > 0) advisorState.immuneTurnsRemaining--;
-			advisorState.pending = reseededPending.filter((pending) => pendingAdvisorDeliveryIsCurrent(advisorState, pending));
+			advisorState.pending = [];
 			advisorState.activeGeneration = {
 				scopeKey: advisorState.scopeKey,
 				epoch: advisorState.epoch,
@@ -4245,10 +4320,28 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 
 	pi.on("session_shutdown", async (_event, ctx) => {
 		const advisorState = advisorStateForContext(ctx);
-		const advisorPending = abortAdvisorState(ctx, "session_shutdown");
 		if (advisorState) {
+			const currentPending = advisorState.pending.splice(0);
+			for (const pending of currentPending) {
+				await deliverPendingAdvisorItem(advisorState, pending, {
+					visibleOnly: true,
+					resetOnConfigChange: false,
+				});
+			}
+			const transition = advisorState.beforeTransition;
+			const transitionPending = advisorState.fallbackPending.splice(0);
+			if (transition) {
+				for (const pending of transitionPending) {
+					await deliverPendingAdvisorItem(advisorState, pending, {
+						visibleOnly: true,
+						isCurrent: () => advisorBeforeTransitionIsUnchanged(advisorState, transition, pending),
+						resetOnConfigChange: false,
+					});
+				}
+			}
+			advisorState.beforeTransition = undefined;
+			abortAdvisorState(ctx, "session_shutdown");
 			advisorState.shuttingDown = true;
-			for (const pending of advisorPending) appendAdvisorVisibleFallback(pending.message.details);
 			advisorStates.delete(advisorState.scopeKey);
 			await disposeAdvisorState(advisorState);
 		}
