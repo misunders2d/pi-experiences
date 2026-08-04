@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
+import type { DatabaseSync } from "node:sqlite";
 import { completeSimple, type Model } from "@earendil-works/pi-ai/compat";
 import { getPackageDir, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Box, decodeKittyPrintable, fuzzyFilter, Input, Key, matchesKey, SettingsList, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component, type Focusable, type SettingItem, type SettingsListTheme } from "@earendil-works/pi-tui";
@@ -61,7 +62,7 @@ import { prepareSelectorConditionVectors } from "./src/selector-vector.ts";
 import { extractSteeringContext, latestUserMessageBoundary, type SteeringContextTurn } from "./src/steering-context.ts";
 import { prepareActiveSelectorVectorsAfterChange } from "./src/selector-maintenance.ts";
 import { collectAgentExperienceMetrics, formatAgentExperienceMetrics } from "./src/metrics.ts";
-import type { AgentExperienceConfig } from "./src/config.ts";
+import { advisorRuntimeConfig, type AgentExperienceConfig } from "./src/config.ts";
 import type { ValidatedObservationRecord } from "./src/consolidate/observations.ts";
 import { buildCompactHabitContext, type CompactHabitContextItem } from "./src/consolidate/context.ts";
 import { getProposalReadWatermark } from "./src/consolidate/commit.ts";
@@ -75,12 +76,29 @@ import { appendHabitGuidanceToProviderPayload } from "./src/provider-guidance.ts
 import { consumeScheduledAnalyzeReceipts, deleteScheduledAnalyzeReceiptFiles, transitionScheduledAnalyzeReceiptBreakInDelivery, type ScheduledAnalyzeReceiptRecord } from "./src/schedule/receipts.ts";
 import { BreakInQueue, breakInScopeKey, type BreakInScope, type PendingBreakInBatch } from "./src/break-in.ts";
 import { disableScheduledAnalyzeSystemd, inspectScheduledAnalyzeSystemd, installScheduledAnalyzeSystemd, previewScheduledAnalyzeSystemd, removeScheduledAnalyzeSystemd, SCHEDULED_ANALYZE_ON_CALENDAR, SCHEDULED_ANALYZE_SERVICE, SCHEDULED_ANALYZE_TIMER } from "./src/schedule/systemd.ts";
+import { AdvisorRuntime, type AdvisorRuntimeHost } from "./src/advisor/runtime.ts";
+import { createPiAdvisorAgentAdapter, type AdvisorAgentAdapter } from "./src/advisor/model.ts";
+import { extractAdvisorTurnDelta } from "./src/advisor/transcript.ts";
+import { retrieveAdvisorHabitCandidates, revalidateAdvisorHabitFinding, type AdvisorHabitRetrievalCandidate } from "./src/advisor/habits.ts";
+import {
+	ADVISOR_FINDING_MESSAGE_TYPE,
+	ADVISOR_FINDING_VISIBLE_ENTRY_TYPE,
+	buildAdvisorCustomMessage,
+	chooseAdvisorDelivery,
+	renderAdvisorFinding,
+	renderAdvisorVisibleFinding,
+	validateAdvisorFindingDetails,
+	type AdvisorCustomMessage,
+	type AdvisorFindingDetails,
+} from "./src/advisor/message.ts";
+import type { AcceptedAdvisorFinding, AdvisorPrimaryDelta, AdvisorRuntimeConfig, AdvisorScope, AdvisorUpdate } from "./src/advisor/types.ts";
 
 const captureBuffer = new CapturePairBuffer();
 let selectorModelAdapter: SelectorModelAdapter | undefined;
 let selectorEmbeddingAdapterOverride: EmbeddingAdapter | undefined;
 let selectorLocalEmbeddingAdapter: LocalEmbeddingAdapter | undefined;
 let selectorLocalEmbeddingRoot: string | undefined;
+let advisorAdapterOverride: AdvisorAgentAdapter | undefined;
 const selectorDiagnosticsShown = new Set<string>();
 const captureDiagnosticsShown = new Set<string>();
 
@@ -679,6 +697,14 @@ export function __setAgentExperienceSelectorAdapterForTest(adapter: SelectorMode
 
 export function __setAgentExperienceSelectorEmbeddingAdapterForTest(adapter: EmbeddingAdapter | undefined) {
 	selectorEmbeddingAdapterOverride = adapter;
+}
+
+export function __setAgentExperienceAdvisorAdapterForTest(adapter: AdvisorAgentAdapter | undefined) {
+	advisorAdapterOverride = adapter;
+}
+
+export function __advisorCatchupRequiredForTest(syncBacklog: AdvisorRuntimeConfig["syncBacklog"], backlog: number): boolean {
+	return syncBacklog !== "off" && backlog >= syncBacklog;
 }
 
 export function __setAgentExperienceConsolidationAdapterForTest(adapter: ConsolidationModelAdapter | undefined) {
@@ -2914,9 +2940,486 @@ function scheduledAnalyzeNoticeExistsInActiveBranch(ctx: ExtensionContext, deliv
 	});
 }
 
+type AdvisorPlanModeState = "off" | "on" | "ambiguous";
+
+type AdvisorGenerationState = {
+	scopeKey: string;
+	epoch: number;
+	generation: number;
+	startLeafId: string | null;
+	currentRequest: string;
+	causedByAdvisor: boolean;
+	cancelled: boolean;
+	activeRequestHabitIds: string[];
+	terminal: boolean;
+};
+
+type PendingAdvisorDelivery = {
+	message: AdvisorCustomMessage;
+	scopeKey: string;
+	epoch: number;
+	generation: number;
+	cursor: number;
+};
+
+type AdvisorLifecycleState = {
+	scope: AdvisorScope;
+	scopeKey: string;
+	epoch: number;
+	generation: number;
+	cursor: number;
+	runtimeConfig: AdvisorRuntimeConfig;
+	configSignature: string;
+	host?: AdvisorRuntimeHost;
+	adapter?: AdvisorAgentAdapter;
+	runtime?: AdvisorRuntime;
+	activeGeneration?: AdvisorGenerationState;
+	pending: PendingAdvisorDelivery[];
+	fallbackPending: PendingAdvisorDelivery[];
+	habitCandidatesByFingerprint: Map<string, AdvisorHabitRetrievalCandidate[]>;
+	backlog: number;
+	immuneTurnsRemaining: number;
+	needsReseed: boolean;
+	shuttingDown: boolean;
+	latestContext: ExtensionContext;
+};
+
+function advisorScopeKey(scope: AdvisorScope): string {
+	return `${scope.userId}\u0000${scope.sessionId}\u0000${scope.sessionFile}`;
+}
+
+function advisorConfigSignature(config: AgentExperienceConfig): string {
+	const runtime = advisorRuntimeConfig(config);
+	return JSON.stringify([runtime.enabled, runtime.model, runtime.timeoutMs, runtime.syncBacklog, runtime.immuneTurns]);
+}
+
+function activePlanModeState(ctx: ExtensionContext): AdvisorPlanModeState {
+	let latest: { data?: unknown } | undefined;
+	for (const entry of ctx.sessionManager.getBranch()) {
+		if (entry.type === "custom" && entry.customType === "plan-mode") latest = entry;
+	}
+	if (!latest) return "off";
+	const data = latest.data;
+	if (!data || typeof data !== "object" || Array.isArray(data)) return "ambiguous";
+	const value = data as Record<string, unknown>;
+	if (typeof value.enabled !== "boolean" || !Array.isArray(value.todos) || typeof value.executing !== "boolean") return "ambiguous";
+	if ("toolsBeforePlanMode" in value && value.toolsBeforePlanMode !== undefined && (!Array.isArray(value.toolsBeforePlanMode) || value.toolsBeforePlanMode.some((name) => typeof name !== "string"))) return "ambiguous";
+	return value.enabled ? "on" : "off";
+}
+
+function agentMessageText(message: unknown): string {
+	if (!message || typeof message !== "object" || !("content" in message)) return "";
+	const content = message.content;
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content
+		.filter((part): part is { type: "text"; text: string } => {
+			if (!part || typeof part !== "object" || !("type" in part) || !("text" in part)) return false;
+			return part.type === "text" && typeof part.text === "string";
+		})
+		.map((part) => part.text)
+		.join("\n");
+}
+
+function assistantTurnIsTerminal(message: unknown): boolean {
+	if (!message || typeof message !== "object" || !("stopReason" in message)) return true;
+	return message.stopReason !== "toolUse";
+}
+
 export default function agentExperienceExtension(pi: ExtensionAPI) {
 	registerAgentExperienceConversationalTools(pi);
 
+
+	let advisorMessageRendererReady = false;
+	let advisorVisibleRendererReady = false;
+	try {
+		if (typeof pi.registerMessageRenderer === "function") {
+			pi.registerMessageRenderer<AdvisorFindingDetails>(ADVISOR_FINDING_MESSAGE_TYPE, renderAdvisorFinding);
+			advisorMessageRendererReady = true;
+		}
+		if (typeof pi.registerEntryRenderer === "function" && typeof pi.appendEntry === "function") {
+			pi.registerEntryRenderer<AdvisorFindingDetails>(ADVISOR_FINDING_VISIBLE_ENTRY_TYPE, (entry, options, theme) => renderAdvisorVisibleFinding(entry.data, options, theme));
+			advisorVisibleRendererReady = true;
+		}
+	} catch {
+		advisorMessageRendererReady = false;
+		advisorVisibleRendererReady = false;
+	}
+	const advisorDiagnosticsShown = new Set<string>();
+
+	const advisorStates = new Map<string, AdvisorLifecycleState>();
+	let advisorEpoch = 0;
+
+	const advisorStateForContext = (ctx: ExtensionContext): AdvisorLifecycleState | undefined => {
+		const scope = breakInScopeFromContext(ctx);
+		if (!scope) return undefined;
+		const state = advisorStates.get(advisorScopeKey(scope));
+		if (state) state.latestContext = ctx;
+		return state;
+	};
+
+	const advisorUpdateIsCurrent = (state: AdvisorLifecycleState, update: Pick<AdvisorUpdate, "scope" | "epoch" | "generation" | "cursor">): boolean => {
+		const liveScope = breakInScopeFromContext(state.latestContext);
+		return !!liveScope
+			&& advisorScopeKey(liveScope) === state.scopeKey
+			&& advisorScopeKey(update.scope) === state.scopeKey
+			&& state.epoch === update.epoch
+			&& state.generation === update.generation
+			&& state.cursor === update.cursor
+			&& !state.needsReseed
+			&& !state.shuttingDown;
+	};
+
+	const appendAdvisorVisibleFallback = (details: AdvisorFindingDetails): boolean => {
+		if (!advisorVisibleRendererReady || typeof pi.appendEntry !== "function") return false;
+		try {
+			pi.appendEntry(ADVISOR_FINDING_VISIBLE_ENTRY_TYPE, validateAdvisorFindingDetails(details));
+			return true;
+		} catch {
+			return false;
+		}
+	};
+
+	const pendingAdvisorDeliveryIsCurrent = (state: AdvisorLifecycleState, pending: PendingAdvisorDelivery): boolean => {
+		const liveScope = breakInScopeFromContext(state.latestContext);
+		return !!liveScope
+			&& advisorScopeKey(liveScope) === pending.scopeKey
+			&& state.scopeKey === pending.scopeKey
+			&& state.epoch === pending.epoch
+			&& state.generation === pending.generation
+			&& state.cursor === pending.cursor;
+	};
+
+	const flushPendingAdvisorMessages = (state: AdvisorLifecycleState, visibleOnly: boolean): void => {
+		const pending = state.pending.splice(0);
+		for (const item of pending) {
+			if (!pendingAdvisorDeliveryIsCurrent(state, item)) continue;
+			if (visibleOnly) {
+				appendAdvisorVisibleFallback(item.message.details);
+				continue;
+			}
+			try {
+				pi.sendMessage(item.message, { triggerTurn: false });
+			} catch {
+				appendAdvisorVisibleFallback(item.message.details);
+			}
+		}
+	};
+
+	const abortAdvisorState = (ctx: ExtensionContext, reason: string): PendingAdvisorDelivery[] => {
+		const state = advisorStateForContext(ctx);
+		if (!state) return [];
+		const pending = state.pending.splice(0);
+		if (reason === "session_before_switch" || reason === "session_before_fork") state.fallbackPending.push(...pending);
+		const pendingForCaller = reason === "session_shutdown" ? [...state.fallbackPending.splice(0), ...pending] : pending;
+		const oldRuntime = state.runtime;
+		const oldAdapter = state.adapter;
+		state.epoch = ++advisorEpoch;
+		state.needsReseed = true;
+		state.activeGeneration = undefined;
+		state.habitCandidatesByFingerprint.clear();
+		state.backlog = 0;
+		oldRuntime?.reset(reason);
+		oldAdapter?.reset();
+		state.runtime = undefined;
+		state.adapter = undefined;
+		if (reason.startsWith("session_before_") && state.host) {
+			try {
+				const replacement = advisorAdapterOverride ?? createPiAdvisorAgentAdapter(ctx, {
+					cwd: ctx.cwd,
+					model: state.runtimeConfig.model,
+					timeoutMs: state.runtimeConfig.timeoutMs,
+				});
+				state.adapter = replacement;
+				state.runtime = new AdvisorRuntime(state.host, replacement);
+			} catch {
+				state.adapter = undefined;
+				state.runtime = undefined;
+			}
+		}
+		if (oldRuntime) void oldRuntime.dispose().catch(() => undefined);
+		if (oldAdapter && oldAdapter !== advisorAdapterOverride) void oldAdapter.dispose().catch(() => undefined);
+		return pendingForCaller;
+	};
+
+	const disposeAdvisorState = async (state: AdvisorLifecycleState): Promise<void> => {
+		state.shuttingDown = true;
+		state.pending = [];
+		state.fallbackPending = [];
+		state.habitCandidatesByFingerprint.clear();
+		const runtime = state.runtime;
+		const adapter = state.adapter;
+		runtime?.reset("dispose");
+		adapter?.reset();
+		await runtime?.dispose().catch(() => undefined);
+		if (adapter && adapter !== advisorAdapterOverride) await adapter.dispose().catch(() => undefined);
+		state.runtime = undefined;
+		state.adapter = undefined;
+	};
+
+	const resolveAdvisorTurnIdentity = (ctx: ExtensionContext, message: unknown, toolResults: readonly unknown[], generation: AdvisorGenerationState) => {
+		const branch = ctx.sessionManager.getBranch();
+		let assistantIndex = -1;
+		for (let index = branch.length - 1; index >= 0; index--) {
+			const entry = branch[index];
+			if (entry.type !== "message" || entry.message.role !== "assistant") continue;
+			const sameObject = entry.message === message;
+			const sameTimestamp = !!message && typeof message === "object" && "timestamp" in message && entry.message.timestamp === message.timestamp;
+			if (sameObject || sameTimestamp) {
+				assistantIndex = index;
+				break;
+			}
+		}
+		if (assistantIndex < 0) return undefined;
+		let userIndex = -1;
+		for (let index = assistantIndex - 1; index >= 0; index--) {
+			const entry = branch[index];
+			if (entry.type === "message" && entry.message.role === "user") {
+				userIndex = index;
+				break;
+			}
+		}
+		if (userIndex < 0) return undefined;
+		const currentUser = branch[userIndex];
+		const assistant = branch[assistantIndex];
+		if (currentUser.type !== "message" || assistant.type !== "message") return undefined;
+		const primaryEntryIds = [assistant.id];
+		for (const result of toolResults) {
+			for (let index = assistantIndex + 1; index < branch.length; index++) {
+				const entry = branch[index];
+				if (entry.type !== "message" || entry.message.role !== "toolResult") continue;
+				if (entry.message === result || (!!result && typeof result === "object" && "toolCallId" in result && entry.message.toolCallId === result.toolCallId)) {
+					if (!primaryEntryIds.includes(entry.id)) primaryEntryIds.push(entry.id);
+					break;
+				}
+			}
+		}
+		return {
+			currentUserEntryId: currentUser.id,
+			currentRequest: generation.currentRequest || agentMessageText(currentUser.message),
+			primaryEntryIds,
+			cursor: branch.length,
+			causalEpisodeId: `${currentUser.id}:${generation.generation}`,
+		};
+	};
+
+	const rebuildAdvisorRuntime = async (ctx: ExtensionContext, reason: string): Promise<AdvisorLifecycleState | undefined> => {
+		const scope = breakInScopeFromContext(ctx);
+		if (!scope) return undefined;
+		const key = advisorScopeKey(scope);
+		for (const [otherKey, other] of advisorStates) {
+			if (otherKey === key) continue;
+			advisorStates.delete(otherKey);
+			void disposeAdvisorState(other);
+		}
+		const old = advisorStates.get(key);
+		if (old) {
+			advisorStates.delete(key);
+			old.runtime?.reset(reason);
+			old.adapter?.reset();
+			void disposeAdvisorState(old);
+		}
+		let config: AgentExperienceConfig;
+		try {
+			({ config } = await readAgentExperienceConfig(getAgentExperiencePaths()));
+		} catch {
+			return undefined;
+		}
+		const runtimeConfig = advisorRuntimeConfig(config);
+		if (!runtimeConfig.enabled || !runtimeConfig.model || ctx.mode !== "tui" || !advisorMessageRendererReady) return undefined;
+		let adapter: AdvisorAgentAdapter;
+		try {
+			adapter = advisorAdapterOverride ?? createPiAdvisorAgentAdapter(ctx, {
+				cwd: ctx.cwd,
+				model: runtimeConfig.model,
+				timeoutMs: runtimeConfig.timeoutMs,
+			});
+		} catch {
+			return undefined;
+		}
+		const state: AdvisorLifecycleState = {
+			scope,
+			scopeKey: key,
+			epoch: ++advisorEpoch,
+			generation: 0,
+			cursor: ctx.sessionManager.getBranch().length,
+			runtimeConfig,
+			configSignature: advisorConfigSignature(config),
+			adapter,
+			habitCandidatesByFingerprint: new Map(),
+			pending: [],
+			fallbackPending: [],
+			backlog: 0,
+			immuneTurnsRemaining: 0,
+			needsReseed: false,
+			shuttingDown: false,
+			latestContext: ctx,
+		};
+		const host: AdvisorRuntimeHost = {
+			buildUpdate: async (delta: AdvisorPrimaryDelta): Promise<AdvisorUpdate | undefined> => {
+				if (!advisorUpdateIsCurrent(state, delta)) return undefined;
+				const activeHabitIds = state.activeGeneration?.generation === delta.generation
+					? [...state.activeGeneration.activeRequestHabitIds]
+					: [];
+				let habits: AdvisorHabitRetrievalCandidate[] = [];
+				let storageDb: DatabaseSync | undefined;
+				try {
+					const paths = getAgentExperiencePaths();
+					const loaded = await readAgentExperienceConfig(paths);
+					if (!advisorUpdateIsCurrent(state, delta)) return undefined;
+					if (advisorConfigSignature(loaded.config) !== state.configSignature) {
+						abortAdvisorState(state.latestContext, "advisor_config_change");
+						void rebuildAdvisorRuntime(state.latestContext, "advisor_config_change");
+						return undefined;
+					}
+					if (loaded.config.embedding_enabled && await fileExists(resolvePrivatePath(paths.root, "ledger.sqlite"))) {
+						const storage = await openExistingExperienceStorage(paths.root, { userId: state.scope.userId });
+						storageDb = storage.db;
+						if (!advisorUpdateIsCurrent(state, delta)) return undefined;
+						const law = await readConfiguredLawSnapshot(storage.root, loaded.config);
+						if (!advisorUpdateIsCurrent(state, delta)) return undefined;
+						const assets = await getLocalEmbeddingAssetStatus(storage.root, { deep: true });
+						if (!advisorUpdateIsCurrent(state, delta)) return undefined;
+						if (assets.ready) {
+							const embeddingAdapter = await selectorRuntimeEmbeddingAdapter(storage.root);
+							if (!advisorUpdateIsCurrent(state, delta)) return undefined;
+							habits = await retrieveAdvisorHabitCandidates(storageDb, {
+								userId: state.scope.userId,
+								delta,
+								activeRequestHabitIds: activeHabitIds,
+								law,
+								config: loaded.config,
+								embeddingAdapter,
+								tokenizerAssetDir: assets.assetDir,
+								signal: state.latestContext.signal,
+							});
+							if (!advisorUpdateIsCurrent(state, delta)) return undefined;
+						}
+					}
+				} catch {
+					habits = [];
+				} finally {
+					storageDb?.close();
+				}
+				if (!advisorUpdateIsCurrent(state, delta)) return undefined;
+				state.habitCandidatesByFingerprint.set(delta.eventFingerprint, habits);
+				while (state.habitCandidatesByFingerprint.size > 5) {
+					const oldest = state.habitCandidatesByFingerprint.keys().next().value;
+					if (typeof oldest !== "string") break;
+					state.habitCandidatesByFingerprint.delete(oldest);
+				}
+				return {
+					schemaVersion: 1,
+					scope: delta.scope,
+					generation: delta.generation,
+					epoch: delta.epoch,
+					cursor: delta.cursor,
+					inProgress: delta.inProgress,
+					primaryDelta: delta.text,
+					currentRequest: delta.currentRequest,
+					habits,
+					eventFingerprint: delta.eventFingerprint,
+					causalEpisodeId: delta.causalEpisodeId,
+					causedByAdvisor: delta.causedByAdvisor,
+				};
+			},
+			acceptFinding: async (finding: AcceptedAdvisorFinding, update: AdvisorUpdate): Promise<void> => {
+				if (!advisorUpdateIsCurrent(state, update)) return;
+				let accepted = finding;
+				if (finding.kind === "habit_violation") {
+					let storageDb: DatabaseSync | undefined;
+					try {
+						const paths = getAgentExperiencePaths();
+						const loaded = await readAgentExperienceConfig(paths);
+						if (!advisorUpdateIsCurrent(state, update)) return;
+						if (advisorConfigSignature(loaded.config) !== state.configSignature) {
+							abortAdvisorState(state.latestContext, "advisor_config_change");
+							void rebuildAdvisorRuntime(state.latestContext, "advisor_config_change");
+							return;
+						}
+						const storage = await openExistingExperienceStorage(paths.root, { userId: state.scope.userId });
+						storageDb = storage.db;
+						if (!advisorUpdateIsCurrent(state, update)) return;
+						const law = await readConfiguredLawSnapshot(storage.root, loaded.config);
+						if (!advisorUpdateIsCurrent(state, update)) return;
+						const candidates = state.habitCandidatesByFingerprint.get(update.eventFingerprint);
+						if (!candidates) return;
+						const candidate = revalidateAdvisorHabitFinding(storageDb, {
+							userId: state.scope.userId,
+							alias: finding.candidate.alias,
+							candidates,
+							originalIdByAlias: new Map(candidates.map((item) => [item.alias, item.habitId])),
+							law,
+							config: loaded.config,
+							responseGeneration: update.generation,
+							cursor: update.cursor,
+							advisorEpoch: update.epoch,
+						});
+						accepted = { ...finding, candidate };
+					} catch {
+						return;
+					} finally {
+						storageDb?.close();
+					}
+				}
+				if (!advisorUpdateIsCurrent(state, update)) return;
+				let message: AdvisorCustomMessage;
+				try {
+					message = buildAdvisorCustomMessage(accepted, update);
+				} catch {
+					return;
+				}
+				const context = state.latestContext;
+				const generation = state.activeGeneration;
+				const decision = chooseAdvisorDelivery({
+					severity: accepted.severity,
+					active: !!generation && !context.isIdle(),
+					idle: context.isIdle(),
+					cancelled: !!generation?.cancelled || !!context.signal?.aborted,
+					terminal: !!generation?.terminal,
+					planMode: activePlanModeState(context),
+					canSteer: advisorMessageRendererReady && typeof pi.sendMessage === "function",
+					canAppendMessage: advisorMessageRendererReady && typeof pi.sendMessage === "function",
+					canAppendVisible: advisorVisibleRendererReady && typeof pi.appendEntry === "function",
+					immuneTurnsRemaining: state.immuneTurnsRemaining,
+					shuttingDown: state.shuttingDown,
+				});
+				if (!advisorUpdateIsCurrent(state, update)) return;
+				if (decision.mode === "steer") {
+					try {
+						pi.sendMessage(message, { triggerTurn: false, deliverAs: "steer" });
+						if (state.activeGeneration?.generation === update.generation) state.activeGeneration.causedByAdvisor = true;
+						state.immuneTurnsRemaining = state.runtimeConfig.immuneTurns + 1;
+					} catch {
+						state.pending.push({ message, scopeKey: state.scopeKey, epoch: update.epoch, generation: update.generation, cursor: update.cursor });
+					}
+					return;
+				}
+				if (decision.mode === "append_when_settled") {
+					state.pending.push({ message, scopeKey: state.scopeKey, epoch: update.epoch, generation: update.generation, cursor: update.cursor });
+					return;
+				}
+				if (decision.mode === "append_now") {
+					try {
+						pi.sendMessage(message, { triggerTurn: false });
+					} catch {
+						appendAdvisorVisibleFallback(message.details);
+					}
+					return;
+				}
+				appendAdvisorVisibleFallback(message.details);
+			},
+			onStaticDiagnostic: (diagnostic: string): void => {
+				if (advisorDiagnosticsShown.has(diagnostic)) return;
+				advisorDiagnosticsShown.add(diagnostic);
+				notify(state.latestContext, "Advisor review was skipped for this update because its private reviewer was unavailable.", "warn");
+			},
+		};
+		state.host = host;
+		state.runtime = new AdvisorRuntime(host, adapter);
+		advisorStates.set(key, state);
+		return state;
+	};
 	let scheduledReceiptRendererReady = false;
 	try {
 		if (typeof pi.registerEntryRenderer === "function" && typeof pi.appendEntry === "function") {
@@ -2996,6 +3499,7 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 	};
 
 	pi.on("session_start", async (_event, ctx) => {
+		await rebuildAdvisorRuntime(ctx, `session_start:${_event.reason}`);
 		const scope = breakInScopeFromContext(ctx);
 		if (scope) breakInShutdown.delete(breakInScopeKey(scope));
 		if (ctx.mode !== "tui" || ctx.hasUI === false) return;
@@ -3009,6 +3513,7 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 		markerCommitted: boolean;
 		userMessageCount?: number;
 		contextTurns?: SteeringContextTurn[];
+		activeHabitIds?: string[];
 	};
 	const pendingSteeringRuns = new Map<string, PendingSteeringRun>();
 	const steeringScopeFromContext = (ctx: Pick<ExtensionContext, "sessionManager"> | { sessionManager?: ExtensionContext["sessionManager"] }): string | undefined => {
@@ -3094,6 +3599,33 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 	pi.on("before_agent_start", (event, ctx) => {
 		const breakScope = breakInScopeFromContext(ctx);
 		if (breakScope) breakInAgentActive.add(breakInScopeKey(breakScope));
+		const prompt = event.prompt;
+		const advisorState = advisorStateForContext(ctx);
+		if (advisorState?.needsReseed) {
+			if (advisorState.runtime) {
+				advisorState.needsReseed = false;
+				advisorState.cursor = ctx.sessionManager.getBranch().length;
+				for (const pending of advisorState.fallbackPending.splice(0)) appendAdvisorVisibleFallback(pending.message.details);
+			} else {
+				void rebuildAdvisorRuntime(ctx, "cancelled_before_event");
+			}
+		}
+		if (advisorState && !advisorState.needsReseed) {
+			advisorState.generation++;
+			if (advisorState.immuneTurnsRemaining > 0) advisorState.immuneTurnsRemaining--;
+			advisorState.pending = [];
+			advisorState.activeGeneration = {
+				scopeKey: advisorState.scopeKey,
+				epoch: advisorState.epoch,
+				generation: advisorState.generation,
+				startLeafId: ctx.sessionManager.getLeafId(),
+				currentRequest: prompt,
+				causedByAdvisor: false,
+				cancelled: !!ctx.signal?.aborted,
+				activeRequestHabitIds: [],
+				terminal: false,
+			};
+		}
 		// Keep submission path synchronous and cheap so Pi can emit/persist/render
 		// the user message before local embedding and applicability assessment.
 		const steeringScope = steeringScopeFromContext(ctx);
@@ -3105,9 +3637,87 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 			});
 			return;
 		}
-		const prompt = String((event as { prompt?: unknown; text?: unknown }).prompt ?? (event as { text?: unknown }).text ?? "");
+		// The typed Pi 0.83 event exposes the exact expanded prompt.
 		if (!prompt.trim()) return;
 		pendingSteeringRuns.set(steeringScope, { prompt, phase: "armed", markerCommitted: false });
+	});
+
+	const markAdvisorCausalMessage = (message: unknown, ctx: ExtensionContext): void => {
+		if (!message || typeof message !== "object" || !("role" in message) || message.role !== "custom" || !("customType" in message) || message.customType !== ADVISOR_FINDING_MESSAGE_TYPE || !("details" in message)) return;
+		try {
+			validateAdvisorFindingDetails(message.details);
+		} catch {
+			return;
+		}
+		const state = advisorStateForContext(ctx);
+		if (state?.activeGeneration) state.activeGeneration.causedByAdvisor = true;
+	};
+
+	pi.on("message_start", (event, ctx) => {
+		markAdvisorCausalMessage(event.message, ctx);
+	});
+
+	pi.on("message_end", (event, ctx) => {
+		markAdvisorCausalMessage(event.message, ctx);
+	});
+
+	pi.on("turn_end", async (event, ctx) => {
+		const state = advisorStateForContext(ctx);
+		const generation = state?.activeGeneration;
+		if (!state || !state.runtime || !generation || generation.scopeKey !== state.scopeKey || generation.epoch !== state.epoch || generation.generation !== state.generation) return;
+		generation.cancelled ||= !!ctx.signal?.aborted;
+		generation.terminal = assistantTurnIsTerminal(event.message);
+		const steeringState = pendingSteeringRuns.get(state.scopeKey);
+		generation.activeRequestHabitIds = steeringState?.activeHabitIds ? [...steeringState.activeHabitIds] : [];
+		const identity = resolveAdvisorTurnIdentity(ctx, event.message, event.toolResults, generation);
+		if (!identity) return;
+		state.cursor = identity.cursor;
+		if (event.message.role !== "assistant") return;
+		const delta = extractAdvisorTurnDelta({
+			scope: state.scope,
+			epoch: state.epoch,
+			generation: state.generation,
+			cursor: state.cursor,
+			currentUserEntryId: identity.currentUserEntryId,
+			primaryEntryIds: identity.primaryEntryIds,
+			causalEpisodeId: identity.causalEpisodeId,
+			causedByAdvisor: generation.causedByAdvisor,
+			currentRequest: identity.currentRequest,
+			assistantMessage: event.message,
+			toolResults: event.toolResults,
+		});
+		if (!delta) return;
+		state.backlog++;
+		state.runtime.enqueue(delta);
+		if (!__advisorCatchupRequiredForTest(state.runtimeConfig.syncBacklog, state.backlog)) return;
+		const epoch = state.epoch;
+		const runtime = state.runtime;
+		try {
+			await runtime.waitForCatchup();
+		} finally {
+			if (state.epoch === epoch && state.runtime === runtime) state.backlog = 0;
+		}
+	});
+
+	pi.on("session_before_switch", (_event, ctx) => {
+		abortAdvisorState(ctx, "session_before_switch");
+	});
+
+	pi.on("session_before_fork", (_event, ctx) => {
+		abortAdvisorState(ctx, "session_before_fork");
+	});
+
+	pi.on("session_before_tree", (_event, ctx) => {
+		abortAdvisorState(ctx, "session_before_tree");
+	});
+
+	pi.on("session_tree", async (_event, ctx) => {
+		await rebuildAdvisorRuntime(ctx, "session_tree");
+	});
+
+	pi.on("model_select", async (_event, ctx) => {
+		abortAdvisorState(ctx, "model_select");
+		await rebuildAdvisorRuntime(ctx, "model_select");
 	});
 
 	pi.on("context", async (event, ctx) => {
@@ -3163,9 +3773,11 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 				try {
 					state.entry = buildHabitSteeringEntry({ candidates: result.candidates, selected: result.selected, createdAt: now });
 					state.guidance = result.message;
+					state.activeHabitIds = result.selected.map((item) => item.id);
 				} catch {
 					state.entry = undefined;
 					state.guidance = undefined;
+					state.activeHabitIds = undefined;
 					notifyDedupedDiagnostic(ctx, selectorDiagnosticsShown, {
 						key: "selector-runtime:steering-provenance-build-failed",
 						message: "Agent Experience habit steering was suppressed because response-specific provenance could not be prepared. No habit guidance was injected.",
@@ -3328,6 +3940,7 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 	});
 
 	pi.on("session_before_compact", async (_event, ctx) => {
+		abortAdvisorState(ctx, "session_before_compact");
 		const scope = breakInScopeFromContext(ctx);
 		if (scope) breakInCompacting.add(breakInScopeKey(scope));
 	});
@@ -3335,9 +3948,15 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 	pi.on("session_compact", async (_event, ctx) => {
 		const scope = breakInScopeFromContext(ctx);
 		if (scope) breakInCompacting.delete(breakInScopeKey(scope));
+		await rebuildAdvisorRuntime(ctx, "session_compact");
 	});
 
 	pi.on("agent_settled", async (_event, ctx) => {
+		const advisorState = advisorStateForContext(ctx);
+		if (advisorState) {
+			if (advisorState.activeGeneration) advisorState.activeGeneration.terminal = true;
+			flushPendingAdvisorMessages(advisorState, false);
+		}
 		const steeringScope = steeringScopeFromContext(ctx);
 		if (steeringScope) pendingSteeringRuns.delete(steeringScope);
 		const breakScope = breakInScopeFromContext(ctx);
@@ -3358,6 +3977,14 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {
+		const advisorState = advisorStateForContext(ctx);
+		const advisorPending = abortAdvisorState(ctx, "session_shutdown");
+		if (advisorState) {
+			advisorState.shuttingDown = true;
+			for (const pending of advisorPending) appendAdvisorVisibleFallback(pending.message.details);
+			advisorStates.delete(advisorState.scopeKey);
+			await disposeAdvisorState(advisorState);
+		}
 		stopScheduledReceiptPolling();
 		const steeringScope = steeringScopeFromContext(ctx);
 		if (steeringScope) pendingSteeringRuns.delete(steeringScope);
