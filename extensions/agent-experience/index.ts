@@ -3071,6 +3071,13 @@ type AdvisorBeforeTransition = {
 	leafId: string | null;
 };
 
+type AdvisorCanceledTransitionDelivery = {
+	scopeKey: string;
+	epoch: number;
+	generation: number;
+	needsReseed: boolean;
+};
+
 type AdvisorLifecycleState = {
 	scope: AdvisorScope;
 	scopeKey: string;
@@ -3088,6 +3095,7 @@ type AdvisorLifecycleState = {
 	beforeTransition?: AdvisorBeforeTransition;
 	habitCandidatesByFingerprint: Map<string, AdvisorHabitRetrievalCandidate[]>;
 	backlog: number;
+	canceledTransitionDelivery?: AdvisorCanceledTransitionDelivery;
 	immuneTurnsRemaining: number;
 	needsReseed: boolean;
 	shuttingDown: boolean;
@@ -3236,6 +3244,17 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 			&& state.latestContext.sessionManager.getLeafId() === transition.leafId;
 	};
 
+	const canceledTransitionDeliveryIsCurrent = (
+		state: AdvisorLifecycleState,
+		token: AdvisorCanceledTransitionDelivery,
+	): boolean => advisorStates.get(token.scopeKey) === state
+		&& state.canceledTransitionDelivery === token
+		&& state.scopeKey === token.scopeKey
+		&& state.epoch === token.epoch
+		&& state.generation === token.generation
+		&& state.needsReseed === token.needsReseed
+		&& !state.shuttingDown;
+
 	const appendDeliveredAdvisorObservation = async (
 		finding: AcceptedAdvisorFinding,
 		update: AdvisorUpdate,
@@ -3265,6 +3284,7 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 	const abortAdvisorState = (ctx: ExtensionContext, reason: string): PendingAdvisorDelivery[] => {
 		const state = advisorStateForContext(ctx);
 		if (!state) return [];
+		state.canceledTransitionDelivery = undefined;
 		const pending = state.pending.splice(0);
 		const beforeTransition = reason.startsWith("session_before_");
 		if (beforeTransition) {
@@ -3401,11 +3421,50 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 		return true;
 	};
 
+	const scheduleCanceledTransitionDelivery = (
+		state: AdvisorLifecycleState,
+		retained: PendingAdvisorDelivery[],
+		visibleOnly: boolean,
+		rebuildAfter: boolean,
+	): void => {
+		if (retained.length === 0) {
+			if (rebuildAfter) void rebuildAdvisorRuntime(state.latestContext, "cancelled_before_event");
+			return;
+		}
+		const token: AdvisorCanceledTransitionDelivery = {
+			scopeKey: state.scopeKey,
+			epoch: state.epoch,
+			generation: state.generation,
+			needsReseed: state.needsReseed,
+		};
+		state.canceledTransitionDelivery = token;
+		void (async () => {
+			try {
+				for (const pending of retained) {
+					const delivered = await deliverPendingAdvisorItem(state, pending, {
+						visibleOnly,
+						isCurrent: () => canceledTransitionDeliveryIsCurrent(state, token),
+					});
+					if (delivered) break;
+				}
+			} finally {
+				if (state.canceledTransitionDelivery === token) state.canceledTransitionDelivery = undefined;
+				if (
+					rebuildAfter
+					&& advisorStates.get(state.scopeKey) === state
+					&& state.needsReseed
+					&& !state.shuttingDown
+				) void rebuildAdvisorRuntime(state.latestContext, "cancelled_before_event");
+			}
+		})();
+	};
+
 	const disposeAdvisorState = async (state: AdvisorLifecycleState): Promise<void> => {
 		state.shuttingDown = true;
 		state.pending = [];
 		state.fallbackPending = [];
 		state.beforeTransition = undefined;
+		state.canceledTransitionDelivery = undefined;
 		state.habitCandidatesByFingerprint.clear();
 		const runtime = state.runtime;
 		const adapter = state.adapter;
@@ -3897,22 +3956,19 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 		},
 	});
 
-	pi.on("before_agent_start", async (event, ctx) => {
+	pi.on("before_agent_start", (event, ctx) => {
 		const breakScope = breakInScopeFromContext(ctx);
 		if (breakScope) breakInAgentActive.add(breakInScopeKey(breakScope));
 		const prompt = event.prompt;
-		let advisorState = advisorStateForContext(ctx);
+		const advisorState = advisorStateForContext(ctx);
+		let retained: PendingAdvisorDelivery[] = [];
+		let rebuildAfterDelivery = false;
+		if (advisorState?.canceledTransitionDelivery) advisorState.canceledTransitionDelivery = undefined;
 		if (advisorState?.needsReseed) {
 			const transition = advisorState.beforeTransition;
-			const retained = advisorState.fallbackPending.splice(0);
+			const candidates = advisorState.fallbackPending.splice(0);
 			if (transition) {
-				for (const pending of retained) {
-					const isCurrent = () => advisorBeforeTransitionIsUnchanged(advisorState!, transition, pending);
-					await deliverPendingAdvisorItem(advisorState, pending, {
-						visibleOnly: !advisorState.runtime,
-						isCurrent,
-					});
-				}
+				retained = candidates.filter((pending) => advisorBeforeTransitionIsUnchanged(advisorState, transition, pending));
 			}
 			advisorState.beforeTransition = undefined;
 			advisorState.pending = [];
@@ -3920,7 +3976,7 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 				advisorState.needsReseed = false;
 				advisorState.cursor = ctx.sessionManager.getBranch().length;
 			} else {
-				advisorState = await rebuildAdvisorRuntime(ctx, "cancelled_before_event");
+				rebuildAfterDelivery = true;
 			}
 		}
 		if (advisorState && !advisorState.needsReseed) {
@@ -3939,6 +3995,9 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 				activeRequestHabitIds: [],
 				terminal: false,
 			};
+		}
+		if (advisorState && (retained.length > 0 || rebuildAfterDelivery)) {
+			scheduleCanceledTransitionDelivery(advisorState, retained, rebuildAfterDelivery, rebuildAfterDelivery);
 		}
 		// Keep submission path synchronous and cheap so Pi can emit/persist/render
 		// the user message before local embedding and applicability assessment.
