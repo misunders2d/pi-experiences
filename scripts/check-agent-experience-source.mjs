@@ -166,6 +166,34 @@ assert.match(technicalReadme,/non-TUI modes[^.]*suppress/is,'README technical co
 for(const phrase of ['lower of separate condition and behavior cosine scores','Review threshold: 5,500 basis points','candidate-to-candidate semantic routing is excluded','obsolete pending scoring-method relations','every pending relation involving it','keep-separate decisions survive scoring/cache method upgrades'])assert.match(technicalReadme,new RegExp(phrase,'i'),`README dedupe correction contract missing: ${phrase}`);
 const extensionReadme=await readFile(join(root,'extensions/agent-experience/README.md'),'utf8');
 const experienceSkill=await readFile(join(root,'skills/agent-experience/SKILL.md'),'utf8');
+const experienceEvals=JSON.parse(await readFile(join(root,'skills/agent-experience/evals/evals.json'),'utf8'));
+assert.deepEqual(Object.keys(experienceEvals).sort(),['evals','skill_name'],'skill eval corpus must use the repository skill-creator schema');
+assert.equal(experienceEvals.skill_name,'agent-experience','skill eval corpus must target agent-experience');
+assert.ok(Array.isArray(experienceEvals.evals)&&experienceEvals.evals.length>=9,'skill eval corpus must contain at least nine cases');
+const evalIds=new Set();
+for(const skillEval of experienceEvals.evals){
+  assert.deepEqual(Object.keys(skillEval).sort(),['expectations','expected_output','files','id','prompt'],`skill eval ${skillEval?.id??'<missing>'} has an unsupported or missing field`);
+  assert.ok(Number.isInteger(skillEval.id)&&skillEval.id>0,`skill eval id must be a positive integer: ${skillEval.id}`);
+  assert.ok(!evalIds.has(skillEval.id),`skill eval id must be unique: ${skillEval.id}`);
+  evalIds.add(skillEval.id);
+  for(const field of ['prompt','expected_output'])assert.ok(typeof skillEval[field]==='string'&&skillEval[field].trim(),`skill eval ${skillEval.id} must define non-empty ${field}`);
+  assert.ok(Array.isArray(skillEval.files)&&skillEval.files.every((file)=>typeof file==='string'),`skill eval ${skillEval.id} files must be strings`);
+  assert.ok(Array.isArray(skillEval.expectations)&&skillEval.expectations.length>=2&&skillEval.expectations.every((expectation)=>typeof expectation==='string'&&expectation.trim()),`skill eval ${skillEval.id} must define at least two non-empty expectations`);
+}
+const evalIntents=experienceEvals.evals.map((skillEval)=>skillEval.expected_output);
+for(const [intent,minimum] of [['Should trigger',2],['Should not trigger',2],['Boundary',1],['Contradiction',1],['Adversarial',3]]){
+  assert.ok(evalIntents.filter((expected)=>expected.startsWith(`${intent}:`)).length>=minimum,`skill eval corpus must include ${minimum} ${intent.toLowerCase()} case(s)`);
+}
+const evalCorpus=experienceEvals.evals.map((skillEval)=>[skillEval.prompt,skillEval.expected_output,...skillEval.expectations].join('\n')).join('\n\n');
+for(const [pattern,message] of [
+  [/Runtime Advisor/i,'Runtime Advisor trigger'],
+  [/\/experience setup/i,'grouped setup trigger'],
+  [/unrelated Pi extension/i,'unrelated Pi negative boundary'],
+  [/generic (?:career |business )?advisor/i,'generic advisor negative boundary'],
+  [/generic advice[\s\S]*non-authoritative/i,'generic-advice authority defense'],
+  [/later user (?:message|turn)|later, explicit/i,'two-turn habit approval defense'],
+  [/private Advisor transcript|raw model output/i,'Advisor privacy defense'],
+])assert.match(evalCorpus,pattern,`skill eval corpus must cover ${message}`);
 for(const [name,text] of [['extension README',extensionReadme],['public skill',experienceSkill]]){
   assert.match(text,/condition and behavior.*two independent inputs/is,`${name} must preserve separate-field privacy contract`);
   assert.match(text,/candidate-to-candidate/is,`${name} must preserve candidate-pair exclusion`);
@@ -191,7 +219,8 @@ for(const [name,text] of [['README',readme],['extension README',extensionReadme]
   assert.match(text,/plan mode[\s\S]*visible/i,`${name} must document visible-only Advisor states`);
   assert.match(text,/Learning[\s\S]*(?:off|disabled)[\s\S]*no Advisor observation/i,`${name} must preserve the Advisor learning evidence gate`);
   assert.match(text,/never persist[\s\S]*Advisor transcript[\s\S]*raw model output[\s\S]*aliases[\s\S]*scores/i,`${name} must document Advisor private-state non-persistence`);
-  assert.match(text,/no pre-execution tool blocking/i,`${name} must state stock Pi's non-blocking delivery limit`);
+  assert.match(text,/Pi 0\.83[\s\S]*blockable pre-execution `tool_call`/i,`${name} must state stock Pi's blockable pre-execution hook accurately`);
+  assert.match(text,/Advisor[\s\S]*intentionally never registers or uses (?:that|Pi's)[\s\S]*never (?:pre-blocks|vetoes)/i,`${name} must state deliberate Advisor non-use and the non-blocking product rule`);
   assert.match(text,/followUp[\s\S]*nextTurn/i,`${name} must state the unsupported forced-continuation paths`);
 }
 const validationGuide=await readFile(join(root,'extensions/agent-experience/VALIDATION.md'),'utf8');
@@ -207,6 +236,7 @@ const steeringSource=await readFile(join(root,'extensions/agent-experience/src/s
 assert.match(steeringSource,/agent_experience\.habit_steering/,'steering custom-entry type must remain stable');
 assert.doesNotMatch(steeringSource,/sendMessage|prompt_hash|confidence_bp|checksum|source_refs?|provider|model/,'steering entry module must not persist context-bearing or internal fields');
 const extensionSource=await readFile(join(root,'extensions/agent-experience/index.ts'),'utf8');
+assert.doesNotMatch(extensionSource,/pi\.on\(["']tool_call["']/,`Runtime Advisor must never register Pi's pre-execution blocking hook`);
 const providerGuidanceSource=await readFile(join(root,'extensions/agent-experience/src/provider-guidance.ts'),'utf8');
 assert.doesNotMatch(extensionSource,/agent_experience\.habit_guidance/,'habit guidance must never be emitted as a custom/user conversation message');
 assert.match(extensionSource,/pi\.on\("before_provider_request"/,'habit guidance must use the pre-provider payload boundary');
@@ -244,4 +274,4 @@ for(const [name,expected] of Object.entries(expectedGlue)){
 }
 await esbuild.build({entryPoints:[join(root,'extensions/agent-experience/index.ts')],bundle:true,platform:'node',format:'esm',target:['node22'],write:false,logLevel:'silent',external:['@earendil-works/pi-ai/*','@earendil-works/pi-agent-core','@earendil-works/pi-coding-agent','@earendil-works/pi-tui']});
 await esbuild.build({entryPoints:[join(root,'runtime/agent-experience/local-embedding-worker.mjs')],bundle:false,platform:'node',format:'esm',target:['node22'],write:false,logLevel:'silent'});
-console.log('agent-experience source/import/package checks passed');
+console.log('agent-experience source/import/package/eval-schema checks passed');

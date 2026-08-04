@@ -24,7 +24,7 @@ Generic advice is non-authoritative and tells Pi to weigh it. An approved Experi
 
 Learning is independently gated. With **Learning from conversations** off, there is no Advisor observation. With Learning on, one accepted event may append at most one bounded observation, but it cannot create a habit; repeated evidence, Analyze, explicit review, and approval remain mandatory. The extension must never persist the private Advisor transcript, raw model output, candidate aliases, retrieval scores, tool investigations, queue state, or suppressed findings.
 
-Stock Pi provides no pre-execution tool blocking to Advisor, so it cannot veto or pause a primary tool call before it runs. The extension never uses `followUp` or `nextTurn`, which could force an unwanted continuation. Steering may influence only a safely active continuation; otherwise a card waits for `agent_settled` with `triggerTurn:false` or uses a clearly visible-only fallback.
+Stock Pi 0.83 provides a blockable pre-execution `tool_call` hook. Runtime Advisor intentionally never registers or uses that hook and never vetoes, pauses, or pre-blocks a primary tool call. The extension never uses `followUp` or `nextTurn`, which could force an unwanted continuation. Steering may influence only a safely active continuation; otherwise a card waits for `agent_settled` with `triggerTurn:false` or uses a clearly visible-only fallback.
 
 Natural conversation remains available for direct habit declaration and numbered review:
 

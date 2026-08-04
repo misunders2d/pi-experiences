@@ -131,7 +131,7 @@ Generic advice is non-authoritative: its card asks Pi to weigh the suggestion ra
 
 Learning remains separate. With **Learning from conversations** off, an Advisor finding creates no Advisor observation. With Learning on, one accepted event may append one bounded finding, but the normal repeated-evidence, Analyze, human review, and explicit-approval gates still apply. The extension must never persist the private Advisor transcript, raw model output, candidate aliases, retrieval scores, tool investigations, queues, or suppressed findings.
 
-Stock Pi provides no pre-execution tool blocking for this feature: Advisor cannot veto or pause a primary tool call before it runs. It also does not use `followUp` or `nextTurn`, because either could force an unwanted continuation. Steering can affect only a safely active continuation; otherwise the finding appears after settlement or as a clearly visible-only fallback.
+Stock Pi 0.83 provides a blockable pre-execution `tool_call` hook. Runtime Advisor intentionally never registers or uses that hook and never vetoes, pauses, or pre-blocks a primary tool call. It also does not use `followUp` or `nextTurn`, because either could force an unwanted continuation. Steering can affect only a safely active continuation; otherwise the finding appears after settlement or as a clearly visible-only fallback.
 
 Typed `/experience ...` subcommands remain advanced backward-compatible controls for maintainers and tests. They are not required for normal setup.
 
@@ -328,7 +328,7 @@ This section is intentionally collapsed. Preserve both this technical contract a
 - A `nit` is held until the primary is settled. An eligible active-run `concern` or `blocker` may use Pi's documented `steer` channel. Canceled, terminal, plan mode, ambiguous, idle, unsupported-client, replacement, and shutdown states append visibly when safe or use a visible-only fallback.
 - With Learning disabled, there is no Advisor observation. With Learning enabled, one accepted event may create at most one bounded observation; it cannot create a habit and must still pass repeated-evidence, Analyze, review, and explicit approval.
 - The extension must never persist the private Advisor transcript, raw model output, candidate aliases, retrieval scores, tool investigations/results, queue state, or suppressed findings.
-- Stock Pi exposes no pre-execution tool blocking here, so Advisor cannot stop an already selected tool before execution. It never uses `followUp`, `nextTurn`, fake user content, or hidden continuation queues. Steering affects only a safely active continuation; otherwise delivery waits for `agent_settled` with `triggerTurn:false`, or degrades to visible-only.
+- Stock Pi 0.83 provides a blockable pre-execution `tool_call` hook. Runtime Advisor intentionally never registers or uses that hook and never vetoes, pauses, or pre-blocks a primary tool call. It never uses `followUp`, `nextTurn`, fake user content, or hidden continuation queues. Steering affects only a safely active continuation; otherwise delivery waits for `agent_settled` with `triggerTurn:false`, or degrades to visible-only.
 
 
 ### Why `profile.md` is not the habit store

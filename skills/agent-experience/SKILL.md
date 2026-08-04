@@ -44,7 +44,7 @@ Generic advice is non-authoritative and asks the primary to weigh the suggestion
 
 Learning stays independently gated. With **Learning from conversations** off, there is no Advisor observation. With Learning on, one accepted event may append at most one bounded observation; it cannot directly create or change a habit, and repeated evidence, Analyze, review, and explicit approval remain mandatory. The extension must never persist the private Advisor transcript, raw model output, candidate aliases, retrieval scores, tool investigations/results, queue state, or suppressed findings.
 
-Stock Pi exposes no pre-execution tool blocking for Advisor, so it cannot stop or pause a primary tool call before it runs. Never use `followUp` or `nextTurn`, because either can force an unwanted continuation. Steering affects only a safely active continuation; otherwise wait for `agent_settled` and append with `triggerTurn:false`, or degrade to visible-only. Never represent visible-only fallback as model guidance.
+Stock Pi 0.83 provides a blockable pre-execution `tool_call` hook. Runtime Advisor intentionally never registers or uses that hook and never vetoes, pauses, or pre-blocks a primary tool call. Never use `followUp` or `nextTurn`, because either can force an unwanted continuation. Steering affects only a safely active continuation; otherwise wait for `agent_settled` and append with `triggerTurn:false`, or degrade to visible-only. Never represent visible-only fallback as model guidance.
 
 Use natural conversation when the user directly discusses or declares a habit:
 
