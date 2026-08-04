@@ -22,7 +22,7 @@ import {
   createAdvisorWorkspaceTools,
 } from '../extensions/agent-experience/src/advisor/workspace-tools.ts';
 import { createPiAdvisorAgentAdapter } from '../extensions/agent-experience/src/advisor/model.ts';
-import { extractAdvisorTurnDelta } from '../extensions/agent-experience/src/advisor/transcript.ts';
+import { computeEventFingerprint, extractAdvisorTurnDelta } from '../extensions/agent-experience/src/advisor/transcript.ts';
 import { AdvisorEmissionGuard } from '../extensions/agent-experience/src/advisor/emission-guard.ts';
 import { AdvisorRuntime } from '../extensions/agent-experience/src/advisor/runtime.ts';
 import { createHash } from 'node:crypto';
@@ -654,17 +654,20 @@ assert.deepEqual(accepted, { kind: 'generic_advice', note: 'Check the build.', s
 const secondAttempt = guard.accept([{ kind: 'generic_advice', note: 'Second check.', severity: 'nit' }], guardUpdate);
 assert.equal(secondAttempt, undefined);
 
-// Reset for next update
+// Exact replay with the same stable event fingerprint is suppressed
 guard.resetForUpdate();
-const guardUpdate2 = { ...guardUpdate, eventFingerprint: 'fp2' };
-
-// Exact duplicate suppressed
+const guardUpdate2 = { ...guardUpdate, eventFingerprint: 'fp1' };
 const duplicate = guard.accept([{ kind: 'generic_advice', note: 'Check the build.', severity: 'concern' }], guardUpdate2);
 assert.equal(duplicate, undefined);
 
-// Normalized duplicate: different casing
+// Genuinely later identical content with new stable entry identity remains eligible
 guard.resetForUpdate();
-const guardUpdate3 = { ...guardUpdate, eventFingerprint: 'fp3' };
+const guardUpdate3 = { ...guardUpdate, eventFingerprint: 'fp2' };
+const laterIdentical = guard.accept([{ kind: 'generic_advice', note: 'Check the build.', severity: 'concern' }], guardUpdate3);
+assert.deepEqual(laterIdentical, { kind: 'generic_advice', note: 'Check the build.', severity: 'concern' });
+
+// Normalized replay of that same event is suppressed
+guard.resetForUpdate();
 const normalizedDup = guard.accept([{ kind: 'generic_advice', note: '  Check   THE build!!  ', severity: 'concern' }], guardUpdate3);
 assert.equal(normalizedDup, undefined);
 
@@ -927,6 +930,166 @@ failureRuntime.enqueue({
 await failureRuntime.waitForCatchup();
 assert.ok(failureCalls.includes('advisor_unavailable'));
 await failureRuntime.dispose();
+
+// Coalescing recomputes the canonical fingerprint from merged text and ordered entry IDs
+const coalesceScope = { userId: 'owner', sessionId: 'coalesce-session', sessionFile: 'coalesce-file' };
+const coalescedDeltas = [];
+let releaseFirstBuild;
+let blockFirstBuild = true;
+const coalescingHost = {
+  async buildUpdate(delta) {
+    coalescedDeltas.push(delta);
+    if (blockFirstBuild) {
+      blockFirstBuild = false;
+      await new Promise((resolve) => { releaseFirstBuild = resolve; });
+    }
+    return {
+      schemaVersion: 1,
+      scope: delta.scope,
+      generation: delta.generation,
+      epoch: delta.epoch,
+      cursor: delta.cursor,
+      inProgress: false,
+      primaryDelta: delta.text,
+      currentRequest: delta.currentRequest,
+      habits: [],
+      eventFingerprint: delta.eventFingerprint,
+      causalEpisodeId: delta.causalEpisodeId,
+      causedByAdvisor: false,
+    };
+  },
+  async acceptFinding() {},
+  onStaticDiagnostic() {},
+};
+const coalescingRuntime = new AdvisorRuntime(coalescingHost, stubAdapter);
+coalescingRuntime.enqueue({
+  scope: coalesceScope,
+  epoch: 3,
+  generation: 20,
+  cursor: 30,
+  currentUserEntryId: 'block-user',
+  primaryEntryIds: ['block-entry'],
+  causalEpisodeId: 'block-episode',
+  causedByAdvisor: false,
+  text: 'Block drain while coalescing.',
+  currentRequest: 'Block.',
+  inProgress: false,
+  toolEventCount: 0,
+  eventFingerprint: createHash('sha256').update('block').digest('hex'),
+});
+const firstCoalescedFingerprint = createHash('sha256').update('coalesce-first').digest('hex');
+coalescingRuntime.enqueue({
+  scope: coalesceScope,
+  epoch: 3,
+  generation: 21,
+  cursor: 31,
+  currentUserEntryId: 'coalesce-user',
+  primaryEntryIds: ['coalesce-a'],
+  causalEpisodeId: 'merge-episode',
+  causedByAdvisor: false,
+  text: 'First merged item.',
+  currentRequest: 'Merge.',
+  inProgress: false,
+  toolEventCount: 1,
+  eventFingerprint: firstCoalescedFingerprint,
+});
+coalescingRuntime.enqueue({
+  scope: coalesceScope,
+  epoch: 3,
+  generation: 21,
+  cursor: 32,
+  currentUserEntryId: 'coalesce-user',
+  primaryEntryIds: ['coalesce-b'],
+  causalEpisodeId: 'merge-episode',
+  causedByAdvisor: false,
+  text: 'Second merged item.',
+  currentRequest: 'Merge.',
+  inProgress: false,
+  toolEventCount: 1,
+  eventFingerprint: createHash('sha256').update('coalesce-second').digest('hex'),
+});
+assert.equal(typeof releaseFirstBuild, 'function');
+releaseFirstBuild();
+await coalescingRuntime.waitForCatchup();
+const mergedDelta = coalescedDeltas.find((candidate) => candidate.causalEpisodeId === 'merge-episode');
+assert.ok(mergedDelta);
+assert.equal(mergedDelta.text, 'First merged item.\nSecond merged item.');
+assert.deepEqual(mergedDelta.primaryEntryIds, ['coalesce-a', 'coalesce-b']);
+assert.notEqual(mergedDelta.eventFingerprint, firstCoalescedFingerprint);
+assert.equal(
+  mergedDelta.eventFingerprint,
+  computeEventFingerprint(
+    coalesceScope,
+    ['coalesce-a', 'coalesce-b'],
+    'merge-episode',
+    'First merged item.\nSecond merged item.',
+  ),
+);
+await coalescingRuntime.dispose();
+
+// Failed host acceptance does not consume the finding; the same event remains retryable
+let retryAcceptCalls = 0;
+const retryDiagnostics = [];
+const retryHost = {
+  async buildUpdate(delta) {
+    return {
+      schemaVersion: 1,
+      scope: delta.scope,
+      generation: delta.generation,
+      epoch: delta.epoch,
+      cursor: delta.cursor,
+      inProgress: false,
+      primaryDelta: delta.text,
+      currentRequest: delta.currentRequest,
+      habits: [],
+      eventFingerprint: delta.eventFingerprint,
+      causalEpisodeId: delta.causalEpisodeId,
+      causedByAdvisor: false,
+    };
+  },
+  async acceptFinding() {
+    retryAcceptCalls++;
+    if (retryAcceptCalls === 1) throw new Error('transient acceptance failure');
+  },
+  onStaticDiagnostic(reason) {
+    retryDiagnostics.push(reason);
+  },
+};
+const retryAdapter = {
+  get contextTokenEstimate() { return 0; },
+  async review() {
+    return [{ kind: 'generic_advice', note: 'Retry this finding.', severity: 'concern' }];
+  },
+  reset() {},
+  async dispose() {},
+};
+const retryRuntime = new AdvisorRuntime(retryHost, retryAdapter);
+const retryDelta = {
+  scope: { userId: 'owner', sessionId: 'retry-session', sessionFile: 'retry-file' },
+  epoch: 4,
+  generation: 40,
+  cursor: 50,
+  currentUserEntryId: 'retry-user',
+  primaryEntryIds: ['retry-entry'],
+  causalEpisodeId: 'retry-episode',
+  causedByAdvisor: false,
+  text: 'Retry delta.',
+  currentRequest: 'Retry.',
+  inProgress: false,
+  toolEventCount: 0,
+  eventFingerprint: createHash('sha256').update('retry-event').digest('hex'),
+};
+retryRuntime.enqueue(retryDelta);
+await retryRuntime.waitForCatchup();
+assert.equal(retryAcceptCalls, 1);
+assert.ok(retryDiagnostics.includes('advisor_unavailable'));
+retryRuntime.enqueue({ ...retryDelta });
+await retryRuntime.waitForCatchup();
+assert.equal(retryAcceptCalls, 2);
+retryRuntime.enqueue({ ...retryDelta });
+await retryRuntime.waitForCatchup();
+assert.equal(retryAcceptCalls, 2);
+await retryRuntime.dispose();
 
 
 console.log('phase23 advisor core tests passed');

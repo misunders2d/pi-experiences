@@ -2,11 +2,11 @@ import type { AdvisorAgentAdapter } from "./model.ts";
 import type {
 	AcceptedAdvisorFinding,
 	AdvisorDiagnosticReason,
-	AdvisorHabitCandidate,
 	AdvisorPrimaryDelta,
 	AdvisorUpdate,
 } from "./types.ts";
 import { AdvisorEmissionGuard } from "./emission-guard.ts";
+import { computeEventFingerprint } from "./transcript.ts";
 
 export interface AdvisorRuntimeHost {
 	buildUpdate(delta: AdvisorPrimaryDelta): Promise<AdvisorUpdate | undefined>;
@@ -46,10 +46,12 @@ export class AdvisorRuntime {
 		// Coalesce: find existing envelope with same generation and causal episode
 		const existingIndex = this.queue.findIndex(
 			(e) =>
+				e.delta.epoch === delta.epoch &&
 				e.delta.generation === delta.generation &&
 				e.delta.causalEpisodeId === delta.causalEpisodeId &&
 				e.delta.scope.userId === delta.scope.userId &&
-				e.delta.scope.sessionId === delta.scope.sessionId,
+				e.delta.scope.sessionId === delta.scope.sessionId &&
+				e.delta.scope.sessionFile === delta.scope.sessionFile,
 		);
 
 		if (existingIndex >= 0) {
@@ -68,6 +70,12 @@ export class AdvisorRuntime {
 				text: mergedText,
 				primaryEntryIds: mergedEntryIds,
 				toolEventCount: existing.delta.toolEventCount + delta.toolEventCount,
+				eventFingerprint: computeEventFingerprint(
+					existing.delta.scope,
+					mergedEntryIds,
+					existing.delta.causalEpisodeId,
+					mergedText,
+				),
 			};
 
 			this.queue[existingIndex] = {
@@ -91,7 +99,7 @@ export class AdvisorRuntime {
 			});
 		}
 
-		this.drainPromise = this.drain();
+		if (!this.draining) this.drainPromise = this.drain();
 	}
 
 	reset(reason: string): void {
@@ -171,19 +179,16 @@ export class AdvisorRuntime {
 						currentGeneration,
 					);
 
-					// If no attempts or disposed/reset during review, skip
 					if (!attempts || attempts.length === 0) continue;
 
-					// Guard: accept one finding
-					const finding = this.guard.accept(attempts, update);
+					const finding = this.guard.select(attempts, update);
 					if (!finding) continue;
-
-					// Build accepted finding with fingerprint
 					const accepted: AcceptedAdvisorFinding = buildAcceptedFinding(finding, update.eventFingerprint);
 
-					// Accept via host — check for abortion after await
 					if (this.generation !== currentGeneration || this.disposed || signal.aborted) break;
 					await this.host.acceptFinding(accepted, update);
+					if (this.generation !== currentGeneration || this.disposed || signal.aborted) break;
+					this.guard.commit(finding, update);
 				} catch (err) {
 					// Convert failure to diagnostic; don't throw into primary loop
 					if (signal.aborted || this.disposed) {

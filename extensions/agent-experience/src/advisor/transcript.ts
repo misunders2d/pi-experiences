@@ -152,7 +152,7 @@ export function extractAdvisorTurnDelta(input: AdvisorTurnContext): AdvisorPrima
 	};
 }
 
-function computeEventFingerprint(
+export function computeEventFingerprint(
 	scope: AdvisorScope,
 	entryIds: string[],
 	causalEpisodeId: string,

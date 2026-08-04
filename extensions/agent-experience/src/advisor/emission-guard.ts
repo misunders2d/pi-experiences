@@ -1,9 +1,11 @@
-import type { AdvisorAttempt, AdvisorHabitCandidate, AdvisorUpdate } from "./types.ts";
+import type { AdvisorAttempt, AdvisorUpdate } from "./types.ts";
 
 const RING_CAPACITY = 4_096;
-const STOP_WORDS = new Set(["stop.", "done.", "no issue; continue."].map((w) =>
-	w.normalize("NFKC").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim(),
-));
+const STOP_WORDS: Record<string, true> = {
+	stop: true,
+	done: true,
+	"no issue continue": true,
+};
 
 function normalize(value: string): string {
 	return value
@@ -13,11 +15,11 @@ function normalize(value: string): string {
 		.trim();
 }
 
-function attemptKey(attempt: AdvisorAttempt): string {
+function attemptKey(attempt: AdvisorAttempt, eventFingerprint: string): string {
 	if (attempt.kind === "generic_advice") {
-		return normalize(`advice:${attempt.severity}:${attempt.note}`);
+		return `${eventFingerprint}:${normalize(`advice:${attempt.severity}:${attempt.note}`)}`;
 	}
-	return normalize(`habit:${attempt.severity}:${attempt.habitAlias}`);
+	return `${eventFingerprint}:${normalize(`habit:${attempt.severity}:${attempt.habitAlias}`)}`;
 }
 
 function severityRank(severity: string): number {
@@ -27,76 +29,66 @@ function severityRank(severity: string): number {
 }
 
 function isStopWord(note: string): boolean {
-	return STOP_WORDS.has(normalize(note));
+	return STOP_WORDS[normalize(note)] === true;
 }
 
 export class AdvisorEmissionGuard {
 	private readonly ring: string[] = [];
 	private ringCursor = 0;
-	private updateConsumed = false;
-	private lastEventFingerprint: string | undefined;
+	private consumedEventFingerprint: string | undefined;
+	private lastCommittedEventFingerprint: string | undefined;
 
-	accept(attempts: AdvisorAttempt[], update: AdvisorUpdate): AdvisorAttempt | undefined {
-		if (this.updateConsumed) return undefined;
+	select(attempts: AdvisorAttempt[], update: AdvisorUpdate): AdvisorAttempt | undefined {
+		if (
+			this.consumedEventFingerprint === update.eventFingerprint ||
+			this.lastCommittedEventFingerprint === update.eventFingerprint
+		) return undefined;
 		if (!Array.isArray(attempts) || attempts.length === 0) return undefined;
 
-		const habits = Array.isArray(update?.habits) ? update.habits : [];
-		const habitAliases = new Set(habits.map((h: AdvisorHabitCandidate) => h.alias));
-
-		// Validate attempts against the current update's habits
+		const habitAliases = new Set(update.habits.map((habit) => habit.alias));
 		const validAttempts = attempts.filter((attempt) => {
-			const key = attemptKey(attempt);
-
-			// Duplicate check against ring
+			const key = attemptKey(attempt, update.eventFingerprint);
 			if (this.ring.includes(key)) return false;
-
-			// Validate habit aliases
-			if (attempt.kind === "habit_violation") {
-				if (!habitAliases.has(attempt.habitAlias)) return false;
-			}
-
-			// Stop-word generic advice is suppressed
+			if (attempt.kind === "habit_violation" && !habitAliases.has(attempt.habitAlias)) return false;
 			if (attempt.kind === "generic_advice" && isStopWord(attempt.note)) return false;
-
 			return true;
 		});
-
 		if (validAttempts.length === 0) return undefined;
 
-		// Priority: habit violations over generic advice, then severity rank
 		validAttempts.sort((a, b) => {
 			const aHabit = a.kind === "habit_violation" ? 1 : 0;
 			const bHabit = b.kind === "habit_violation" ? 1 : 0;
 			if (aHabit !== bHabit) return bHabit - aHabit;
 			return severityRank(b.severity) - severityRank(a.severity);
 		});
+		return validAttempts[0];
+	}
 
-		const selected = validAttempts[0];
-		const selectedKey = attemptKey(selected);
-
-		// Avoid re-emitting the same fingerprint in the same update
-		if (update.eventFingerprint && this.lastEventFingerprint === update.eventFingerprint) {
-			return undefined;
+	commit(attempt: AdvisorAttempt, update: AdvisorUpdate): void {
+		const key = attemptKey(attempt, update.eventFingerprint);
+		if (!this.ring.includes(key)) {
+			this.ring[this.ringCursor] = key;
+			this.ringCursor = (this.ringCursor + 1) % RING_CAPACITY;
 		}
+		this.consumedEventFingerprint = update.eventFingerprint;
+		this.lastCommittedEventFingerprint = update.eventFingerprint;
+	}
 
-		// Add to ring
-		this.ring[this.ringCursor] = selectedKey;
-		this.ringCursor = (this.ringCursor + 1) % RING_CAPACITY;
-
-		this.updateConsumed = true;
-		this.lastEventFingerprint = update.eventFingerprint;
-
+	accept(attempts: AdvisorAttempt[], update: AdvisorUpdate): AdvisorAttempt | undefined {
+		const selected = this.select(attempts, update);
+		if (!selected) return undefined;
+		this.commit(selected, update);
 		return selected;
 	}
 
 	resetForUpdate(): void {
-		this.updateConsumed = false;
+		this.consumedEventFingerprint = undefined;
 	}
 
 	clear(): void {
 		this.ring.length = 0;
 		this.ringCursor = 0;
-		this.updateConsumed = true;
-		this.lastEventFingerprint = undefined;
+		this.consumedEventFingerprint = undefined;
+		this.lastCommittedEventFingerprint = undefined;
 	}
 }
