@@ -15,6 +15,8 @@ The hybrid has three explicitly different outputs:
 
 These outputs must remain distinct in authority, schema, rendering, persistence, and downstream behavior.
 
+This approved hybrid decision explicitly supersedes the earlier handoff's habit-only runtime scope and prohibition on generic Advisor/WATCHDOG findings. It does **not** supersede that handoff's approval, provenance, privacy, stale-state, fail-closed, or no-policy-invention constraints: generic findings remain disclosed model judgment, never approved policy.
+
 ## Product decisions
 
 The approved design decisions are:
@@ -71,7 +73,7 @@ The Advisor model and primary model may name the same underlying provider/model,
 
 ### Primary event stream
 
-At each completed primary turn, Experiences captures one immutable bounded delta containing:
+At each completed primary turn, Experiences captures one immutable bounded envelope stamped at event time with the exact session scope, Advisor epoch, response generation, current user-entry identity, ordered assistant/tool-result entry identities, cursor, and causal-episode identity. The redacted delta contains:
 
 - finalized assistant text;
 - assistant reasoning when available from the documented Pi message shape;
@@ -80,29 +82,29 @@ At each completed primary turn, Experiences captures one immutable bounded delta
 - bounded tool result status and content needed to assess the action;
 - the current user request and minimal primary constraint context required to interpret the new turn.
 
-The new turn is the causal event. Old context may resolve references but cannot independently generate a finding.
+The new causal episode is the sole trigger. Stable session-entry identities distinguish a later identical action from replay of the same event. Old context may resolve references but cannot independently generate a finding.
 
-Primary Advisor messages and Experience intervention entries are filtered from future deltas. This prevents recursive self-review and evidence manufacture.
+Advisor custom messages are tracked through `message_start`/`message_end`. Any assistant/tool turn causally triggered by Advisor steering is marked process-locally and excluded in full from subsequent review and learning; filtering only the custom block is insufficient.
 
 ### Incremental context
 
 The runtime tracks a cursor over the primary transcript and sends only new deltas after the first update. The Advisor retains its own review context across turns.
 
-Compaction, session switch/resume, branch/fork history replacement, model rebuild, feature disablement, and session shutdown reset the Advisor epoch. Any late result from a prior epoch is discarded.
+Session switch/fork, compaction, active-branch tree navigation, model rebuild, feature disablement, and session shutdown reset the Advisor epoch. Before-events abort the old runtime before replacement; successful `session_start`, `session_compact`, or `session_tree` reseeds scope, generation, and cursor. A canceled before-event reseeds the unchanged current branch rather than reviving aborted state. Any late result from a prior epoch is discarded.
 
-When enabled mid-session, the cursor seeds to the current primary transcript so old history is not replayed as a new event.
+When enabled mid-session, the cursor seeds to the current primary transcript so old history is not replayed as a new event. Queued envelopes retain the scope/generation/epoch captured when they were created; later runtime state never restamps them.
 
 ### Queue and catch-up
 
 The runtime uses:
 
 - a single-flight reviewer queue;
-- immutable queued deltas;
+- immutable generation-stamped queued envelopes;
 - bounded backlog;
-- bounded late-arrival coalescing;
+- bounded late-arrival coalescing only within one response generation/causal episode, preserving the ordered primary entry identities and recomputing the merged fingerprint;
 - monotonically increasing cursor and epoch;
 - cancellation before reset or shutdown;
-- stale-result rejection after every await;
+- scope/generation/cursor/epoch stale-result rejection after every await and immediately before delivery;
 - failure handling that never permanently stalls the primary;
 - one accepted emission per Advisor update.
 
@@ -113,24 +115,26 @@ The default favors asynchronous primary throughput. A bounded advanced config va
 The initial implementation uses these limits:
 
 - primary delta: 24,000 redacted characters;
+- behavior-retrieval query: at most the local model's exact 128-token limit, prepared with its tokenizer;
 - represented primary tool calls/results: 8 per update;
 - approved-habit candidates: 8, with active request habits first;
-- queued update batches: 5; later arrivals coalesce into the newest pending batch within the delta cap;
+- queued update batches: 5; later arrivals coalesce only within the same response generation and causal episode;
 - Advisor update timeout: 60 seconds;
 - read-only Advisor tool calls: 3 per update;
+- Advisor tool result: 8,000 redacted characters each and 16,000 redacted characters aggregate per update;
 - generic accepted note: 1,200 characters;
 - accepted emissions: 1 per update;
 - persisted `advisor_finding` observation: 6,000 redacted characters;
 - immune turns after interrupting delivery: 3;
 - normalized session dedupe ring: 4,096 entries.
 
-The Advisor context is maintained before it reaches 75% of the selected model's context window. Maintenance resets and re-primes from the current bounded primary context; it never replays abandoned pre-compaction history. Overflow, timeout, exhausted tool budget, and queue coalescing remain fail-open for the primary and fail-closed for new advice.
+Before every prompt, the adapter estimates the retained Advisor messages plus the pending bounded update against the selected model's context window. At 75%, it aborts no primary work, resets only the private Advisor Agent, and re-primes deterministically from the current bounded request/delta/candidates—never from model-authored summaries or abandoned pre-compaction history. Estimation/maintenance failure and provider overflow remain fail-open for the primary and fail-closed for new advice.
 
 ## Advisor tools and instructions
 
-The Advisor receives isolated read-only `read`, `grep`, and `glob` tools rooted at the primary working directory.
+The Advisor receives isolated read-only `read`, `grep`, and `glob` tools rooted at the canonical real path of the primary working directory. `glob` is a purpose-built bounded tool; it is not assumed to exist in Pi's read-only factory.
 
-Tool state is not shared with the primary agent. The Advisor cannot mutate files, execute commands, send messages directly, create subagents, or access Experiences storage.
+All three tools reject absolute, `~`, parent-traversal, symlink-escape, Experiences-state, VCS-internal, and known credential/secret paths. Results and details are redacted and secret-scanned before entering Agent state, capped per result and per update, and replaced with a static denial when safe output cannot be established. Tool state is not shared with the primary agent. The Advisor cannot mutate files, execute commands, send messages directly, create subagents, or access Experiences storage.
 
 Optional `WATCHDOG.md` instructions may specialize generic review priorities. They:
 
@@ -194,32 +198,34 @@ The emission guard:
 - rejects empty and content-free phrases;
 - rejects generic praise or completion chatter;
 - deduplicates equivalent accepted notes within a bounded session ring;
+- derives a non-reversible event fingerprint from stable causal-episode/session-entry identity plus canonical redacted content;
+- rejects a replay of the same durable event fingerprint while allowing a later identical action with new entry identities;
 - limits one accepted finding per update;
 - suppresses an equal or lower-severity duplicate in the same causal episode;
-- permits a genuinely new later violating event;
-- resets safely on Advisor epoch reset.
+- resets transient cooldown state safely on Advisor epoch reset.
 
 Suppression is not exposed to the Advisor model, preventing paraphrase loops.
 
 ## Severity and delivery
 
-Delivery follows the OMP Advisor model:
+Delivery follows OMP's authority model without manufacturing extra primary turns:
 
-- `nit` — noninterrupting aside delivered at the next safe step boundary;
-- `concern` — live steering when a material risk should affect ongoing work;
-- `blocker` — live steering when continuing would clearly waste work or produce a broken or unsafe result.
+- `nit` — held until the primary is settled, then appended visibly with no triggered turn;
+- `concern` — live steering only when a material risk should affect an active, non-plan-mode run; otherwise append visibly when settled;
+- `blocker` — live steering only when continuing an active, non-plan-mode run would clearly waste work or produce a broken or unsafe result; otherwise append visibly when settled.
 
 There is no pre-execution tool blocking.
 
 Safe-delivery rules:
 
-- while the primary loop is active, a concern or blocker may enter through Pi's documented steering channel;
-- a user-interrupted or canceled run is never unexpectedly restarted;
-- a late terminal-answer concern is preserved visibly instead of forcing a restatement;
-- a blocker may resume nonterminal yielded work when Pi's current mode/client safely supports agent-initiated continuation;
-- plan mode and clients that cannot represent agent-initiated turns preserve visible findings rather than steering;
-- immune turns limit repeated interrupting delivery after a successful steer;
-- unavailable delivery degrades to a visible preserved card, never a fake user message or hidden session mutation.
+- while the primary loop is active, an eligible concern or blocker may enter through Pi's documented `steer` channel;
+- `followUp` is not used for noninterrupting findings because it can force another model continuation;
+- a user-interrupted, canceled, terminal, plan-mode, or ambiguous run is never unexpectedly restarted;
+- after `agent_settled`, `sendMessage` with no delivery mode and `triggerTurn:false` appends the custom message immediately to session context and the TUI;
+- if shutdown/replacement makes model-visible delivery impossible, a same-schema visible custom entry is appended as the durable UI-only fallback and is never represented as delivered guidance;
+- plan-mode detection reads the latest validated `plan-mode` custom state on the active branch; missing malformed state while that convention is present degrades to visible-only delivery;
+- immune turns limit repeated live steering after a successful steer;
+- unavailable delivery never becomes a fake user message or hidden `nextTurn` queue.
 
 ## Primary transcript and persistence
 
@@ -269,20 +275,23 @@ When Learning from conversations is ON, one accepted finding may create one boun
 - accepted severity;
 - sanitized accepted note or exact approved behavior;
 - timestamp and non-sensitive origin metadata;
-- a stable event fingerprint for duplicate suppression.
+- the non-reversible causal-event fingerprint.
 
-It does not contain Advisor reasoning, tool investigation transcripts, aliases, vectors, scores, model/provider identity, habit IDs, or raw primary transcript.
+It does not contain Advisor reasoning, tool investigation transcripts, aliases, vectors, scores, model/provider identity, habit IDs, raw primary transcript, or reversible session identifiers.
+
+The observation uses a deterministic identity derived from the fingerprint. Under the existing observation lock, append checks the active retained generation by indexed reverse reads with a hard scan cap; cap exhaustion fails closed for the new observation. Analyze defensively collapses Advisor observations by fingerprint, so restart/resume replay cannot create recurrence authority while a genuinely later event with different session-entry identities can.
 
 Advisor findings do not directly create suggestions. Existing Analyze processing must:
 
-- require distinct observation evidence;
+- exclude Advisor-origin evidence from every one-shot/explicit-correction path;
+- require distinct Advisor event fingerprints;
 - preserve the existing repetition and day thresholds;
 - distinguish Advisor-origin evidence from user-origin examples;
 - avoid counting replays or repeated advice on the same causal episode;
 - create review-only suggestions;
 - require explicit human approval of exact `When` / `Do` wording.
 
-Advisor findings generated in response to prior Advisor messages are excluded from learning evidence.
+Entire response generations caused by prior Advisor messages are excluded from both recursive review and learning evidence through the process-local causal marker.
 
 ## Configuration
 
@@ -293,6 +302,8 @@ New configuration is bounded to Advisor runtime needs:
 - `advisor_timeout_ms: number` — default `60000`, clamped to `5000..120000`;
 - `advisor_sync_backlog: "off" | 1 | 3 | 5` — advanced config, default `"off"`;
 - `advisor_immune_turns: number` — default `3`, clamped to `0..10`.
+
+The existing master `enabled` remains authoritative. The explicit Advisor-enable flow sets master and Advisor true only after auth/disclosure confirmation. Unrelated master-enabling flows clear a stale `advisor_enabled` flag; all-off clears every runtime feature flag.
 
 No separate hybrid-mode, habit-compliance, Advisor-learning, or Advisor-tools toggle is added.
 
@@ -417,37 +428,38 @@ Diagnostics and metrics use only allowlisted static stages, reasons, states, and
 Add focused deterministic coverage for:
 
 1. Advisor disabled produces no runtime or model work;
-2. inherited and explicit Advisor model resolution;
-3. incremental delta cursor and bounded formatting;
+2. inherited and explicit Advisor model resolution plus master/feature inconsistent-state safety;
+3. incremental generation-stamped envelopes, cursor, bounded formatting, and no cross-generation coalescing;
 4. reasoning/tool intent/tool result inclusion and redaction;
-5. Advisor-message recursion exclusion;
-6. read-only tool isolation and absence of mutating tools;
+5. Advisor-caused response-generation exclusion for steer, settled append, and the next genuine user request;
+6. confined read/grep/custom-glob tools, absolute/traversal/symlink/secret-path denial, result redaction, and output bounds;
 7. generic compliant silence;
 8. concrete nit, concern, and blocker emission;
-9. content-free, duplicate, and over-budget emission suppression;
-10. OMP-like safe steering, preservation, cooldown, user-interrupt, terminal-answer, plan-mode, and unsupported-client behavior;
+9. content-free, duplicate, stale-buffer, and over-budget emission suppression;
+10. live steering versus settled visible append, no forced nit continuation, cooldown, user-interrupt, terminal-answer, plan-mode, unsupported-client, and shutdown fallback behavior;
 11. active request habit union with behavior-retrieved habits;
-12. pending, rejected, disabled, superseded, archived, stale, and invalid habit exclusion;
-13. exact alias mapping and unknown/duplicate/rewritten/original-ID rejection;
-14. full `When` / `Do` proposition grounding and false-positive rejection;
-15. habit violation priority over generic advice;
-16. exact approved behavior correction and visible provenance;
-17. changed habit/law/generation/cursor/epoch rejection before emission;
-18. compaction, branch/session transition, cancellation, model change, disable, and shutdown reset;
-19. timeout, auth, quota, malformed output, tool failure, and repeated failure never stall the primary;
-20. no private Advisor transcript or raw finding persistence;
-21. Learning OFF creates no Advisor observations;
-22. Learning ON creates one bounded deduplicated `advisor_finding` observation;
-23. Advisor observations cannot directly create or approve habits;
-24. repeated findings enter existing Analyze thresholds and human review;
-25. existing request selector, capture, Analyze, review, duplicate, schedule, break-in, storage, and provider-guidance tests remain passing;
-26. grouped setup home and every focused subpanel;
-27. setup custom and fallback menu parity;
-28. Advisor model inheritance/override and explicit enable disclosure;
-29. all-off and independent-switch behavior;
-30. narrow/wide grouped setup and Advisor/Experience card screenshots.
+12. tokenizer-bounded emergent-behavior retrieval for 24,000-character, multibyte, and over-128-token deltas;
+13. pending, rejected, disabled, superseded, archived, stale, and invalid habit exclusion;
+14. exact alias mapping and unknown/duplicate/rewritten/original-ID rejection;
+15. full `When` / `Do` proposition grounding and false-positive rejection;
+16. habit violation priority over generic advice;
+17. exact approved behavior correction and visible provenance;
+18. changed habit/law/generation/cursor/epoch rejection before emission;
+19. compaction, tree navigation, branch/session transition, cancellation, model selection, disable, and shutdown reset;
+20. timeout, auth, quota, malformed output, tool failure, context maintenance, and repeated failure never stall the primary;
+21. no private Advisor transcript or raw finding persistence;
+22. Learning OFF creates no Advisor observations;
+23. Learning ON creates one bounded event-identity-deduplicated `advisor_finding` observation;
+24. Advisor observations cannot use one-shot correction paths, directly create, or approve habits;
+25. distinct findings enter existing Analyze thresholds and human review;
+26. existing request selector, capture, Analyze, review, duplicate, schedule, break-in, storage, and provider-guidance tests remain passing;
+27. grouped setup home and every focused subpanel;
+28. setup custom and fallback menu parity;
+29. Advisor model inheritance/override and explicit enable disclosure;
+30. all-off and independent-switch behavior;
+31. narrow/wide grouped setup and Advisor/Experience card screenshots from a fresh packed install.
 
-Run focused tests, the complete `npm run check`, `npm audit --omit=dev`, `git diff --check`, generated CLI checks, and `node scripts/verify-packed-install.mjs`.
+Run focused tests, the complete `npm run check`, `npm audit --omit=dev`, `git diff --check`, generated CLI checks, and the repository's pack/fresh-install fixture with explicit installed-package, transcript, and temporary `AX_STATE_ROOT` arguments.
 
 Use isolated temporary state only. Do not touch the installed Experience state.
 
@@ -465,7 +477,7 @@ Do not:
 - bump package version;
 - create a release or tag;
 - merge or push;
-- stage or publish npm artifacts.
+- create npm staging artifacts or publish npm artifacts.
 
 ## Success criteria
 
