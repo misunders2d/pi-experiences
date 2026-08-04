@@ -946,6 +946,29 @@ assert.equal(notes.filter((note) => /Analyze all waiting examples started:/.test
 assert.equal(notes.filter((note) => /Analyze all waiting examples stopped after/.test(note.message || '')).length, 1, 'cancelled run must emit one final summary');
 delete ctx.signal;
 
+const unreadablePaths = (() => {
+  process.env.AX_STATE_ROOT = join(temp, 'unreadable-setup-state');
+  return getAgentExperiencePaths();
+})();
+const unreadableConfig = await readAgentExperienceConfig(unreadablePaths);
+await writeAgentExperienceConfig({
+  ...unreadableConfig.config,
+  enabled: true,
+  advisor_enabled: true,
+}, unreadablePaths);
+await writeFile(resolvePrivatePath(unreadablePaths.root, 'ledger.sqlite'), 'not a sqlite database', 'utf8');
+notes.length = 0;
+setupChoices = ['Manage habits', 'Back', 'Status and help', 'Back', 'Done'];
+await commands.get('experience').handler('setup', ctx);
+const unreadableOptions = notes.flatMap((note) => Array.isArray(note.options) ? note.options : []);
+assert.ok(unreadableOptions.some((option) => /^Manage habits: Needs attention$/.test(option)), 'unreadable review ledger must not appear as valid zero counts on setup home');
+assert.ok(unreadableOptions.some((option) => /^Review approved habits: Needs attention$/.test(option)), 'unreadable review ledger must surface in approved-habit setup');
+assert.ok(unreadableOptions.some((option) => /^Resolve possible duplicates: Needs attention$/.test(option)), 'unreadable review ledger must surface in duplicate setup');
+const unreadableStatus = notes.find((note) => /Habits — Needs attention/.test(note.message || ''))?.message || '';
+assert.match(unreadableStatus, /suggestions need attention/, 'unreadable review ledger must surface in grouped status');
+const advisorStatusLine = unreadableStatus.split('\n').find((line) => line.startsWith('Advisor —')) || '';
+assert.doesNotMatch(advisorStatusLine, /\bReady\b|\bqueued\b/, 'setup status must omit unobserved Advisor runtime and queue claims');
+
 __setAgentExperienceConsolidationAdapterForTest(undefined);
 __setAgentExperienceSelectorAdapterForTest(undefined);
 __setAgentExperienceSelectorEmbeddingAdapterForTest(undefined);

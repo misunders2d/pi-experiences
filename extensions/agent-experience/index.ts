@@ -915,7 +915,9 @@ async function reviewSummary(root: string, userId: string): Promise<{ ledger: bo
 	}
 }
 
-async function buildSetupSnapshot(): Promise<SetupSnapshot> {
+type SetupRuntimeStatus = Pick<SetupSnapshot, "advisorRuntime">;
+
+async function buildSetupSnapshot(runtimeStatus: SetupRuntimeStatus = {}): Promise<SetupSnapshot> {
 	const paths = getAgentExperiencePaths();
 	const [{ config }, observations, summary] = await Promise.all([
 		readAgentExperienceConfig(paths),
@@ -937,11 +939,11 @@ async function buildSetupSnapshot(): Promise<SetupSnapshot> {
 			approved: summary.active,
 			suggestions: summary.pending + summary.candidate + summary.approvedWaiting,
 			duplicates: summary.duplicates,
-			advisorQueued: 0,
 		},
 		semanticFiles,
+		reviewState: summary.error ? "Needs attention" : "Ready",
 		effectiveAdvisorModel: effectiveAdvisorModel(config),
-		advisorRuntime: config.enabled && config.advisor_enabled ? "Ready" : "Paused",
+		...runtimeStatus,
 	};
 }
 
@@ -2480,7 +2482,7 @@ async function handleSetupDirect(args: string[], ctx: ExtensionCommandContext): 
 	}
 }
 
-async function handleSetup(ctx: ExtensionCommandContext, args: string[] = []) {
+async function handleSetup(ctx: ExtensionCommandContext, args: string[] = [], runtimeStatus: () => SetupRuntimeStatus = () => ({})) {
 	if (await handleSetupDirect(args, ctx)) return;
 	const setupContext = ctx as unknown as { hasUI?: boolean; ui?: { select?: unknown; custom?: unknown } };
 	if (setupContext.hasUI === false || (typeof setupContext.ui?.select !== "function" && typeof setupContext.ui?.custom !== "function")) {
@@ -2489,7 +2491,7 @@ async function handleSetup(ctx: ExtensionCommandContext, args: string[] = []) {
 	}
 	let view: SetupView = "home";
 	while (true) {
-		const snapshot = await buildSetupSnapshot();
+		const snapshot = await buildSetupSnapshot(runtimeStatus());
 		let action: SetupAction | undefined;
 		try {
 			action = await showSetupView(ctx, view, snapshot);
@@ -3639,7 +3641,13 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 					await handleStatus(ctx);
 					return;
 				case "setup":
-					await handleSetup(ctx, tokens.slice(1));
+					await handleSetup(ctx, tokens.slice(1), () => {
+						const state = advisorStateForContext(ctx);
+						if (!state) return {};
+						if (state.shuttingDown) return { advisorRuntime: "Paused" };
+						if (state.needsReseed || !state.runtime) return { advisorRuntime: "Needs attention" };
+						return { advisorRuntime: "Active" };
+					});
 					return;
 				case "on":
 				case "enable":

@@ -52,8 +52,9 @@ export interface SetupSnapshot {
 		advisorQueued?: number;
 	};
 	semanticFiles: "Ready" | "Not prepared" | "Needs attention";
+	reviewState?: "Ready" | "Needs attention";
 	effectiveAdvisorModel: string;
-	advisorRuntime?: "Ready" | "Paused";
+	advisorRuntime?: "Active" | "Paused" | "Needs attention";
 }
 
 const RESET = "\x1b[0m";
@@ -93,11 +94,12 @@ function active(config: SetupConfigSnapshot, feature: boolean): boolean {
 
 export function buildSetupItems(view: SetupView, snapshot: SetupSnapshot): SettingItem[] {
 	const { config, counts } = snapshot;
+	const reviewAvailable = snapshot.reviewState !== "Needs attention";
 	if (view === "home") {
 		return [
 			actionItem("openLearning", "Learning from conversations", active(config, config.capture_enabled) ? "ON" : "OFF", "Save examples, choose the learning model, Analyze, and review suggestions."),
 			actionItem("openGuidance", "Guidance and Advisor", `Advisor ${active(config, config.advisor_enabled) ? "ON" : "OFF"} · habits ${active(config, config.selector_enabled) ? "ON" : "OFF"}`, "Configure independent runtime review and approved-habit guidance."),
-			actionItem("openHabits", "Manage habits", `${counts.approved} approved · ${counts.suggestions} waiting`, "Review approved habits and resolve possible duplicates."),
+			actionItem("openHabits", "Manage habits", reviewAvailable ? `${counts.approved} approved · ${counts.suggestions} waiting` : "Needs attention", "Review approved habits and resolve possible duplicates."),
 			actionItem("openAutomation", "Automation and privacy", `${config.timer_enabled ? "Scheduled" : "Manual"} · ${config.observation_retention_days}-day retention`, "Manage retention, review prompts, schedule, and shared local files."),
 			actionItem("openStatus", "Status and help", "", "See grouped status and concise explanations."),
 			actionItem("off", "Turn everything off", "", "Disable runtime features while preserving records and local files."),
@@ -109,7 +111,7 @@ export function buildSetupItems(view: SetupView, snapshot: SetupSnapshot): Setti
 			actionItem("capture", "Learn from conversations", checkboxValue(active(config, config.capture_enabled)), "Save bounded, redacted completed conversation examples locally. Suggestions always wait for review."),
 			actionItem("learningModel", "Habit-learning model", config.consolidation_model || "choose model", "Choose the authenticated model used by Analyze."),
 			actionItem("analyze", "Analyze waiting examples", `${counts.observations} waiting`, "Create suggestions for review; nothing is auto-approved."),
-			actionItem("review", "Review suggested habits", `${counts.suggestions} waiting`, "Approve or reject each suggestion explicitly."),
+			actionItem("review", "Review suggested habits", reviewAvailable ? `${counts.suggestions} waiting` : "Needs attention", "Approve or reject each suggestion explicitly."),
 			actionItem("back", "Back"),
 		];
 	}
@@ -124,8 +126,8 @@ export function buildSetupItems(view: SetupView, snapshot: SetupSnapshot): Setti
 	}
 	if (view === "habits") {
 		return [
-			actionItem("habits", "Review approved habits", String(counts.approved), "Inspect, disable, re-enable, or archive an approved habit."),
-			actionItem("duplicates", "Resolve possible duplicates", `${counts.duplicates} waiting`, "Review each possible duplicate before any change."),
+			actionItem("habits", "Review approved habits", reviewAvailable ? String(counts.approved) : "Needs attention", "Inspect, disable, re-enable, or archive an approved habit."),
+			actionItem("duplicates", "Resolve possible duplicates", reviewAvailable ? `${counts.duplicates} waiting` : "Needs attention", "Review each possible duplicate before any change."),
 			actionItem("embedding", "Prevent duplicate habits", checkboxValue(active(config, config.embedding_enabled)), "Compare habit wording locally and route possible matches for review."),
 			actionItem("back", "Back"),
 		];
@@ -166,15 +168,18 @@ function viewTitle(view: SetupView): string {
 
 function statusLines(snapshot: SetupSnapshot): string[] {
 	const { config, counts } = snapshot;
+	const reviewAvailable = snapshot.reviewState !== "Needs attention";
 	const advisorModel = config.advisor_model ? snapshot.effectiveAdvisorModel : `${snapshot.effectiveAdvisorModel} (same as habit assessment)`;
+	const advisorLifecycle = snapshot.advisorRuntime ? ` · runtime ${snapshot.advisorRuntime}` : "";
+	const advisorQueue = typeof counts.advisorQueued === "number" ? ` · ${counts.advisorQueued} queued` : "";
 	return [
-		`Learning — ${active(config, config.capture_enabled) ? "ON" : "OFF"} · ${config.consolidation_model} · ${counts.observations} waiting examples · ${counts.suggestions} suggestions waiting`,
+		`Learning — ${active(config, config.capture_enabled) ? "ON" : "OFF"} · ${config.consolidation_model} · ${counts.observations} waiting examples · ${reviewAvailable ? `${counts.suggestions} suggestions waiting` : "suggestions need attention"}`,
 		"Learning saves redacted completed examples locally; suggestions always wait for review.",
-		`Advisor — ${active(config, config.advisor_enabled) ? "ON" : "OFF"} · ${advisorModel} · ${snapshot.advisorRuntime || (active(config, config.advisor_enabled) ? "Ready" : "Paused")} · ${counts.advisorQueued || 0} queued`,
+		`Advisor — ${active(config, config.advisor_enabled) ? "ON" : "OFF"} · ${advisorModel}${advisorLifecycle}${advisorQueue}`,
 		"Advisor reviews transcript updates with a separate authenticated model and shows any steering visibly.",
 		`Approved-habit guidance — ${active(config, config.selector_enabled) ? "ON" : "OFF"} · ${config.selector_model}`,
 		"Approved-habit guidance uses only habits you approved and remains independent from Advisor.",
-		`Habits — ${counts.approved} approved · ${counts.suggestions} waiting · ${counts.duplicates} possible duplicates`,
+		reviewAvailable ? `Habits — ${counts.approved} approved · ${counts.suggestions} waiting · ${counts.duplicates} possible duplicates` : "Habits — Needs attention",
 		`Privacy and automation — ${config.observation_retention_days}-day retention · schedule ${config.timer_enabled ? "ON" : "OFF"} · review prompts ${active(config, config.break_in_enabled) ? "ON" : "OFF"}`,
 		`Local semantic files — ${snapshot.semanticFiles}`,
 	];
