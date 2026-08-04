@@ -111,7 +111,7 @@ const ctx = {
   ui: {
     async select(title, options) {
       notes.push({ title, options });
-      if (/Choose model/.test(title)) {
+      if (/Choose model for habit|Choose separate Advisor model/.test(title)) {
         assert.ok(options.includes('openai-codex/gpt-5.5'), 'authenticated model should be listed');
         assert.ok(!options.includes('example/unauth'), 'unauthenticated model must not be listed');
         assert.ok(options.includes('Search authenticated models'), 'model picker must offer search instead of giant all-model list');
@@ -129,8 +129,8 @@ const ctx = {
       if (/Review suggested habits/.test(title)) return setupChoices.shift() ?? options[0];
       if (/What do you want/.test(title)) return 'Approve';
       const next = setupChoices.shift();
-      if (next !== undefined) return next;
-      return undefined;
+      if (next === undefined) return undefined;
+      return options.find((option) => option === next || option.startsWith(`${next}:`)) ?? next;
     },
     input(title, placeholder) { notes.push({ title, placeholder, level: 'input' }); return setupInputs.shift(); },
     notify(message, level) { notes.push({ message, level }); },
@@ -157,7 +157,7 @@ __setAgentExperienceSelectorAdapterForTest({
   },
 });
 
-setupChoices = ['[ ] Save chat examples locally', 'Choose model for habit learning (openai-codex/gpt-5.5)', 'Done'];
+setupChoices = ['Learning from conversations: OFF', 'Learn from conversations: OFF', 'Habit-learning model: openai-codex/gpt-5.5', 'Back', 'Done'];
 await commands.get('experience').handler('setup', ctx);
 let configResult = await readAgentExperienceConfig(paths);
 assert.equal(configResult.config.enabled, true);
@@ -166,18 +166,18 @@ assert.equal(configResult.config.consolidation_model, 'openai-codex/gpt-5.5');
 assert.equal(configResult.config.consolidation_enabled, true);
 assert.equal(configResult.config.timer_enabled, false);
 
-setupChoices = ['Choose model for habit learning (openai-codex/gpt-5.5)', 'Search authenticated models', 'openrouter/openai/gpt-5', 'Choose model for habit learning (openrouter/openai/gpt-5)', 'openai-codex/gpt-5.5', 'Done'];
+setupChoices = ['Learning from conversations: ON', 'Habit-learning model: openai-codex/gpt-5.5', 'Search authenticated models', 'openrouter/openai/gpt-5', 'Habit-learning model: openrouter/openai/gpt-5', 'openai-codex/gpt-5.5', 'Back', 'Done'];
 setupInputs = ['gpt-5'];
 await commands.get('experience').handler('setup', ctx);
 configResult = await readAgentExperienceConfig(paths);
 assert.equal(configResult.config.consolidation_model, 'openai-codex/gpt-5.5', 'model ids containing slash can be selected by search, then normal model can be restored');
 assert.ok(notes.some((note) => /Habit-learning model: openrouter\/openai\/gpt-5/.test(note.message || '')), 'OpenRouter slash model id should save successfully from searchable picker');
-setupChoices = ['Choose model for habit learning (openai-codex/gpt-5.5)', 'Enter exact model id', 'Done'];
+setupChoices = ['Learning from conversations: ON', 'Habit-learning model: openai-codex/gpt-5.5', 'Enter exact model id', 'Back', 'Done'];
 setupInputs = ['openrouter/openai/gpt-5'];
 await commands.get('experience').handler('setup', ctx);
 configResult = await readAgentExperienceConfig(paths);
 assert.equal(configResult.config.consolidation_model, 'openrouter/openai/gpt-5', 'exact model entry must support provider/model ids containing slash');
-setupChoices = ['Choose model for habit learning (openrouter/openai/gpt-5)', 'Enter exact model id', 'Done'];
+setupChoices = ['Learning from conversations: ON', 'Habit-learning model: openrouter/openai/gpt-5', 'Enter exact model id', 'Back', 'Done'];
 setupInputs = ['example/unauth'];
 await commands.get('experience').handler('setup', ctx);
 configResult = await readAgentExperienceConfig(paths);
@@ -189,13 +189,22 @@ ctx.ui.custom = async (factory) => {
   const component = await factory({ requestRender() {} }, {}, {}, (result) => { resolved = true; value = result; });
   const initial = component.render(80).join('\n');
   if (/Agent Experience setup/.test(initial)) {
-    assert.match(initial, /\[x\] ON|\[ \] OFF/, 'setup panel must show checkbox-style ON/OFF rows');
-    assert.match(initial, /Choose model for habit learning\s+openai-codex\/gpt-5\.5/, 'setup panel must show current habit-learning model instead of generic open');
-    assert.match(initial, /Choose model for habit assessment\s+openai-codex\/gpt-5\.4-mini/, 'setup panel must show the separate current habit-assessment model');
-    assert.match(initial, /Space\/Enter toggles/, 'setup panel must advertise Space toggles');
-    assert.match(initial, /Keep analyzed source examples\s+7 days/, 'setup panel must expose privacy retention without an advanced command');
+    assert.match(initial, /Learning from conversations/, 'setup home must expose the learning group');
+    assert.match(initial, /Guidance and Advisor/, 'setup home must expose the guidance group');
+    assert.match(initial, /Automation and privacy/, 'setup home must expose the privacy group');
+    assert.doesNotMatch(initial, /Habit-learning model|Habit-assessment model|Keep analyzed source examples/, 'setup home must stay grouped');
     const next = setupChoices.shift();
-    value = next === 'Choose model for habit learning' ? 'model' : next === 'Done' ? 'done' : undefined;
+    value = next === 'Learning from conversations' ? 'openLearning' : next === 'Done' ? 'done' : undefined;
+    resolved = true;
+    return value;
+  }
+  if (/Learning from conversations/.test(initial)) {
+    assert.match(initial, /Learn from conversations\s+\[x\] ON/, 'learning panel must show current capture state');
+    assert.match(initial, /Habit-learning model\s+openai-codex\/gpt-5\.5/, 'learning panel must show the current model');
+    assert.match(initial, /Analyze waiting examples/, 'learning panel must expose Analyze');
+    assert.match(initial, /Space\/Enter toggles/, 'learning panel must advertise Space toggles');
+    const next = setupChoices.shift();
+    value = next === 'Habit-learning model' ? 'learningModel' : next === 'Back' ? 'back' : undefined;
     resolved = true;
     return value;
   }
@@ -211,7 +220,7 @@ ctx.ui.custom = async (factory) => {
   assert.equal(resolved, true, 'enter should select the live-filtered model');
   return value;
 };
-setupChoices = ['Choose model for habit learning', 'Done'];
+setupChoices = ['Learning from conversations', 'Habit-learning model', 'Back', 'Done'];
 await commands.get('experience').handler('setup', ctx);
 configResult = await readAgentExperienceConfig(paths);
 assert.equal(configResult.config.consolidation_model, 'openai-codex/gpt-5.5', 'live typeahead picker should save selected filtered model');
@@ -220,7 +229,7 @@ delete ctx.ui.custom;
 configResult = await readAgentExperienceConfig(paths);
 assert.equal(configResult.config.selector_enabled, false);
 const learningModelBeforeAssessmentChoice = configResult.config.consolidation_model;
-setupChoices = ['Choose model for habit assessment (openai-codex/gpt-5.4-mini)', 'Search authenticated models', 'openrouter/openai/gpt-5', 'Done'];
+setupChoices = ['Guidance and Advisor: Advisor OFF · habits OFF', 'Habit-assessment model: openai-codex/gpt-5.4-mini', 'Search authenticated models', 'openrouter/openai/gpt-5', 'Back', 'Done'];
 setupInputs = ['gpt-5'];
 await commands.get('experience').handler('setup', ctx);
 configResult = await readAgentExperienceConfig(paths);
@@ -230,7 +239,7 @@ assert.equal(configResult.config.consolidation_model, learningModelBeforeAssessm
 assert.ok(notes.some((note) => /Habit-assessment model: openrouter\/openai\/gpt-5/.test(note.message || '')), 'assessment picker must report the saved model clearly');
 
 authHeadersAvailable = false;
-setupChoices = ['Choose model for habit assessment (openrouter/openai/gpt-5)', 'Enter exact model id', 'Done'];
+setupChoices = ['Guidance and Advisor: Advisor OFF · habits OFF', 'Habit-assessment model: openrouter/openai/gpt-5', 'Enter exact model id', 'Back', 'Done'];
 setupInputs = ['openai-codex/gpt-5.5'];
 await commands.get('experience').handler('setup', ctx);
 configResult = await readAgentExperienceConfig(paths);
@@ -240,20 +249,54 @@ assert.ok(notes.some((note) => /Habit-assessment model unchanged because authent
 authHeadersAvailable = true;
 await setAgentExperienceSelectorModel('openai-codex/gpt-5.4-mini', paths);
 
+setupChoices = ['Guidance and Advisor', 'Advisor model', 'Choose separate authenticated model', 'Search authenticated models', 'openrouter/openai/gpt-5', 'Back', 'Done'];
+setupInputs = ['gpt-5'];
+await commands.get('experience').handler('setup', ctx);
+configResult = await readAgentExperienceConfig(paths);
+assert.equal(configResult.config.advisor_model, 'openrouter/openai/gpt-5', 'Advisor model picker must save an authenticated override without enabling Advisor');
+assert.equal(configResult.config.advisor_enabled, false, 'changing Advisor model must not enable Advisor');
+setupChoices = ['Guidance and Advisor', 'Advisor model', 'Same as habit assessment', 'Back', 'Done'];
+await commands.get('experience').handler('setup', ctx);
+configResult = await readAgentExperienceConfig(paths);
+assert.equal(configResult.config.advisor_model, '', 'Same as habit assessment must restore Advisor model inheritance');
+await setAgentExperienceSelectorModel('openai-codex/gpt-5.5', paths);
+
+authHeadersAvailable = false;
+setupChoices = ['Guidance and Advisor', 'Runtime Advisor', 'Back', 'Done'];
+await commands.get('experience').handler('setup', ctx);
+configResult = await readAgentExperienceConfig(paths);
+assert.equal(configResult.config.advisor_enabled, false, 'Advisor auth failure must leave Advisor disabled before disclosure confirmation');
+authHeadersAvailable = true;
+notes.length = 0;
+setupChoices = ['Guidance and Advisor', 'Runtime Advisor', 'Turn Runtime Advisor ON', 'Back', 'Done'];
+await commands.get('experience').handler('setup', ctx);
+configResult = await readAgentExperienceConfig(paths);
+assert.equal(configResult.config.advisor_enabled, true, 'explicit disclosure confirmation must enable Advisor');
+assert.equal(configResult.config.selector_enabled, false, 'enabling Advisor must not enable approved-habit guidance');
+assert.ok(notes.some((note) => /separate call.*incremental transcript updates/is.test(note.message || '')), 'Advisor disclosure must cover its separate model work and incremental transcript review');
+assert.ok(notes.some((note) => /read-only workspace tools/is.test(note.message || '')), 'Advisor disclosure must cover isolated read-only workspace tools');
+assert.ok(notes.some((note) => /steering.*visible/is.test(note.message || '')), 'Advisor disclosure must cover visible steering');
+assert.ok(notes.some((note) => /bounded local queue and progress state/is.test(note.message || '')), 'Advisor disclosure must cover bounded local state');
+assert.ok(notes.some((note) => /learning evidence.*no suggestion is auto-approved/is.test(note.message || '')), 'Advisor disclosure must cover possible learning evidence without auto-approval');
+setupChoices = ['Guidance and Advisor', 'Runtime Advisor', 'Back', 'Done'];
+await commands.get('experience').handler('setup', ctx);
+configResult = await readAgentExperienceConfig(paths);
+assert.equal(configResult.config.advisor_enabled, false, 'Advisor can be disabled without changing other guidance toggles');
+
 await setAgentExperienceConsolidationEnabled(false, paths);
-setupChoices = ['Analyze all waiting examples now', 'Done'];
+setupChoices = ['Learning from conversations: ON', 'Analyze waiting examples: 0 waiting'];
 await commands.get('experience').handler('setup', ctx);
 assert.ok(notes.some((note) => /Choose a habit-learning model/.test(note.message || '')), 'analyze must not run when model learning is disabled');
 await setAgentExperienceConsolidationModel('openai-codex/gpt-5.5', paths);
 notes.length = 0;
 authHeadersAvailable = false;
-setupChoices = ['Analyze all waiting examples now', 'Done'];
+setupChoices = ['Learning from conversations', 'Analyze waiting examples'];
 await commands.get('experience').handler('setup', ctx);
 assert.ok(notes.some((note) => /Current model: openai-codex\/gpt-5\.5/.test(note.message || '') && /model auth unavailable/.test(note.message || '')), 'analyze must preflight real model auth before showing started');
 assert.ok(!notes.some((note) => /Analyze all waiting examples started/.test(note.message || '')), 'analyze must not show started when auth preflight fails');
 authHeadersAvailable = true;
 notes.length = 0;
-setupChoices = ['Analyze all waiting examples now', 'Done'];
+setupChoices = ['Learning from conversations', 'Analyze waiting examples'];
 await commands.get('experience').handler('setup', ctx);
 assert.ok(notes.some((note) => /No readable saved examples|No saved examples/.test(note.message || '')), 'analyze must preflight saved examples before showing started');
 assert.ok(!notes.some((note) => /Analyze all waiting examples started/.test(note.message || '')), 'analyze must not show started when there are no saved examples');
@@ -366,7 +409,7 @@ __setAgentExperienceConsolidationAdapterForTest({
   },
 });
 
-setupChoices = ['Analyze all waiting examples now', 'Done'];
+setupChoices = ['Learning from conversations', 'Analyze waiting examples'];
 await commands.get('experience').handler('setup', ctx);
 assert.equal(manualAnalyzeBatches.length, 0, 'manual Analyze must not call the model before the command handler returns');
 assert.ok(notes.some((note) => /Analyze all waiting examples started: 3 saved examples queued/.test(note.message || '')), 'analyze-all must start without blocking setup and report the starting snapshot');
@@ -430,12 +473,12 @@ assert.equal(existsSync(resolvePrivatePath(paths.root, 'law.md')), true, 'first-
 configResult = await readAgentExperienceConfig(paths);
 await writeAgentExperienceConfig({ ...configResult.config, selector_model: 'openai-codex/gpt-5.5' }, paths);
 authHeadersAvailable = false;
-setupChoices = ['[ ] Use approved habits before replies', 'Done'];
+setupChoices = ['Guidance and Advisor', 'Use approved habits', 'Back', 'Done'];
 await commands.get('experience').handler('setup', ctx);
 configResult = await readAgentExperienceConfig(paths);
 assert.equal(configResult.config.selector_enabled, false, 'missing judge auth must keep reminders off before local asset preparation');
 authHeadersAvailable = true;
-setupChoices = ['[ ] Use approved habits before replies', 'Prepare private local vectors and enable reminders', 'Done'];
+setupChoices = ['Guidance and Advisor', 'Use approved habits', 'Prepare private local vectors and enable reminders', 'Back', 'Done'];
 await commands.get('experience').handler('setup', ctx);
 configResult = await readAgentExperienceConfig(paths);
 assert.equal(configResult.config.selector_enabled, true);
@@ -453,42 +496,22 @@ ctx.ui.custom = async (factory) => {
   const rendered = component.render(100).join('\n');
   if (/Agent Experience setup/.test(rendered)) {
     const next = setupChoices.shift();
-    return next === 'Show current settings' ? 'status' : next === 'Done' ? 'done' : value;
+    return next === 'Status and help' ? 'openStatus' : next === 'Done' ? 'done' : value;
   }
-  assert.match(rendered, /Agent Experience current settings/, 'show current settings should open an in-panel status view');
-  assert.match(rendered, /Habit-learning model: openai-codex\/gpt-5\.5/, 'status panel should show current habit-learning model');
-  assert.match(rendered, /Habit-assessment model: openai-codex\/gpt-5\.5/, 'status panel should show current habit-assessment model');
+  assert.match(rendered, /Status and help/, 'grouped status/help should open in the setup overlay');
+  assert.match(rendered, /Learning — ON · openai-codex\/gpt-5\.5/, 'status panel should show current habit-learning state and model');
+  assert.match(rendered, /Approved-habit guidance — ON · openai-codex\/gpt-5\.5/, 'status panel should show current approved-habit guidance state and model');
+  assert.match(rendered, /Advisor — OFF/, 'status panel should show Advisor status');
+  assert.match(rendered, /Local semantic files —/, 'status panel should explain shared local semantic-file state');
   statusPanelSeen = true;
-  component.handleInput('\r');
-  return value;
+  setupChoices.shift();
+  return 'back';
 };
-setupChoices = ['Show current settings', 'Done'];
+setupChoices = ['Status and help', 'Back', 'Done'];
 await commands.get('experience').handler('setup', ctx);
 delete ctx.ui.custom;
-assert.equal(statusPanelSeen, true, 'show current settings must not post behind the setup overlay');
-assert.ok(!notes.some((note) => /^Experience:/.test(note.message || '')), 'show current settings from setup should stay in-panel, not chat history');
-
-notes.length = 0;
-let helpPanelSeen = false;
-ctx.ui.custom = async (factory) => {
-  let value;
-  const component = await factory({ requestRender() {} }, {}, {}, (result) => { value = result; });
-  const rendered = component.render(100).join('\n');
-  if (/Agent Experience setup/.test(rendered) && /Explain these settings/.test(rendered)) {
-    const next = setupChoices.shift();
-    return next === 'Explain these settings' ? 'help' : next === 'Done' ? 'done' : value;
-  }
-  assert.match(rendered, /Agent Experience setup help/, 'explain settings should open an in-panel help view');
-  assert.match(rendered, /Use arrow keys/, 'help panel should contain setup help text');
-  helpPanelSeen = true;
-  component.handleInput('\r');
-  return value;
-};
-setupChoices = ['Explain these settings', 'Done'];
-await commands.get('experience').handler('setup', ctx);
-delete ctx.ui.custom;
-assert.equal(helpPanelSeen, true, 'explain settings must not post behind the setup overlay');
-assert.ok(!notes.some((note) => /Use arrow keys to move/.test(note.message || '')), 'explain settings from setup should stay in-panel, not chat history');
+assert.equal(statusPanelSeen, true, 'status and help must stay in the grouped setup overlay');
+assert.ok(!notes.some((note) => /^Experience:|Use arrow keys to move/.test(note.message || '')), 'status/help from setup should stay in-panel, not chat history');
 
 storage = await initExperienceStorage(paths.root, { allowInit: true, userId: 'owner' });
 let active;
@@ -528,9 +551,13 @@ ctx.ui.custom = async (factory) => {
   assert.doesNotMatch(rendered, new RegExp(active.checksum.slice(0, 16)), 'approved habits UI must not expose checksum');
   assert.doesNotMatch(rendered, /source_refs|prompt_hash/, 'approved habits UI must not expose internal source refs or prompt hashes');
   if (/Agent Experience setup/.test(rendered)) {
-    assert.match(rendered, /Review approved habits/, 'setup panel must include approved habit browser row');
     const next = setupChoices.shift();
-    return next === 'Review approved habits' ? 'habits' : next === 'Done' ? 'done' : value;
+    return next === 'Manage habits' ? 'openHabits' : next === 'Done' ? 'done' : value;
+  }
+  if (/Manage habits/.test(rendered)) {
+    assert.match(rendered, /Review approved habits/, 'manage-habits panel must include approved habit browser row');
+    const next = setupChoices.shift();
+    return next === 'Review approved habits' ? 'habits' : next === 'Back' ? 'back' : value;
   }
   if (/Review approved habits/.test(rendered)) {
     if (approvedHabitActionDone) return undefined;
@@ -552,7 +579,7 @@ ctx.ui.custom = async (factory) => {
   component.handleInput(' ');
   return value;
 };
-setupChoices = ['Review approved habits', undefined, 'Done'];
+setupChoices = ['Manage habits', 'Review approved habits', 'Back', 'Done'];
 await commands.get('experience').handler('setup', ctx);
 delete ctx.ui.custom;
 assert.equal(approvedHabitListSeen, true, 'setup must open approved habits list panel');
@@ -579,7 +606,11 @@ ctx.ui.custom = async (factory) => {
   assert.doesNotMatch(rendered, new RegExp(active.checksum.slice(0, 16)), 'approved habits re-enable UI must not expose old checksum');
   if (/Agent Experience setup/.test(rendered)) {
     const next = setupChoices.shift();
-    return next === 'Review approved habits' ? 'habits' : next === 'Done' ? 'done' : value;
+    return next === 'Manage habits' ? 'openHabits' : next === 'Done' ? 'done' : value;
+  }
+  if (/Manage habits/.test(rendered)) {
+    const next = setupChoices.shift();
+    return next === 'Review approved habits' ? 'habits' : next === 'Back' ? 'back' : value;
   }
   if (/Review approved habits/.test(rendered)) {
     if (reenableActionDone) return undefined;
@@ -596,7 +627,7 @@ ctx.ui.custom = async (factory) => {
   component.handleInput(' ');
   return value;
 };
-setupChoices = ['Review approved habits', undefined, 'Done'];
+setupChoices = ['Manage habits', 'Review approved habits', 'Back', 'Done'];
 await commands.get('experience').handler('setup', ctx);
 delete ctx.ui.custom;
 assert.equal(disabledHabitListSeen, true, 'setup must list disabled approved habits');
@@ -722,7 +753,7 @@ try {
 }
 
 notes.length = 0;
-setupChoices = ['[ ] Prevent duplicate habits', 'Explain duplicate prevention (no changes)', 'Done'];
+setupChoices = ['Manage habits', 'Prevent duplicate habits', 'Explain duplicate prevention (no changes)', 'Back', 'Done'];
 await commands.get('experience').handler('setup', ctx);
 configResult = await readAgentExperienceConfig(paths);
 assert.equal(configResult.config.embedding_enabled, false, 'explanation must not enable duplicate prevention or download assets');
@@ -730,14 +761,14 @@ assert.equal(existsSync(join(paths.root, 'models')), false, 'package/setup expla
 assert.ok(notes.some((note) => /about 150 MB|on this computer|never sends/i.test(note.message || '')), 'setup must explain local privacy and one-time size in normal language');
 assert.ok(!notes.some((note) => /provider|endpoint|api key|model id|dimensions|server/i.test(note.message || '')), 'normal setup must not expose backend jargon');
 
-setupChoices = ['Keep analyzed source examples (7 days)', '14 days', 'Done'];
+setupChoices = ['Automation and privacy', 'Keep analyzed source examples', '14 days', 'Back', 'Done'];
 await commands.get('experience').handler('setup', ctx);
 configResult = await readAgentExperienceConfig(paths);
 assert.equal(configResult.config.observation_retention_days, 14, 'normal setup must configure bounded source retention');
 assert.ok(notes.some((note) => /deleted after 14 days/.test(note.message || '')), 'retention change must explain deletion and preserved minimized evidence');
 
 notes.length = 0;
-setupChoices = ['Analyze all waiting examples now', 'Done'];
+setupChoices = ['Learning from conversations', 'Analyze waiting examples'];
 await commands.get('experience').handler('setup', ctx);
 assert.ok(notes.some((note) => /No saved examples yet|already analyzed/.test(note.message || '')), 'second analyze must not resend the committed and rotated generation');
 assert.ok(!notes.some((note) => /Analyze all waiting examples started|New suggested habits created/.test(note.message || '')), 'caught-up analyze must not start a model job or claim new suggestions');
@@ -762,21 +793,40 @@ assert.doesNotMatch(JSON.stringify(activeProvider.messages[1]), /agent_experienc
 
 const offTestOn = await setAgentExperienceCaptureActive(true, paths);
 assert.equal(offTestOn.config.enabled && offTestOn.config.capture_enabled, true, 'test precondition: capture on before custom off action');
+const preservedSemanticFile = resolvePrivatePath(paths.root, 'models', 'preserved.txt');
+await ensurePrivateRoot(resolvePrivatePath(paths.root, 'models'));
+await writeFile(preservedSemanticFile, 'preserve me', { mode: 0o600 });
+configResult = await readAgentExperienceConfig(paths);
+await writeAgentExperienceConfig({
+  ...configResult.config,
+  advisor_enabled: true,
+  selector_enabled: true,
+  embedding_enabled: true,
+  consolidation_enabled: true,
+  break_in_enabled: true,
+}, paths);
 ctx.ui.custom = async (factory) => {
   let value;
   const component = await factory({ requestRender() {} }, {}, {}, (result) => { value = result; });
   const rendered = component.render(100).join('\n');
-  assert.match(rendered, /Space\/Enter toggles/, 'custom setup panel should advertise Space/Enter checkbox behavior');
+  assert.match(rendered, /Space\/Enter opens a group/, 'custom setup home should advertise grouped navigation');
   const next = setupChoices.shift();
-  return next === 'Turn all experience features off' ? 'off' : next === 'Done' ? 'done' : value;
+  return next === 'Turn everything off' ? 'off' : next === 'Done' ? 'done' : value;
 };
-setupChoices = ['Turn all experience features off', 'Done'];
+setupChoices = ['Turn everything off', 'Done'];
 await commands.get('experience').handler('setup', ctx);
 delete ctx.ui.custom;
 configResult = await readAgentExperienceConfig(paths);
 assert.equal(configResult.config.enabled, false, 'custom setup off action must turn master experience off');
 assert.equal(configResult.config.capture_enabled, false, 'custom setup off action must turn capture off');
 assert.equal(configResult.config.selector_enabled, false, 'custom setup off action must turn approved-habit reminders off');
+assert.equal(configResult.config.advisor_enabled, false, 'all-off must disable Advisor');
+assert.equal(configResult.config.embedding_enabled, false, 'all-off must disable duplicate prevention');
+assert.equal(configResult.config.consolidation_enabled, false, 'all-off must disable Analyze runtime gates');
+assert.equal(configResult.config.timer_enabled, false, 'all-off must disable the schedule gate');
+assert.equal(configResult.config.break_in_enabled, false, 'all-off must disable review prompts');
+assert.equal(existsSync(resolvePrivatePath(paths.root, 'ledger.sqlite')), true, 'all-off must preserve experience records');
+assert.equal(existsSync(preservedSemanticFile), true, 'all-off must preserve local semantic files');
 
 function zeroProposalOutput(input, batchId) {
   return {

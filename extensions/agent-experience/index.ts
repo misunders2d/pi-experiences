@@ -4,10 +4,11 @@ import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { completeSimple, type Model } from "@earendil-works/pi-ai/compat";
 import { getPackageDir, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Box, decodeKittyPrintable, fuzzyFilter, Input, Key, matchesKey, SettingsList, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component, type Focusable, type SettingItem, type SettingsListTheme } from "@earendil-works/pi-tui";
+import { Box, decodeKittyPrintable, fuzzyFilter, Input, Key, matchesKey, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component, type Focusable } from "@earendil-works/pi-tui";
 import {
 	getAgentExperiencePaths,
 	readAgentExperienceConfig,
+	setAgentExperienceAdvisorEnabled,
 	setAgentExperienceBreakInEnabled,
 	setAgentExperienceCaptureActive,
 	setAgentExperienceCaptureEnabled,
@@ -18,6 +19,7 @@ import {
 	setAgentExperienceObservationRetentionDays,
 	setAgentExperienceSelectorEnabled,
 	setAgentExperienceSelectorModel,
+	writeAgentExperienceConfig,
 	setAgentExperienceSimpleOn,
 	setAgentExperienceTimerEnabled,
 } from "./src/paths.ts";
@@ -62,7 +64,7 @@ import { prepareSelectorConditionVectors } from "./src/selector-vector.ts";
 import { extractSteeringContext, latestUserMessageBoundary, type SteeringContextTurn } from "./src/steering-context.ts";
 import { prepareActiveSelectorVectorsAfterChange } from "./src/selector-maintenance.ts";
 import { collectAgentExperienceMetrics, formatAgentExperienceMetrics } from "./src/metrics.ts";
-import { advisorRuntimeConfig, type AgentExperienceConfig } from "./src/config.ts";
+import { advisorRuntimeConfig, effectiveAdvisorModel, type AgentExperienceConfig } from "./src/config.ts";
 import type { ValidatedObservationRecord } from "./src/consolidate/observations.ts";
 import { buildCompactHabitContext, type CompactHabitContextItem } from "./src/consolidate/context.ts";
 import { getProposalReadWatermark } from "./src/consolidate/commit.ts";
@@ -93,6 +95,7 @@ import {
 } from "./src/advisor/message.ts";
 import type { AcceptedAdvisorFinding, AdvisorPrimaryDelta, AdvisorRuntimeConfig, AdvisorScope, AdvisorUpdate } from "./src/advisor/types.ts";
 import { appendAdvisorFindingObservation } from "./src/advisor/observation.ts";
+import { showSetupView, type SetupAction, type SetupSnapshot, type SetupView } from "./src/setup-ui.ts";
 
 const captureBuffer = new CapturePairBuffer();
 let selectorModelAdapter: SelectorModelAdapter | undefined;
@@ -134,7 +137,12 @@ const HABIT_ASSESSMENT_MODEL_PICKER: ModelPickerCopy = {
 	exactTitle: "Enter exact habit-assessment model id",
 	exactPlaceholder: "provider/model, e.g. openai-codex/gpt-5.4-mini",
 };
-type SetupAction = "save" | "model" | "assessmentModel" | "analyze" | "review" | "duplicates" | "habits" | "embedding" | "retention" | "use" | "schedule" | "breakIn" | "status" | "help" | "off" | "done";
+const ADVISOR_MODEL_PICKER: ModelPickerCopy = {
+	title: "Choose separate Advisor model",
+	searchTitle: "Search Advisor models",
+	exactTitle: "Enter exact Advisor model id",
+	exactPlaceholder: "provider/model, e.g. openai-codex/gpt-5.5",
+};
 
 const RESET = "\x1b[0m";
 const PANEL_BG = "\x1b[48;5;235m";
@@ -165,9 +173,6 @@ function boxedLines(lines: string[], width: number, padding = 1): string[] {
 	return out;
 }
 
-function checkboxValue(value: boolean): string {
-	return value ? "[x] ON" : "[ ] OFF";
-}
 
 function truncateLine(value: string, width: number): string {
 	return truncateToWidth(value, Math.max(1, width));
@@ -195,62 +200,6 @@ function modelSearchMatches(models: string[], query: string, limit = 25): string
 	return [...direct, ...fuzzy].slice(0, limit);
 }
 
-const setupSettingsTheme: SettingsListTheme = {
-	cursor: style("→ ", FG_ACCENT, BOLD),
-	label: (text, selected) => selected ? style(text, FG_ACCENT, BOLD) : text,
-	value: (text, selected) => selected ? style(text, FG_WARN, BOLD) : text,
-	description: (text) => style(text, FG_DIM),
-	hint: (text) => style(text, FG_DIM),
-};
-
-function modelValueForSetup(config: { consolidation_model: string }): string {
-	return config.consolidation_model || "choose model";
-}
-
-function assessmentModelValueForSetup(config: { selector_model: string }): string {
-	return config.selector_model || "choose model";
-}
-
-function buildSetupSettingItems(config: { enabled: boolean; capture_enabled: boolean; consolidation_enabled: boolean; consolidation_model: string; selector_enabled: boolean; selector_model: string; embedding_enabled?: boolean; observation_retention_days?: number; timer_enabled?: boolean; break_in_enabled?: boolean }): SettingItem[] {
-	const captureActive = config.enabled && config.capture_enabled;
-	const anythingEnabled = config.enabled || config.capture_enabled || config.consolidation_enabled || config.selector_enabled || config.embedding_enabled;
-	return [
-		{ id: "save", label: "Save chat examples locally", currentValue: checkboxValue(captureActive), values: ["[ ] OFF", "[x] ON"], description: "Space/Enter toggles local redacted example capture." },
-		{ id: "model", label: "Choose model for habit learning", currentValue: modelValueForSetup(config), values: [modelValueForSetup(config)], description: "Selects the model that turns saved examples into suggestions." },
-		{ id: "assessmentModel", label: "Choose model for habit assessment", currentValue: assessmentModelValueForSetup(config), values: [assessmentModelValueForSetup(config)], description: "Selects the model that checks whether approved habits apply before replies." },
-		{ id: "analyze", label: "Analyze all waiting examples now", currentValue: "open", values: ["open"], description: "Starts nonblocking analysis. No habits are auto-approved." },
-		{ id: "review", label: "Review suggested habits", currentValue: "open", values: ["open"], description: "Inspect each suggestion in a boxed panel, then approve/reject/back." },
-		{ id: "duplicates", label: "Resolve duplicate habits", currentValue: "open", values: ["open"], description: "Review semantically similar habits and choose merge/supersede/keep/archive." },
-		{ id: "habits", label: "Review approved habits", currentValue: "open", values: ["open"], description: "Browse active/disabled habits, then disable, re-enable, or archive/hide one." },
-		{ id: "embedding", label: "Prevent duplicate habits", currentValue: checkboxValue(config.embedding_enabled === true), values: ["[ ] OFF", "[x] ON"], description: "Space/Enter checks current habits before turning on private local duplicate prevention." },
-		{ id: "retention", label: "Keep analyzed source examples", currentValue: `${config.observation_retention_days || 7} days`, values: ["7 days", "14 days", "30 days"], description: "Choose short private retention for rotated redacted source text." },
-		{ id: "use", label: "Use approved habits before replies", currentValue: checkboxValue(config.selector_enabled), values: ["[ ] OFF", "[x] ON"], description: "Space/Enter toggles approved-habit reminders. Suggestions still require review first." },
-		{ id: "schedule", label: "Automatic schedule", currentValue: config.timer_enabled ? "ON" : "off", values: [config.timer_enabled ? "ON" : "off"], description: "Inspect, install, repair, disable, or remove the explicit local 03:30 systemd user timer." },
-		{ id: "breakIn", label: "Break-in review prompts", currentValue: config.break_in_enabled ? "ON" : "off", values: [config.break_in_enabled ? "ON" : "off"], description: "After Analyze creates suggestions and Pi is idle, privately ask whether to open Review. Never auto-applies." },
-		{ id: "status", label: "Show current settings", currentValue: "open", values: ["open"], description: "Show current Agent Experience status." },
-		{ id: "help", label: "Explain these settings", currentValue: "open", values: ["open"], description: "Show setup help." },
-		...(anythingEnabled ? [{ id: "off", label: "Turn all experience features off", currentValue: "open", values: ["open"], description: "Stops capture and runtime gates. Existing local records stay." } satisfies SettingItem] : []),
-		{ id: "done", label: "Done", currentValue: "close", values: ["close"], description: "Close setup." },
-	];
-}
-
-class SetupSettingsComponent implements Component {
-	private readonly box: Box;
-	private readonly list: SettingsList;
-
-	constructor(config: { enabled: boolean; capture_enabled: boolean; consolidation_enabled: boolean; consolidation_model: string; selector_enabled: boolean; selector_model: string; embedding_enabled?: boolean; observation_retention_days?: number; timer_enabled?: boolean; break_in_enabled?: boolean }, done: (result: SetupAction | undefined) => void) {
-		this.box = new Box(2, 1, panelBg);
-		this.box.addChild(new Text(style("Agent Experience setup", FG_ACCENT, BOLD), 0, 0));
-		this.box.addChild(new Text(style("Space/Enter toggles checkbox rows or opens action rows. Esc closes.", FG_DIM), 0, 0));
-		this.box.addChild({ render: () => [""], invalidate() {} });
-		this.list = new SettingsList(buildSetupSettingItems(config), 15, setupSettingsTheme, (id) => done(id as SetupAction), () => done("done"), { enableSearch: false });
-		this.box.addChild(this.list);
-	}
-
-	render(width: number): string[] { return this.box.render(width); }
-	handleInput(data: string): void { this.list.handleInput(data); }
-	invalidate(): void { this.box.invalidate(); }
-}
 
 interface SetupProgressUpdate {
 	label: string;
@@ -943,9 +892,9 @@ async function configuredModelAuthenticated(ctx: Pick<ExtensionContext, "modelRe
 }
 
 
-async function reviewSummary(root: string, userId: string): Promise<{ ledger: boolean; pending: number; active: number; candidate: number; error?: string }> {
+async function reviewSummary(root: string, userId: string): Promise<{ ledger: boolean; pending: number; active: number; candidate: number; approvedWaiting: number; duplicates: number; error?: string }> {
 	const dbPath = resolvePrivatePath(root, "ledger.sqlite");
-	if (!(await fileExists(dbPath))) return { ledger: false, pending: 0, active: 0, candidate: 0, approvedWaiting: 0 };
+	if (!(await fileExists(dbPath))) return { ledger: false, pending: 0, active: 0, candidate: 0, approvedWaiting: 0, duplicates: 0 };
 	let storage: Awaited<ReturnType<typeof openExistingExperienceStorage>> | undefined;
 	try {
 		storage = await openExistingExperienceStorage(root, { userId });
@@ -956,13 +905,44 @@ async function reviewSummary(root: string, userId: string): Promise<{ ledger: bo
 		const candidate = visible.items.filter((item: any) => item.type === "candidate").length;
 		const active = Number(db.prepare("SELECT COUNT(*) AS count FROM habits WHERE user_id = ? AND status = 'active'").get(normalizedUserId).count);
 		const approvedWaiting = listApprovedPendingHabitsForSetup(db, { userId: normalizedUserId }).length;
-		return { ledger: true, pending, active, candidate, approvedWaiting };
+		const duplicates = listHabitDuplicates(db, { userId: normalizedUserId, decision: "pending" }).length;
+		return { ledger: true, pending, active, candidate, approvedWaiting, duplicates };
 	} catch (error) {
 		const raw = error instanceof Error ? error.message : String(error);
-		return { ledger: true, pending: 0, active: 0, candidate: 0, approvedWaiting: 0, error: redactText(raw).slice(0, 300) };
+		return { ledger: true, pending: 0, active: 0, candidate: 0, approvedWaiting: 0, duplicates: 0, error: redactText(raw).slice(0, 300) };
 	} finally {
 		storage?.db.close();
 	}
+}
+
+async function buildSetupSnapshot(): Promise<SetupSnapshot> {
+	const paths = getAgentExperiencePaths();
+	const [{ config }, observations, summary] = await Promise.all([
+		readAgentExperienceConfig(paths),
+		countObservationLines(paths.root),
+		reviewSummary(paths.root, getConfiguredUserId()),
+	]);
+	let semanticFiles: SetupSnapshot["semanticFiles"] = "Not prepared";
+	if (existsSync(resolvePrivatePath(paths.root, "models"))) {
+		try {
+			semanticFiles = (await getLocalEmbeddingAssetStatus(paths.root, { deep: false })).ready ? "Ready" : "Needs attention";
+		} catch {
+			semanticFiles = "Needs attention";
+		}
+	}
+	return {
+		config,
+		counts: {
+			observations: observations || 0,
+			approved: summary.active,
+			suggestions: summary.pending + summary.candidate + summary.approvedWaiting,
+			duplicates: summary.duplicates,
+			advisorQueued: 0,
+		},
+		semanticFiles,
+		effectiveAdvisorModel: effectiveAdvisorModel(config),
+		advisorRuntime: config.enabled && config.advisor_enabled ? "Ready" : "Paused",
+	};
 }
 
 async function buildStatusText(): Promise<{ text: string; enabled: boolean }> {
@@ -1023,28 +1003,6 @@ async function handleHelpSetup(ctx: ExtensionCommandContext, config: AgentExperi
 	notify(ctx, message, "info");
 }
 
-function buildSetupOptions(config: { enabled: boolean; capture_enabled: boolean; consolidation_enabled: boolean; consolidation_model: string; selector_enabled: boolean; selector_model: string; embedding_enabled?: boolean; observation_retention_days?: number; timer_enabled?: boolean; break_in_enabled?: boolean }): string[] {
-	const captureActive = config.enabled && config.capture_enabled;
-	const anythingEnabled = config.enabled || config.capture_enabled || config.consolidation_enabled || config.selector_enabled || config.embedding_enabled;
-	return [
-		`${captureActive ? "[x]" : "[ ]"} Save chat examples locally`,
-		`Choose model for habit learning (${modelValueForSetup(config)})`,
-		`Choose model for habit assessment (${assessmentModelValueForSetup(config)})`,
-		"Analyze all waiting examples now",
-		"Review suggested habits",
-		"Resolve duplicate habits",
-		"Review approved habits",
-		`${config.embedding_enabled ? "[x]" : "[ ]"} Prevent duplicate habits`,
-		`Keep analyzed source examples (${config.observation_retention_days || 7} days)`,
-		`${config.selector_enabled ? "[x]" : "[ ]"} Use approved habits before replies`,
-		`Automatic schedule: ${config.timer_enabled ? "ON" : "off"} (manage/explain)`,
-		`${config.break_in_enabled ? "[x]" : "[ ]"} Break-in review prompts`,
-		"Show current settings",
-		"Explain these settings",
-		...(anythingEnabled ? ["Turn all experience features off"] : []),
-		"Done",
-	];
-}
 
 function setupControlsMessage(): string {
 	return [
@@ -1131,20 +1089,20 @@ async function handleSetupEmbedding(ctx: ExtensionCommandContext) {
 		"Keep duplicate prevention ON",
 		"Turn duplicate prevention OFF",
 		"Scan for duplicate habits now",
-		"Turn off and remove local duplicate-check files",
+		...(!config.selector_enabled ? ["Turn off and remove local semantic files"] : []),
 		"Back/cancel (no changes)",
 	] : [
 		"Explain duplicate prevention (no changes)",
 		"Prepare local duplicate prevention and scan",
 		"Scan using already prepared local files",
-		"Remove local duplicate-check files",
+		...(!config.selector_enabled ? ["Remove local semantic files"] : []),
 		"Back/cancel (no changes)",
 	];
 	const choice = await chooseSetup(ctx, "Prevent duplicate habits", choices, false);
 	if (!choice || choice === "Back/cancel (no changes)" || choice === "Keep duplicate prevention ON") return;
 	if (choice === "Explain duplicate prevention (no changes)") return notify(ctx, [
 		"Duplicate prevention compares only normalized When/Do habit wording on this computer.",
-		"It never sends saved examples, source references, evidence summaries, paths, checksums, audit text, credentials, or tokens.",
+		"It never sends saved examples, source references, evidence summaries, private paths, audit text, credentials, or tokens.",
 		"Preparing it downloads about 150 MB of private local files once. No external app, account, key, service, or setup is required.",
 		"Similarity only routes possible duplicates for your review; it never merges or approves habits automatically.",
 	].join("\n"), "info");
@@ -1152,10 +1110,11 @@ async function handleSetupEmbedding(ctx: ExtensionCommandContext) {
 		const { path } = await setAgentExperienceEmbeddingEnabledAfterScan(false, paths);
 		return notify(ctx, [`Prevent duplicate habits: OFF`, `Local files are preserved for quick offline re-enable.`, `Config file: ${path}`].join("\n"), "info");
 	}
-	if (choice === "Turn off and remove local duplicate-check files" || choice === "Remove local duplicate-check files") {
+	if (choice === "Turn off and remove local semantic files" || choice === "Remove local semantic files") {
+		if (config.selector_enabled) return notify(ctx, "Local semantic files are still required by approved-habit guidance. Turn that feature off first; no files were removed.", "warn");
 		await setAgentExperienceEmbeddingEnabledAfterScan(false, paths);
 		await removeLocalEmbeddingAssets(paths.root);
-		return notify(ctx, "Duplicate prevention is OFF and its local model files were removed. Habits, review decisions, and audit remain.", "info");
+		return notify(ctx, "Duplicate prevention is OFF and its shared local semantic files were removed. Habits, review decisions, and audit remain.", "info");
 	}
 	const preparing = choice === "Prepare local duplicate prevention and scan";
 	const operation = await runSetupProgress(ctx, preparing ? "Preparing duplicate prevention (about 150 MB once)" : "Checking for duplicate habits", async (signal, update) => {
@@ -1191,6 +1150,52 @@ async function handleSetupEmbedding(ctx: ExtensionCommandContext) {
 	const scan = operation.value;
 	const reconciliation = (scan as any).threshold_reconciliation || { dismissed: [], refreshed: [] };
 	notify(ctx, [`Duplicate check complete: ${plural(scan.checked, "habit")} checked, ${plural(scan.relations.length, "possible duplicate")} found.`, `${plural(reconciliation.dismissed?.length || 0, "outdated duplicate suggestion")} cleared; ${plural(reconciliation.refreshed?.length || 0, "existing suggestion")} refreshed.`, preparing ? "Prevent duplicate habits: ON" : `Prevent duplicate habits: ${config.embedding_enabled ? "ON" : "OFF"}`, "Next: choose Resolve duplicate habits if any were found."].join("\n"), "info");
+}
+
+async function handleSetupSemanticFiles(ctx: ExtensionCommandContext) {
+	const paths = getAgentExperiencePaths();
+	const { config } = await readAgentExperienceConfig(paths);
+	const filesExist = existsSync(resolvePrivatePath(paths.root, "models"));
+	const required = config.selector_enabled || config.embedding_enabled;
+	const choices = [
+		"Explain local semantic files (no changes)",
+		...(filesExist ? ["Verify local semantic files"] : []),
+		...(filesExist && !required ? ["Remove local semantic files"] : []),
+		...(filesExist && required ? ["Why local semantic files cannot be removed"] : []),
+		"Back/cancel (no changes)",
+	];
+	const choice = await chooseSetup(ctx, "Local semantic files", choices, false);
+	if (!choice || choice === "Back/cancel (no changes)") return;
+	if (choice === "Explain local semantic files (no changes)") return notify(ctx, [
+		"These private files are shared by approved-habit guidance and duplicate prevention.",
+		"They are prepared only when you explicitly enable a dependent feature.",
+		"Turning features off preserves them for a quicker offline re-enable.",
+		"Removal never deletes habits, observations, suggestions, review decisions, or audit history.",
+	].join("\n"), "info");
+	if (choice === "Why local semantic files cannot be removed") {
+		return notify(ctx, [
+			"Local semantic files were not removed because an enabled feature still requires them.",
+			`Use approved habits: ${config.selector_enabled ? "ON" : "OFF"}`,
+			`Prevent duplicate habits: ${config.embedding_enabled ? "ON" : "OFF"}`,
+			"Turn the dependent feature or features off first, then return here to remove the files.",
+		].join("\n"), "warn");
+	}
+	if (choice === "Verify local semantic files") {
+		const result = await runSetupProgress(ctx, "Verifying local semantic files", async (_signal, update) => {
+			update({ label: "Checking private local files" });
+			return getLocalEmbeddingAssetStatus(paths.root, { deep: true });
+		});
+		if (!result.ok) return notify(ctx, `Local semantic files could not be verified safely: ${formatReviewReadError(result.error)}`, "warn");
+		return notify(ctx, result.value.ready ? "Local semantic files are ready." : "Local semantic files need attention. Re-enable a dependent feature to prepare them safely.", result.value.ready ? "info" : "warn");
+	}
+	if (choice === "Remove local semantic files") {
+		const result = await runSetupProgress(ctx, "Removing local semantic files", async (_signal, update) => {
+			update({ label: "Removing private local files" });
+			await removeLocalEmbeddingAssets(paths.root);
+		});
+		if (!result.ok) return notify(ctx, `Local semantic files were not removed: ${formatReviewReadError(result.error)}`, "warn");
+		return notify(ctx, "Local semantic files removed. Habits, observations, suggestions, review decisions, and audit history remain.", "info");
+	}
 }
 
 async function handleSetupRetention(ctx: ExtensionCommandContext) {
@@ -1470,6 +1475,64 @@ async function handleSetupAssessmentModel(ctx: ExtensionCommandContext) {
 		`Config file: ${path}`,
 		`Use approved habits before replies: unchanged (${config.selector_enabled ? "ON" : "OFF"}).`,
 	].join("\n"), "info");
+}
+
+async function saveAdvisorModel(model: string) {
+	const paths = getAgentExperiencePaths();
+	const current = await readAgentExperienceConfig(paths);
+	await writeAgentExperienceConfig({ ...current.config, advisor_model: model }, paths);
+	return paths.configPath;
+}
+
+async function handleSetupAdvisorModel(ctx: ExtensionCommandContext) {
+	const paths = getAgentExperiencePaths();
+	const { config } = await readAgentExperienceConfig(paths);
+	const inherit = "Same as habit assessment";
+	const separate = "Choose separate authenticated model";
+	const choice = await chooseSetup(ctx, "Choose model for Advisor", [inherit, separate, "Back/cancel (no changes)"], false);
+	if (!choice || choice === "Back/cancel (no changes)") return notify(ctx, "Advisor model unchanged.", "info");
+	if (choice === inherit) {
+		if (config.advisor_enabled) {
+			const auth = await configuredModelAuthenticated(ctx, config.selector_model);
+			if (!auth.ok) return notify(ctx, `Advisor model unchanged because the inherited model is not authenticated. Detail: ${auth.reason}`, "warn");
+		}
+		const path = await saveAdvisorModel("");
+		return notify(ctx, [`Advisor model: Same as habit assessment (${config.selector_model})`, `Config file: ${path}`, `Runtime Advisor: unchanged (${config.advisor_enabled ? "ON" : "OFF"}).`].join("\n"), "info");
+	}
+	const models = availableTextModels(ctx);
+	if (models.length === 0) return notify(ctx, "No authenticated text models are available for Advisor. Configure a Pi model first, then return to setup.", "warn");
+	const currentModel = config.advisor_model || config.selector_model;
+	const selected = await chooseLiveModel(ctx, models, recommendedTextModels(ctx, currentModel), currentModel, ADVISOR_MODEL_PICKER);
+	if (!selected || selected === "Back/cancel (no changes)") return notify(ctx, "Advisor model unchanged.", "info");
+	if (!models.includes(selected) && !configuredModelAvailable(ctx, selected)) return notify(ctx, `Model is not available/authenticated: ${redactText(selected)}`, "warn");
+	const auth = await configuredModelAuthenticated(ctx, selected);
+	if (!auth.ok) return notify(ctx, `Advisor model unchanged because authentication failed. Detail: ${auth.reason}`, "warn");
+	const path = await saveAdvisorModel(selected);
+	return notify(ctx, [`Advisor model: ${selected}`, `Config file: ${path}`, `Runtime Advisor: unchanged (${config.advisor_enabled ? "ON" : "OFF"}).`].join("\n"), "info");
+}
+
+async function handleSetupAdvisorToggle(ctx: ExtensionCommandContext, enable: boolean) {
+	const paths = getAgentExperiencePaths();
+	const { config } = await readAgentExperienceConfig(paths);
+	if (!enable) {
+		const { path } = await setAgentExperienceAdvisorEnabled(false, paths);
+		return notify(ctx, [`Runtime Advisor: OFF`, `Config file: ${path}`, `Use approved habits: unchanged (${config.selector_enabled ? "ON" : "OFF"}).`].join("\n"), "info");
+	}
+	const model = effectiveAdvisorModel(config);
+	const auth = await configuredModelAuthenticated(ctx, model);
+	if (!auth.ok) return notify(ctx, `Runtime Advisor remains OFF because its model is not authenticated. Detail: ${auth.reason}`, "warn");
+	const confirmation = await chooseActionInPanel(ctx, "Confirm Runtime Advisor", [
+		`Runtime Advisor uses a separate call to ${model} and reviews incremental transcript updates.`,
+		"It may use isolated read-only workspace tools. It cannot edit files or run commands.",
+		"Any steering it adds is visible in the conversation.",
+		"It keeps bounded local queue and progress state under Agent Experience.",
+		config.capture_enabled
+			? "Because Learning is on, accepted Advisor findings may also become local learning evidence; no suggestion is auto-approved."
+			: "Learning is off, so Advisor findings do not become learning evidence.",
+	].join("\n"), ["Back/cancel (no changes)", "Turn Runtime Advisor ON"]);
+	if (confirmation !== "Turn Runtime Advisor ON") return notify(ctx, "Runtime Advisor remains OFF. No setting changed.", "info");
+	const { path } = await setAgentExperienceAdvisorEnabled(true, paths);
+	return notify(ctx, [`Runtime Advisor: ON`, `Advisor model: ${config.advisor_model ? model : `Same as habit assessment (${model})`}`, `Config file: ${path}`, `Use approved habits: unchanged (${config.selector_enabled ? "ON" : "OFF"}).`].join("\n"), "info");
 }
 
 async function acquireAnalyzeLock(root: string) {
@@ -2308,15 +2371,6 @@ async function handleSetupUseHabitsToggle(ctx: ExtensionCommandContext, enable: 
 	return handleSelector("off", ctx);
 }
 
-async function showSetupPanel(ctx: ExtensionCommandContext): Promise<SetupAction | undefined> {
-	const ui = (ctx as { hasUI?: boolean; ui?: { custom?: ExtensionCommandContext["ui"]["custom"] } })?.ui;
-	if ((ctx as { hasUI?: boolean }).hasUI === false || typeof ui?.custom !== "function") return undefined;
-	const { config } = await readAgentExperienceConfig(getAgentExperiencePaths());
-	return ui.custom<SetupAction | undefined>((_tui, _theme, _keybindings, done) => new SetupSettingsComponent(config, done), {
-		overlay: true,
-		overlayOptions: { width: "80%", minWidth: 72, maxHeight: "90%", anchor: "center", margin: 1 },
-	});
-}
 
 async function handleSetupDirect(args: string[], ctx: ExtensionCommandContext): Promise<boolean> {
 	const [action = "", value = ""] = args.map((arg) => arg.toLowerCase());
@@ -2428,59 +2482,66 @@ async function handleSetupDirect(args: string[], ctx: ExtensionCommandContext): 
 
 async function handleSetup(ctx: ExtensionCommandContext, args: string[] = []) {
 	if (await handleSetupDirect(args, ctx)) return;
-	if ((ctx as { hasUI?: boolean }).hasUI === false || typeof (ctx as any).ui?.select !== "function") {
+	const setupContext = ctx as unknown as { hasUI?: boolean; ui?: { select?: unknown; custom?: unknown } };
+	if (setupContext.hasUI === false || (typeof setupContext.ui?.select !== "function" && typeof setupContext.ui?.custom !== "function")) {
 		notify(ctx, setupUnavailableMessage(), "info");
 		return;
 	}
+	let view: SetupView = "home";
 	while (true) {
-		const action = await showSetupPanel(ctx);
+		const snapshot = await buildSetupSnapshot();
+		let action: SetupAction | undefined;
+		try {
+			action = await showSetupView(ctx, view, snapshot);
+		} catch (error) {
+			const raw = error instanceof Error ? error.message : String(error);
+			notify(ctx, `Agent Experience setup menu failed: ${redactText(raw).slice(0, 300)}\nNo config changed.`, "warn");
+			return;
+		}
 		if (!action) {
-			const { config } = await readAgentExperienceConfig(getAgentExperiencePaths());
-			const options = buildSetupOptions(config);
-			const choice = await chooseSetup(ctx, "Agent Experience setup — choose what to configure", options, false);
-			if (!choice || choice === "Done") return notify(ctx, "Agent Experience setup closed.", "info");
-			if (choice === "Show current settings") await handleStatusSetup(ctx);
-			else if (choice === "Review suggested habits") await handleReviewSetup(ctx);
-			else if (choice === "Resolve duplicate habits") await handleDuplicateResolutionSetup(ctx);
-			else if (choice === "Review approved habits") await handleApprovedHabitsSetup(ctx);
-			else if (choice.endsWith("Prevent duplicate habits")) await handleSetupEmbedding(ctx);
-			else if (choice.startsWith("Keep analyzed source examples")) await handleSetupRetention(ctx);
-			else if (choice === "Explain these settings") await handleHelpSetup(ctx, config);
-			else if (choice === "Turn all experience features off") await handleOff(ctx);
-			else if (choice.startsWith("Choose model for habit learning")) await handleSetupModel(ctx);
-			else if (choice.startsWith("Choose model for habit assessment")) await handleSetupAssessmentModel(ctx);
-			else if (choice === "Analyze all waiting examples now") { await handleAnalyzeNow(ctx); return; }
-			else if (choice.startsWith("Automatic schedule")) await handleSetupTimer(ctx);
-			else if (choice.includes("Break-in review prompts")) await handleSetupBreakIn(ctx);
-			else if (choice.includes("Use approved habits before replies")) await handleSetupUseHabitsToggle(ctx, !config.selector_enabled);
-			else if (choice.includes("Save chat examples locally")) {
-				if (config.enabled && config.capture_enabled) captureBuffer.clearAll();
-				const { config: updated, path } = await setAgentExperienceCaptureActive(!(config.enabled && config.capture_enabled));
-				notify(ctx, [`Save chat examples locally: ${updated.enabled && updated.capture_enabled ? "ON" : "OFF"}`, `Config file: ${path}`].join("\n"), "info");
-			}
+			notify(ctx, "Agent Experience setup ignored an unknown menu choice. No config changed.", "warn");
 			continue;
 		}
 		if (action === "done") return notify(ctx, "Agent Experience setup closed.", "info");
-		const { config } = await readAgentExperienceConfig(getAgentExperiencePaths());
-		if (action === "save") {
+		if (action === "back") {
+			view = "home";
+			continue;
+		}
+		const nextView: Partial<Record<SetupAction, SetupView>> = {
+			openLearning: "learning",
+			openGuidance: "guidance",
+			openHabits: "habits",
+			openAutomation: "automation",
+			openStatus: "status",
+		};
+		const destination = nextView[action];
+		if (destination) {
+			view = destination;
+			continue;
+		}
+		const { config } = snapshot;
+		if (action === "capture") {
 			if (config.enabled && config.capture_enabled) captureBuffer.clearAll();
 			const { config: updated, path } = await setAgentExperienceCaptureActive(!(config.enabled && config.capture_enabled));
-			notify(ctx, [`Save chat examples locally: ${updated.enabled && updated.capture_enabled ? "ON" : "OFF"}`, `Config file: ${path}`].join("\n"), "info");
-		} else if (action === "model") await handleSetupModel(ctx);
-		else if (action === "assessmentModel") await handleSetupAssessmentModel(ctx);
+			notify(ctx, [`Learn from conversations: ${updated.enabled && updated.capture_enabled ? "ON" : "OFF"}`, `Config file: ${path}`, "Suggested habits still require explicit review."].join("\n"), "info");
+		} else if (action === "learningModel") await handleSetupModel(ctx);
 		else if (action === "analyze") { await handleAnalyzeNow(ctx); return; }
 		else if (action === "review") await handleReviewSetup(ctx);
-		else if (action === "duplicates") await handleDuplicateResolutionSetup(ctx);
+		else if (action === "advisor") await handleSetupAdvisorToggle(ctx, !(config.enabled && config.advisor_enabled));
+		else if (action === "advisorModel") await handleSetupAdvisorModel(ctx);
+		else if (action === "selector") await handleSetupUseHabitsToggle(ctx, !(config.enabled && config.selector_enabled));
+		else if (action === "assessmentModel") await handleSetupAssessmentModel(ctx);
 		else if (action === "habits") await handleApprovedHabitsSetup(ctx);
+		else if (action === "duplicates") await handleDuplicateResolutionSetup(ctx);
 		else if (action === "embedding") await handleSetupEmbedding(ctx);
 		else if (action === "retention") await handleSetupRetention(ctx);
-		else if (action === "use") await handleSetupUseHabitsToggle(ctx, !config.selector_enabled);
 		else if (action === "schedule") await handleSetupTimer(ctx);
 		else if (action === "breakIn") await handleSetupBreakIn(ctx);
-		else if (action === "status") await handleStatusSetup(ctx);
-		else if (action === "help") await handleHelpSetup(ctx, config);
-		else if (action === "off") await handleOff(ctx);
-		else notify(ctx, `Agent Experience setup ignored unknown action: ${redactText(String(action)).slice(0, 120)}\nNo config changed.`, "warn");
+		else if (action === "semanticFiles") await handleSetupSemanticFiles(ctx);
+		else if (action === "off") {
+			await handleOff(ctx);
+			view = "home";
+		} else notify(ctx, `Agent Experience setup ignored unknown action: ${redactText(String(action)).slice(0, 120)}\nNo config changed.`, "warn");
 	}
 }
 
@@ -2524,11 +2585,14 @@ async function handleOff(ctx: ExtensionCommandContext) {
 		[
 			"Agent Experience is OFF.",
 			`Config file: ${path}`,
-			"Save chat examples locally: OFF",
-			"Analyze all waiting examples now: OFF",
-			"Use approved habits before replies: OFF",
-			"Automatic schedule: OFF (unit files, if any, are retained)",
-			"Off drops in-memory capture buffers without writing observations. Existing records are preserved.",
+			"Learn from conversations: OFF",
+			"Runtime Advisor: OFF",
+			"Analyze: OFF",
+			"Use approved habits: OFF",
+			"Prevent duplicate habits: OFF",
+			"Automatic Analyze schedule: OFF (installed files, if any, are retained)",
+			"Review prompts after Analyze: OFF",
+			"All-off drops in-memory capture buffers without writing observations. Existing records and local semantic files are preserved.",
 		].join("\n"),
 		"info",
 	);
