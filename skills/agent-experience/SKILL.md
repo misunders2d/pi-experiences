@@ -20,31 +20,13 @@ description: >-
 
 Experience may learn durable work preferences and recurring task/tool categories. It must not convert project facts, one-off labels, credentials, or narrow task knowledge into habits.
 
-## Normal-user rule: grouped setup first
+## Normal-user rule
 
-For configuration or discovery, start with the complete control panel:
+For configuration or discovery, start with `/experience setup`. Read its groups in order: **Learning from conversations**, **Guidance and Advisor**, **Manage habits**, **Automation and privacy**, then **Status and help**. Setup must remain sufficient by itself; typed subcommands and internal IDs/settings are advanced maintainer controls, never normal-user prerequisites.
 
-```text
-/experience setup
-```
+Runtime Advisor is independently opt-in. Exact approved `When:` / `Do:` habits are its complete policy source; reviewer reasoning never becomes standalone advice, and direct user instructions/law still win. It must remain bounded, read-only, visible, non-blocking, non-mutating, non-forcing, and private. Learning still requires repeated evidence, Analyze, review, and approval.
 
-Read its first screen in order:
-
-1. **Learning from conversations** — capture, learning model, Analyze, and suggestion review.
-2. **Guidance and Advisor** — approved-habit reminders and the optional Runtime Advisor.
-3. **Manage habits** — approved habits, possible duplicates, and local duplicate prevention.
-4. **Automation and privacy** — retention, explicit schedule management, and review prompts.
-5. **Status and help** — current state and plain-language explanations.
-
-Setup must remain sufficient by itself. Do not require typed setup/review subcommands, IDs, checksums, thresholds, endpoints, provider settings, model-server details, or filesystem commands. Typed `/experience ...` subcommands are advanced backward-compatible controls for maintainers and tests only.
-
-**Advisor model** is a separate choice that defaults to **Same as habit assessment**. This inheritance follows the current authenticated habit-assessment model until the user chooses an Advisor override. When enabled after its disclosure and explicit confirmation, the second model reviews bounded incremental primary-turn updates. It may investigate only through `read`, `grep`, and `glob`; every path and result is bounded, redacted, and workspace-confined, and no mutating tool is available.
-
-Generic advice is non-authoritative and asks the primary to weigh the suggestion. An approved Experience habit carries reviewed authority and exposes its exact `When:` / `Do:` wording and next step; direct user instructions and law still override it. A `nit` waits until the primary is settled. An eligible active-run `concern` or `blocker` may use Pi's documented `steer` channel. Canceled, terminal, plan mode, ambiguous, idle, unsupported, replacement, and shutdown states append visibly when safe or use a visible-only fallback.
-
-Learning stays independently gated. With **Learning from conversations** off, there is no Advisor observation. With Learning on, one accepted event may append at most one bounded observation; it cannot directly create or change a habit, and repeated evidence, Analyze, review, and explicit approval remain mandatory. The extension must never persist the private Advisor transcript, raw model output, candidate aliases, retrieval scores, tool investigations/results, queue state, or suppressed findings.
-
-Stock Pi 0.83 provides a blockable pre-execution `tool_call` hook. Runtime Advisor intentionally never registers or uses that hook and never vetoes, pauses, or pre-blocks a primary tool call. Never use `followUp` or `nextTurn`, because either can force an unwanted continuation. Steering affects only a safely active continuation; otherwise wait for `agent_settled` and append with `triggerTurn:false`, or degrade to visible-only. Never represent visible-only fallback as model guidance.
+For Runtime Advisor configuration, troubleshooting, audits, or changes, first read [`references/runtime-advisor.md`](references/runtime-advisor.md). It owns model inheritance, confined tools, delivery, Pi-hook, observation, privacy, and fallback detail.
 
 Use natural conversation when the user directly discusses or declares a habit:
 

@@ -106,10 +106,10 @@ Run Pi's actual skill loader against the installed package and require zero diag
 
 The companion Advisor driver is test-only, imports `buildAdvisorCustomMessage` from the installed package, and calls Pi's public `sendMessage(message, { triggerTurn:false })` API. It emits exactly one fixture per command/update and never changes production runtime behavior. Preserve installed-package artifacts proving:
 
-- collapsed and expanded generic nit, concern, and blocker cards;
-- a collapsed and expanded habit violation card with exact `When:` / `Do:` and next-step authority;
+- collapsed and expanded approved-habit concern and blocker cards;
+- exact `When:` / `Do:` provenance and next-step authority;
 - wide and narrow wrapping without terminal overflow;
-- non-authoritative generic advice framing versus approved-habit authority;
+- silence when no supplied approved habit is violated;
 - one card per update;
 - no IDs, aliases, scores, checksums, raw output, transcript excerpts, or private paths;
 - unchanged live Experience state and no live/global install destination.

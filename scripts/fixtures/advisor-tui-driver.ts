@@ -4,7 +4,7 @@ import type { AcceptedAdvisorFinding, AdvisorHabitCandidate, AdvisorUpdate } fro
 
 const fingerprint = "f".repeat(64);
 const habit: AdvisorHabitCandidate = {
-	alias: "h-private-smoke-alias",
+	alias: "h1",
 	habitId: "private-smoke-habit-id",
 	condition: "When publishing an installed package from a clean branch",
 	behavior: "Verify the freshly packed artifact in an isolated Pi session before release",
@@ -20,6 +20,7 @@ const update: AdvisorUpdate = {
 	inProgress: false,
 	primaryDelta: "private raw primary transcript excerpt",
 	currentRequest: "private raw user request",
+	configuredLaw: "Direct current user instructions override approved habits.",
 	habits: [habit],
 	eventFingerprint: fingerprint,
 	causalEpisodeId: "private-smoke-episode",
@@ -27,25 +28,13 @@ const update: AdvisorUpdate = {
 };
 
 const fixtures: Record<string, AcceptedAdvisorFinding> = {
-	"generic-nit": {
-		kind: "generic_advice",
-		severity: "nit",
-		eventFingerprint: fingerprint,
-		note: "Tighten the final summary so each claimed result names the exact command evidence that supports it without repeating implementation detail.",
-	},
-	"generic-concern": {
-		kind: "generic_advice",
+	"habit-concern": {
+		kind: "habit_violation",
 		severity: "concern",
 		eventFingerprint: fingerprint,
-		note: "Check that the isolated verification really uses the freshly packed dependency tree rather than repository files, shared npm cache contents, or a global Pi installation.",
+		candidate: habit,
 	},
-	"generic-blocker": {
-		kind: "generic_advice",
-		severity: "blocker",
-		eventFingerprint: fingerprint,
-		note: "Stop before release because the claimed package proof must include both grouped setup and Advisor terminal behavior at wide and narrow terminal widths.",
-	},
-	habit: {
+	"habit-blocker": {
 		kind: "habit_violation",
 		severity: "blocker",
 		eventFingerprint: fingerprint,
@@ -59,7 +48,7 @@ export default function advisorTuiDriver(pi: ExtensionAPI): void {
 		description: "Emit one deterministic Advisor renderer fixture through Pi's public custom-message API",
 		handler: async (args) => {
 			const fixture = fixtures[String(args || "").trim().toLowerCase()];
-			if (!fixture) throw new Error("usage: /advisor-smoke generic-nit|generic-concern|generic-blocker|habit");
+			if (!fixture) throw new Error("usage: /advisor-smoke habit-concern|habit-blocker");
 			sequence += 1;
 			pi.sendMessage(buildAdvisorCustomMessage(fixture, { ...update, generation: sequence, cursor: sequence }), { triggerTurn: false });
 		},

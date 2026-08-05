@@ -1,11 +1,7 @@
 import type { AdvisorAttempt, AdvisorUpdate } from "./types.ts";
 
 const RING_CAPACITY = 4_096;
-const STOP_WORDS: Record<string, true> = {
-	stop: true,
-	done: true,
-	"no issue continue": true,
-};
+const HABIT_ALIAS = /^h[1-8]$/;
 
 function normalize(value: string): string {
 	return value
@@ -15,21 +11,23 @@ function normalize(value: string): string {
 		.trim();
 }
 
+function validHabitAttempt(value: unknown, habitAliases: Set<string>): value is AdvisorAttempt {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+	const attempt = value as Record<string, unknown>;
+	if (Object.keys(attempt).sort().join(",") !== "habitAlias,kind,severity") return false;
+	return attempt.kind === "habit_violation"
+		&& typeof attempt.habitAlias === "string"
+		&& HABIT_ALIAS.test(attempt.habitAlias)
+		&& habitAliases.has(attempt.habitAlias)
+		&& (attempt.severity === "concern" || attempt.severity === "blocker");
+}
+
 function attemptKey(attempt: AdvisorAttempt, eventFingerprint: string): string {
-	if (attempt.kind === "generic_advice") {
-		return `${eventFingerprint}:${normalize(`advice:${attempt.severity}:${attempt.note}`)}`;
-	}
 	return `${eventFingerprint}:${normalize(`habit:${attempt.severity}:${attempt.habitAlias}`)}`;
 }
 
 function severityRank(severity: string): number {
-	if (severity === "blocker") return 3;
-	if (severity === "concern") return 2;
-	return 1;
-}
-
-function isStopWord(note: string): boolean {
-	return STOP_WORDS[normalize(note)] === true;
+	return severity === "blocker" ? 2 : 1;
 }
 
 export class AdvisorEmissionGuard {
@@ -48,24 +46,18 @@ export class AdvisorEmissionGuard {
 
 		const habitAliases = new Set(update.habits.map((habit) => habit.alias));
 		const validAttempts = attempts.filter((attempt) => {
-			const key = attemptKey(attempt, update.eventFingerprint);
-			if (this.attemptRing.includes(key)) return false;
-			if (attempt.kind === "habit_violation" && !habitAliases.has(attempt.habitAlias)) return false;
-			if (attempt.kind === "generic_advice" && isStopWord(attempt.note)) return false;
-			return true;
+			if (!validHabitAttempt(attempt, habitAliases)) return false;
+			return !this.attemptRing.includes(attemptKey(attempt, update.eventFingerprint));
 		});
 		if (validAttempts.length === 0) return undefined;
 
-		validAttempts.sort((a, b) => {
-			const aHabit = a.kind === "habit_violation" ? 1 : 0;
-			const bHabit = b.kind === "habit_violation" ? 1 : 0;
-			if (aHabit !== bHabit) return bHabit - aHabit;
-			return severityRank(b.severity) - severityRank(a.severity);
-		});
+		validAttempts.sort((a, b) => severityRank(b.severity) - severityRank(a.severity));
 		return validAttempts[0];
 	}
 
 	commit(attempt: AdvisorAttempt, update: AdvisorUpdate): void {
+		const habitAliases = new Set(update.habits.map((habit) => habit.alias));
+		if (!validHabitAttempt(attempt, habitAliases)) throw new Error("Invalid Advisor habit attempt");
 		const key = attemptKey(attempt, update.eventFingerprint);
 		if (!this.attemptRing.includes(key)) {
 			this.attemptRing[this.attemptRingCursor] = key;

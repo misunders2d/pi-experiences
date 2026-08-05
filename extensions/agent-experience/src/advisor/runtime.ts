@@ -23,6 +23,12 @@ interface QueuedEnvelope {
 
 const MAX_QUEUED_BATCHES = 5;
 const CATCHUP_TIMEOUT_MS = 30_000;
+const EXACT_FAILURE_DIAGNOSTICS = new Set<AdvisorDiagnosticReason>([
+	"advisor_auth_unavailable",
+	"advisor_context_overflow",
+	"advisor_timeout",
+	"advisor_unavailable",
+]);
 
 export class AdvisorRuntime {
 	private readonly host: AdvisorRuntimeHost;
@@ -56,24 +62,29 @@ export class AdvisorRuntime {
 
 		if (existingIndex >= 0) {
 			const existing = this.queue[existingIndex];
-			// Merge: concatenate text, merge entry IDs, preserve 24K cap
+			// Merge review and persistence-safe evidence from the exact same causal batch.
 			const mergedEntryIds = [
 				...new Set([...existing.mergedEntryIds, ...delta.primaryEntryIds]),
 			];
 			let mergedText = `${existing.mergedText}\n${delta.text}`;
 			if (mergedText.length > 24_000) mergedText = mergedText.slice(0, 24_000);
+			const observationParts = [existing.delta.observationText?.trim(), delta.observationText?.trim()]
+				.filter((value): value is string => !!value);
+			let mergedObservationText = observationParts.join("\n");
+			if (mergedObservationText.length > 3_000) mergedObservationText = mergedObservationText.slice(0, 3_000);
 
-			// Preserve the newer cursor
 			const mergedDelta: AdvisorPrimaryDelta = {
-				...existing.delta,
+				...delta,
 				cursor: Math.max(existing.delta.cursor, delta.cursor),
 				text: mergedText,
+				observationText: mergedObservationText || undefined,
 				primaryEntryIds: mergedEntryIds,
+				causedByAdvisor: existing.delta.causedByAdvisor || delta.causedByAdvisor,
 				toolEventCount: existing.delta.toolEventCount + delta.toolEventCount,
 				eventFingerprint: computeEventFingerprint(
-					existing.delta.scope,
+					delta.scope,
 					mergedEntryIds,
-					existing.delta.causalEpisodeId,
+					delta.causalEpisodeId,
 					mergedText,
 				),
 			};
@@ -193,8 +204,8 @@ export class AdvisorRuntime {
 					// Convert failure to diagnostic; don't throw into primary loop
 					if (signal.aborted || this.disposed) {
 						this.host.onStaticDiagnostic("advisor_cancelled");
-					} else if (err instanceof Error && /timeout/i.test(err.message)) {
-						this.host.onStaticDiagnostic("advisor_timeout");
+					} else if (err instanceof Error && EXACT_FAILURE_DIAGNOSTICS.has(err.message as AdvisorDiagnosticReason)) {
+						this.host.onStaticDiagnostic(err.message as AdvisorDiagnosticReason);
 					} else {
 						this.host.onStaticDiagnostic("advisor_unavailable");
 					}
@@ -239,28 +250,20 @@ export class AdvisorRuntime {
 }
 
 function buildAcceptedFinding(
-	attempt: { kind: string; note?: string; severity: string; habitAlias?: string },
+	attempt: { kind: "habit_violation"; severity: "concern" | "blocker"; habitAlias: string },
 	eventFingerprint: string,
 ): AcceptedAdvisorFinding {
-	if (attempt.kind === "generic_advice") {
-		return {
-			kind: "generic_advice",
-			note: attempt.note ?? "",
-			severity: attempt.severity as AcceptedAdvisorFinding["severity"],
-			eventFingerprint,
-		};
-	}
 	return {
 		kind: "habit_violation",
 		candidate: {
-			alias: attempt.habitAlias ?? "",
+			alias: attempt.habitAlias,
 			habitId: "",
 			condition: "",
 			behavior: "",
 			checksum: "",
 			lawHash: "",
 		},
-		severity: attempt.severity as AcceptedAdvisorFinding["severity"],
+		severity: attempt.severity,
 		eventFingerprint,
 	};
 }

@@ -62,9 +62,8 @@ function observationsForModelPrompt(observations: ValidatedObservationRecord[]):
 				checksum: record.checksum,
 				created_at: record.created_at,
 				origin: "advisor_finding",
-				user: truncateForModel(payload.current_request_redacted, 900),
 				assistant: truncateForModel(payload.primary_behavior_redacted, 1200),
-				advisor_finding: truncateForModel(payload.advice_redacted, 900),
+				advisor_finding: truncateForModel(payload.approved_behavior_redacted, 900),
 				severity: payload.severity,
 			};
 		}

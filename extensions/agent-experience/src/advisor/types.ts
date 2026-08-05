@@ -1,7 +1,5 @@
-export type AdvisorSeverity = 'nit' | 'concern' | 'blocker';
-export type AdvisorAttempt =
-  | { kind: 'generic_advice'; note: string; severity: AdvisorSeverity }
-  | { kind: 'habit_violation'; habitAlias: string; severity: AdvisorSeverity };
+export type AdvisorSeverity = 'concern' | 'blocker';
+export type AdvisorAttempt = { kind: 'habit_violation'; habitAlias: string; severity: AdvisorSeverity };
 
 export interface AdvisorScope {
   userId: string;
@@ -19,6 +17,7 @@ export interface AdvisorPrimaryDelta {
   causalEpisodeId: string;
   causedByAdvisor: boolean;
   text: string;
+  observationText?: string;
   currentRequest: string;
   inProgress: boolean;
   toolEventCount: number;
@@ -30,6 +29,7 @@ export type AdvisorDiagnosticReason =
   | 'advisor_cancelled'
   | 'advisor_context_overflow'
   | 'advisor_invalid_output'
+  | 'advisor_observation_write_failed'
   | 'advisor_queue_coalesced'
   | 'advisor_timeout'
   | 'advisor_tool_budget_exhausted'
@@ -52,16 +52,21 @@ export interface AdvisorUpdate {
   cursor: number;
   inProgress: boolean;
   primaryDelta: string;
+  observationText?: string;
   currentRequest: string;
+  configuredLaw: string;
   habits: AdvisorHabitCandidate[];
   eventFingerprint: string;
   causalEpisodeId: string;
   causedByAdvisor: boolean;
 }
 
-export type AcceptedAdvisorFinding =
-  | { kind: 'generic_advice'; note: string; severity: AdvisorSeverity; eventFingerprint: string }
-  | { kind: 'habit_violation'; candidate: AdvisorHabitCandidate; severity: AdvisorSeverity; eventFingerprint: string };
+export interface AcceptedAdvisorFinding {
+  kind: 'habit_violation';
+  candidate: AdvisorHabitCandidate;
+  severity: AdvisorSeverity;
+  eventFingerprint: string;
+}
 
 export interface AdvisorRuntimeConfig {
   enabled: boolean;

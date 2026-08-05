@@ -6,18 +6,16 @@ import { appendUniqueObservation } from "../storage/observations.ts";
 import type { AcceptedAdvisorFinding, AdvisorSeverity, AdvisorUpdate } from "./types.ts";
 
 const EVENT_FINGERPRINT = /^[0-9a-f]{64}$/;
-const MAX_CURRENT_REQUEST_CHARS = 1_000;
 const MAX_PRIMARY_BEHAVIOR_CHARS = 3_000;
-const MAX_ADVICE_CHARS = 1_200;
-const MAX_PAYLOAD_CHARS = 6_000;
+const MAX_APPROVED_BEHAVIOR_CHARS = 1_000;
+const MAX_PAYLOAD_CHARS = 5_000;
 
 export interface AdvisorFindingPayloadV1 {
 	kind: "advisor_finding_v1";
-	finding_kind: "generic_advice" | "habit_violation";
+	finding_kind: "habit_violation";
 	severity: AdvisorSeverity;
-	current_request_redacted: string;
 	primary_behavior_redacted: string;
-	advice_redacted: string;
+	approved_behavior_redacted: string;
 	event_fingerprint: string;
 	primary_created_at: string;
 }
@@ -60,17 +58,18 @@ export function buildAdvisorFindingObservation(
 	update: AdvisorUpdate,
 	createdAt: string,
 ): AdvisorFindingPayloadV1 {
-	if (!finding || (finding.kind !== "generic_advice" && finding.kind !== "habit_violation")) throw new Error("Invalid Advisor finding kind");
+	if (!finding || finding.kind !== "habit_violation") throw new Error("Invalid Advisor finding kind");
 	if (!EVENT_FINGERPRINT.test(finding.eventFingerprint) || finding.eventFingerprint !== update.eventFingerprint) throw new Error("Advisor finding fingerprint mismatch");
-	if (finding.severity !== "nit" && finding.severity !== "concern" && finding.severity !== "blocker") throw new Error("Invalid Advisor finding severity");
-	const advice = finding.kind === "generic_advice" ? finding.note : finding.candidate.behavior;
+	if (finding.severity !== "concern" && finding.severity !== "blocker") throw new Error("Invalid Advisor finding severity");
+	// Persist only visible assistant prose captured separately from the review delta.
+	// User prompts, tool-call arguments, tool-result content, and thinking remain review-only.
+	const persistenceSafeBehavior = update.observationText?.trim() || "[assistant tool activity]";
 	const payload: AdvisorFindingPayloadV1 = {
 		kind: "advisor_finding_v1",
-		finding_kind: finding.kind,
+		finding_kind: "habit_violation",
 		severity: finding.severity,
-		current_request_redacted: boundedRedactedText(update.currentRequest, MAX_CURRENT_REQUEST_CHARS, 1_000, "current request"),
-		primary_behavior_redacted: boundedRedactedText(update.primaryDelta, MAX_PRIMARY_BEHAVIOR_CHARS, 3_000, "primary behavior"),
-		advice_redacted: boundedRedactedText(advice, MAX_ADVICE_CHARS, 1_200, "advice"),
+		primary_behavior_redacted: boundedRedactedText(persistenceSafeBehavior, MAX_PRIMARY_BEHAVIOR_CHARS, 3_000, "primary behavior"),
+		approved_behavior_redacted: boundedRedactedText(finding.candidate.behavior, MAX_APPROVED_BEHAVIOR_CHARS, 1_000, "approved behavior"),
 		event_fingerprint: update.eventFingerprint,
 		primary_created_at: assertIsoTimestamp(createdAt),
 	};

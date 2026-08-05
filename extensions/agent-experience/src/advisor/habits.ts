@@ -203,6 +203,28 @@ export function buildAdvisorHabitAliases(candidates: AdvisorHabitRetrievalCandid
 	return { candidates: aliased, originalIdByAlias };
 }
 
+export function retrieveActiveAdvisorHabitCandidates(db: DatabaseSync, input: {
+	userId: string;
+	delta: AdvisorPrimaryDelta;
+	activeRequestHabitIds: string[];
+	law: LawSnapshot;
+	config: AgentExperienceConfig;
+}): AdvisorHabitRetrievalCandidate[] {
+	assertAdvisorEnabled(input.config);
+	const userId = normalizeUserId(input.userId);
+	const law = revalidateLawSnapshotSync(input.law);
+	const allEligible = eligibleCurrentLawRows(db, { userId, law, config: input.config });
+	const byId = new Map(allEligible.map((item) => [item.row.id, item]));
+	const active: AdvisorHabitRetrievalCandidate[] = [];
+	for (const id of new Set(input.activeRequestHabitIds)) {
+		const item = byId.get(id);
+		if (!item) continue;
+		active.push(retrievalCandidate(item, input.delta, 10_000));
+		if (active.length >= MAX_ACTIVE_REQUEST_HABIT_IDS) break;
+	}
+	return buildAdvisorHabitAliases(active).candidates;
+}
+
 export async function retrieveAdvisorHabitCandidates(db: DatabaseSync, input: {
 	userId: string;
 	delta: AdvisorPrimaryDelta;
@@ -218,16 +240,10 @@ export async function retrieveAdvisorHabitCandidates(db: DatabaseSync, input: {
 	const law = revalidateLawSnapshotSync(input.law);
 	const allEligible = eligibleCurrentLawRows(db, { userId, law, config: input.config });
 	const eligible = allEligible.slice(0, MAX_SELECTOR_ELIGIBLE_HABITS);
-	const byId = new Map(allEligible.map((item) => [item.row.id, item]));
-	const active: AdvisorHabitRetrievalCandidate[] = [];
-	for (const id of new Set(input.activeRequestHabitIds)) {
-		const item = byId.get(id);
-		if (!item) continue;
-		active.push(retrievalCandidate(item, input.delta, 10_000));
-		if (active.length >= MAX_ACTIVE_REQUEST_HABIT_IDS) break;
-	}
+	const active = retrieveActiveAdvisorHabitCandidates(db, input).map((candidate) => ({ ...candidate, alias: "" }));
 	try {
-		await prepareAdvisorHabitVectors(db, { userId, law, config: input.config, embeddingAdapter: input.embeddingAdapter, now: new Date().toISOString(), signal: input.signal });
+		// Ordinary Advisor review is read-only. Missing/stale cache rows fail closed
+		// to already-active request habits; explicit maintenance/setup prepares vectors.
 		const query = await prepareAdvisorRetrievalQuery({ delta: input.delta, tokenizerAssetDir: input.tokenizerAssetDir });
 		const queryVectors = await input.embeddingAdapter.embed([query.text], { signal: input.signal });
 		if (queryVectors.length !== 1 || queryVectors[0].length !== input.embeddingAdapter.dimensions) throw new Error("advisor_query_embedding_invalid");

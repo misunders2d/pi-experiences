@@ -13,7 +13,10 @@ const MAX_RESULT_CHARS = 8_000;
 const MAX_AGGREGATE_RESULT_CHARS = 16_000;
 const MAX_GLOB_MATCHES = 100;
 const MAX_GREP_FILES = 1_000;
+const MAX_FILE_INPUT_BYTES = 256 * 1_024;
+const MAX_GREP_INPUT_BYTES = 1_024 * 1_024;
 const ACCESS_DENIED = "Advisor workspace access denied.";
+const NOT_A_FILE = "Advisor workspace path is not a file.";
 const RESULT_DENIED = "Advisor workspace result denied.";
 const BUDGET_EXHAUSTED = "Advisor investigative tool budget exhausted.";
 
@@ -146,6 +149,7 @@ interface ConfinedOpenPath {
 	descriptorPath: string;
 	isFile: boolean;
 	isDirectory: boolean;
+	size: number;
 }
 
 async function openConfinedPath(root: string, stateRoot: string, absolutePath: string): Promise<ConfinedOpenPath> {
@@ -168,7 +172,8 @@ async function openConfinedPath(root: string, stateRoot: string, absolutePath: s
 		}
 		if (!descriptorPath) denied();
 		const info = await handle.stat();
-		return { handle, descriptorPath, isFile: info.isFile(), isDirectory: info.isDirectory() };
+		if (!Number.isSafeInteger(info.size) || info.size < 0) denied();
+		return { handle, descriptorPath, isFile: info.isFile(), isDirectory: info.isDirectory(), size: info.size };
 	} catch (error) {
 		await handle?.close().catch(() => undefined);
 		if (error instanceof Error && error.message === ACCESS_DENIED) throw error;
@@ -176,11 +181,18 @@ async function openConfinedPath(root: string, stateRoot: string, absolutePath: s
 	}
 }
 
-async function readConfinedFile(root: string, stateRoot: string, absolutePath: string): Promise<Buffer> {
+async function readBoundedOpenFile(opened: ConfinedOpenPath, maxBytes = MAX_FILE_INPUT_BYTES): Promise<Buffer> {
+	if (!opened.isFile) throw new Error(NOT_A_FILE);
+	if (!Number.isSafeInteger(maxBytes) || maxBytes < 0 || opened.size > maxBytes) denied();
+	const buffer = Buffer.alloc(opened.size);
+	const { bytesRead } = await opened.handle.read(buffer, 0, buffer.length, 0);
+	return buffer.subarray(0, bytesRead);
+}
+
+async function readConfinedFile(root: string, stateRoot: string, absolutePath: string, maxBytes = MAX_FILE_INPUT_BYTES): Promise<Buffer> {
 	const opened = await openConfinedPath(root, stateRoot, absolutePath);
 	try {
-		if (!opened.isFile) denied();
-		return await opened.handle.readFile();
+		return await readBoundedOpenFile(opened, maxBytes);
 	} finally {
 		await opened.handle.close();
 	}
@@ -443,7 +455,7 @@ export function createAdvisorWorkspaceTools(
 					candidates.push({
 						absolutePath: canonicalPath,
 						label: relative(root, canonicalPath).split(sep).join("/"),
-						content: await openedSearch.handle.readFile(),
+						content: await readBoundedOpenFile(openedSearch, Math.min(MAX_FILE_INPUT_BYTES, MAX_GREP_INPUT_BYTES)),
 					});
 				} else if (openedSearch.isDirectory) {
 					const filePattern = typeof params.glob === "string" ? params.glob : "**/*";
@@ -469,15 +481,22 @@ export function createAdvisorWorkspaceTools(
 
 				const output: string[] = [];
 				let matches = 0;
+				let scannedBytes = 0;
 				for (const candidate of candidates) {
 					if (matches >= matchLimit) break;
 					if (signal?.aborted) throw new Error(GREP_ABORTED);
+					const remainingBytes = MAX_GREP_INPUT_BYTES - scannedBytes;
+					if (remainingBytes <= 0) denied();
 					let content: Buffer;
 					try {
-						content = candidate.content ?? await readConfinedFile(root, stateRoot, candidate.absolutePath);
-					} catch {
+						content = candidate.content ?? await readConfinedFile(root, stateRoot, candidate.absolutePath, Math.min(MAX_FILE_INPUT_BYTES, remainingBytes));
+					} catch (error) {
+						if (error instanceof Error && error.message === ACCESS_DENIED) throw error;
+						if (error instanceof Error && error.message === NOT_A_FILE) continue;
 						continue;
 					}
+					if (content.length > remainingBytes) denied();
+					scannedBytes += content.length;
 					const text = content.toString("utf8");
 					const lines = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
 					const fileMatches = await regexMatcher.match(text, matchLimit - matches);

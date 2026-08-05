@@ -16,12 +16,21 @@ import { streamSimple as piStreamSimple } from "@earendil-works/pi-ai/compat";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { buildAdvisorSystemPrompt, formatAdvisorUpdate } from "./prompt.ts";
 import { AdvisorAttemptBuffer, createAdvisorEmissionTools } from "./tools.ts";
-import type { AdvisorAttempt, AdvisorUpdate } from "./types.ts";
+import type { AdvisorAttempt, AdvisorDiagnosticReason, AdvisorUpdate } from "./types.ts";
 import { createAdvisorWorkspaceBudget, createAdvisorWorkspaceTools } from "./workspace-tools.ts";
 
 const DEFAULT_TIMEOUT_MS = 60_000;
-const CONTEXT_RESET_FRACTION = 0.75;
 const MAX_RETIRED_AGENTS = 4;
+const REVIEW_FAILURE_REASONS = new Set<AdvisorDiagnosticReason>([
+	"advisor_auth_unavailable",
+	"advisor_context_overflow",
+	"advisor_timeout",
+	"advisor_unavailable",
+]);
+
+function reviewFailure(reason: AdvisorDiagnosticReason): never {
+	throw new Error(reason);
+}
 
 type RequestAuth = {
 	apiKey?: string;
@@ -185,7 +194,8 @@ export function createPiAdvisorAgentAdapter(
 		},
 
 		async review(update, signal) {
-			if (disposed || reviewing || retiredAgents.size >= MAX_RETIRED_AGENTS || !parsedModel || signal?.aborted || ctx.signal?.aborted) return [];
+			if (disposed || signal?.aborted || ctx.signal?.aborted) return [];
+			if (reviewing || retiredAgents.size >= MAX_RETIRED_AGENTS || !parsedModel) reviewFailure("advisor_unavailable");
 			reviewing = true;
 			const reviewLifecycle = lifecycle;
 			const stopped = Symbol("advisor_review_stopped");
@@ -214,12 +224,16 @@ export function createPiAdvisorAgentAdapter(
 			try {
 				const prompt = formatAdvisorUpdate(update);
 				const model = ctx.modelRegistry.find(parsedModel.provider, parsedModel.modelId);
-				if (!model || !Number.isFinite(model.contextWindow) || model.contextWindow <= 0) return [];
+				if (!model || !Number.isFinite(model.contextWindow) || model.contextWindow <= 0) reviewFailure("advisor_unavailable");
 				const authOutcome = await Promise.race([
 					ctx.modelRegistry.getApiKeyAndHeaders(model),
 					stopPromise,
 				]);
-				if (authOutcome === stopped || !authOutcome.ok || signal?.aborted || ctx.signal?.aborted || disposed || lifecycle !== reviewLifecycle) return [];
+				if (authOutcome === stopped || signal?.aborted || ctx.signal?.aborted || disposed || lifecycle !== reviewLifecycle) {
+					if (timedOut) reviewFailure("advisor_timeout");
+					return [];
+				}
+				if (!authOutcome.ok) reviewFailure("advisor_auth_unavailable");
 				const requestAuth: RequestAuth = { apiKey: authOutcome.apiKey, headers: authOutcome.headers, env: authOutcome.env };
 				activeBuffer = new AdvisorAttemptBuffer(update.habits.map((habit) => habit.alias));
 				const tools = [
@@ -244,7 +258,8 @@ export function createPiAdvisorAgentAdapter(
 					});
 				} else {
 					reviewAuthState = agentAuth;
-					if (!reviewAuthState) return [];
+					if (!reviewAuthState) reviewFailure("advisor_unavailable");
+					agent.reset();
 					reviewAuthState.current = requestAuth;
 					agent.state.systemPrompt = systemPrompt;
 					agent.state.model = model;
@@ -252,32 +267,36 @@ export function createPiAdvisorAgentAdapter(
 				}
 
 				try {
-					tokenEstimate = estimateContext(agent.state.messages, prompt);
-					if (tokenEstimate >= model.contextWindow * CONTEXT_RESET_FRACTION) {
-						agent.reset();
-						tokenEstimate = estimateContext(agent.state.messages, prompt);
-					}
-					if (tokenEstimate >= model.contextWindow) return [];
-				} catch {
+					if (agent.state.messages.length !== 0) reviewFailure("advisor_unavailable");
+					tokenEstimate = estimateContext([], prompt);
+					if (tokenEstimate >= model.contextWindow) reviewFailure("advisor_context_overflow");
+				} catch (error) {
 					tokenEstimate = 0;
-					return [];
+					if (error instanceof Error && REVIEW_FAILURE_REASONS.has(error.message as AdvisorDiagnosticReason)) throw error;
+					reviewFailure("advisor_unavailable");
 				}
 
 				const promptOutcome = await Promise.race([
 					agent.prompt(prompt).then(() => true, () => false),
 					stopPromise,
 				]);
-				if (promptOutcome === stopped || !promptOutcome || timedOut || aborted || signal?.aborted || ctx.signal?.aborted || disposed || lifecycle !== reviewLifecycle) {
+				if (promptOutcome === stopped || timedOut || aborted || signal?.aborted || ctx.signal?.aborted || disposed || lifecycle !== reviewLifecycle) {
 					retireCurrentAgent();
+					if (timedOut) reviewFailure("advisor_timeout");
 					return [];
 				}
+				if (!promptOutcome) reviewFailure("advisor_unavailable");
 				if (agent.state.errorMessage) {
-					if (/context|token|length|overflow/i.test(agent.state.errorMessage)) agent.reset();
-					return [];
+					if (/context|token|length|overflow/i.test(agent.state.errorMessage)) {
+						agent.reset();
+						reviewFailure("advisor_context_overflow");
+					}
+					reviewFailure("advisor_unavailable");
 				}
 				return activeBuffer.drain();
-			} catch {
-				return [];
+			} catch (error) {
+				if (error instanceof Error && REVIEW_FAILURE_REASONS.has(error.message as AdvisorDiagnosticReason)) throw error;
+				reviewFailure("advisor_unavailable");
 			} finally {
 				clearTimeout(timer);
 				for (const parentSignal of abortSignals) parentSignal.removeEventListener("abort", abortReview);
@@ -285,6 +304,8 @@ export function createPiAdvisorAgentAdapter(
 				activeBuffer?.clear();
 				activeBuffer = undefined;
 				if (reviewAuthState) reviewAuthState.current = undefined;
+				if (agent && lifecycle === reviewLifecycle) agent.reset();
+				tokenEstimate = 0;
 				reviewing = false;
 			}
 		},

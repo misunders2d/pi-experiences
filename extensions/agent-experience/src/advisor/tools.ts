@@ -2,23 +2,15 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type, type Static } from "typebox";
 import type { AdvisorAttempt, AdvisorSeverity } from "./types.ts";
 
-export const AdviseParameters = Type.Object({
-	note: Type.String({ minLength: 1, maxLength: 1200 }),
-	severity: Type.Optional(Type.Union([Type.Literal("nit"), Type.Literal("concern"), Type.Literal("blocker")])),
-}, { additionalProperties: false });
-
 export const HabitViolationParameters = Type.Object({
 	habit_alias: Type.String({ pattern: "^h[1-8]$" }),
 	severity: Type.Union([Type.Literal("concern"), Type.Literal("blocker")]),
 }, { additionalProperties: false });
 
-type AdviseInput = Static<typeof AdviseParameters>;
 type HabitViolationInput = Static<typeof HabitViolationParameters>;
 
-const ADVICE_SEVERITIES = new Set<AdvisorSeverity>(["nit", "concern", "blocker"]);
 const HABIT_SEVERITIES = new Set<AdvisorSeverity>(["concern", "blocker"]);
 const HABIT_ALIAS = /^h[1-8]$/;
-
 const MAX_ADVISOR_EMISSION_ATTEMPTS = 8;
 
 export class AdvisorAttemptBuffer {
@@ -38,14 +30,6 @@ export class AdvisorAttemptBuffer {
 		if (this.closed) throw new Error("Advisor emission buffer is closed");
 		if (this.attempts.length >= MAX_ADVISOR_EMISSION_ATTEMPTS) throw new Error("Advisor emission attempt budget exhausted");
 		this.attempts.push(attempt);
-	}
-
-	async advise(input: AdviseInput): Promise<void> {
-		const note = typeof input?.note === "string" ? input.note.trim() : "";
-		const severity = input?.severity ?? "concern";
-		if (!note || note.length > 1200) throw new Error("Invalid Advisor advice note");
-		if (!ADVICE_SEVERITIES.has(severity)) throw new Error("Invalid Advisor advice severity");
-		this.record({ kind: "generic_advice", note, severity });
 	}
 
 	async reportHabitViolation(input: HabitViolationInput): Promise<void> {
@@ -71,28 +55,15 @@ export class AdvisorAttemptBuffer {
 }
 
 export function createAdvisorEmissionTools(buffer: AdvisorAttemptBuffer): AgentTool[] {
-	return [
-		{
-			name: "advise",
-			label: "Advise",
-			description: "Record one concrete generic Advisor finding for this update.",
-			parameters: AdviseParameters,
-			executionMode: "sequential",
-			async execute(_toolCallId, params) {
-				await buffer.advise(params as AdviseInput);
-				return { content: [{ type: "text", text: "Recorded." }], details: {} };
-			},
+	return [{
+		name: "report_habit_violation",
+		label: "Report habit violation",
+		description: "Record a violation of one exact approved-habit alias supplied in the current update.",
+		parameters: HabitViolationParameters,
+		executionMode: "sequential",
+		async execute(_toolCallId, params) {
+			await buffer.reportHabitViolation(params as HabitViolationInput);
+			return { content: [{ type: "text", text: "Recorded." }], details: {} };
 		},
-		{
-			name: "report_habit_violation",
-			label: "Report habit violation",
-			description: "Record a violation of one exact approved-habit alias supplied in the current update.",
-			parameters: HabitViolationParameters,
-			executionMode: "sequential",
-			async execute(_toolCallId, params) {
-				await buffer.reportHabitViolation(params as HabitViolationInput);
-				return { content: [{ type: "text", text: "Recorded." }], details: {} };
-			},
-		},
-	];
+	}];
 }

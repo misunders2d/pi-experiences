@@ -334,8 +334,14 @@ var init_checksum = __esm({
 });
 
 // extensions/agent-experience/src/storage/redaction.ts
+function sensitiveAssignmentRegex(flags = "i") {
+  return new RegExp(SENSITIVE_ASSIGNMENT_SOURCE, flags);
+}
+function credentialUrlRegex(flags = "i") {
+  return new RegExp(CREDENTIAL_URL_SOURCE, flags);
+}
 function redactText(input) {
-  return String(input).replace(/-----BEGIN [A-Z ]*(?:PRIVATE KEY|SECRET KEY)[\s\S]*?-----END [A-Z ]*(?:PRIVATE KEY|SECRET KEY)-----/g, REDACTED).replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, REDACTED).replace(/(?:\+?1[-.\s])?(?:\(?\d{3}\)?[-.\s])\d{3}[-.\s]\d{4}\b/g, REDACTED).replace(/\b(?:sk|pk|ghp|xox[baprs]|ya29|AKIA)[A-Za-z0-9_\-]{8,}\b/g, REDACTED).replace(/\b[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\b/g, REDACTED).replace(/(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi, REDACTED).replace(/\b(?:api[_-]?key|secret|password|token|credential)\s*[:=]\s*["'`]?[^\s"'`]{8,}["'`]?/gi, REDACTED).replace(/(?:~\/|\/(?:home|Users|var\/folders|tmp|media|mnt|Volumes)\/[^\s"']+|[A-Za-z]:\\Users\\[^\s"']+)/g, REDACTED);
+  return String(input).replace(/-----BEGIN [A-Z ]*(?:PRIVATE KEY|SECRET KEY)[\s\S]*?-----END [A-Z ]*(?:PRIVATE KEY|SECRET KEY)-----/g, REDACTED).replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, REDACTED).replace(/(?:\+?1[-.\s])?(?:\(?\d{3}\)?[-.\s])\d{3}[-.\s]\d{4}\b/g, REDACTED).replace(/\b(?:sk|pk|ghp|xox[baprs]|ya29|AKIA)[A-Za-z0-9_\-]{8,}\b/g, REDACTED).replace(/\b[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\b/g, REDACTED).replace(/(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi, REDACTED).replace(credentialUrlRegex("gi"), REDACTED).replace(sensitiveAssignmentRegex("gi"), REDACTED).replace(/(?:~\/|\/(?:home|Users|var\/folders|tmp|media|mnt|Volumes)\/[^\s"']+|[A-Za-z]:\\Users\\[^\s"']+)/g, REDACTED);
 }
 function redactJson(input) {
   function visit(value, key = "") {
@@ -353,13 +359,19 @@ function redactJson(input) {
 }
 function containsUnredactedSensitiveText(value) {
   const text = typeof value === "string" ? value : JSON.stringify(value);
-  return /-----BEGIN [A-Z ]*(?:PRIVATE KEY|SECRET KEY)|[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}|(?:\+?1[-.\s])?(?:\(?\d{3}\)?[-.\s])\d{3}[-.\s]\d{4}|(?:sk|pk|ghp|xox[baprs]|ya29|AKIA)[A-Za-z0-9_\-]{8,}|\b[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\b|(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}|\b(?:api[_-]?key|secret|password|token|credential)\s*[:=]\s*["'`]?[^\s"'`]{8,}["'`]?|(?:~\/|\/(?:home|Users|var\/folders|tmp|media|mnt|Volumes)\/[^\s"']+|[A-Za-z]:\\Users\\[^\s"']+)/i.test(text || "");
+  const normalized = text || "";
+  const assignmentScan = normalized.replace(new RegExp(REDACTED_ASSIGNMENT_SOURCE, "gi"), REDACTED);
+  return /-----BEGIN [A-Z ]*(?:PRIVATE KEY|SECRET KEY)|[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}|(?:\+?1[-.\s])?(?:\(?\d{3}\)?[-.\s])\d{3}[-.\s]\d{4}|(?:sk|pk|ghp|xox[baprs]|ya29|AKIA)[A-Za-z0-9_\-]{8,}|\b[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\b|(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}|(?:~\/|\/(?:home|Users|var\/folders|tmp|media|mnt|Volumes)\/[^\s"']+|[A-Za-z]:\\Users\\[^\s"']+)/i.test(normalized) || credentialUrlRegex().test(normalized) || sensitiveAssignmentRegex().test(assignmentScan);
 }
-var REDACTED, SENSITIVE_KEY;
+var REDACTED, SENSITIVE_KEY, SENSITIVE_ASSIGNMENT_KEY_SOURCE, SENSITIVE_ASSIGNMENT_SOURCE, REDACTED_ASSIGNMENT_SOURCE, CREDENTIAL_URL_SOURCE;
 var init_redaction = __esm({
   "extensions/agent-experience/src/storage/redaction.ts"() {
     REDACTED = "[REDACTED]";
     SENSITIVE_KEY = /(?:token|api[_-]?key|secret|password|authorization|private[_-]?key|credential|path|file)/i;
+    SENSITIVE_ASSIGNMENT_KEY_SOURCE = String.raw`(?:api[_-]?key|secret|password|token|credential|authorization|private[_-]?key)`;
+    SENSITIVE_ASSIGNMENT_SOURCE = String.raw`["'\x60]?\b${SENSITIVE_ASSIGNMENT_KEY_SOURCE}\b["'\x60]?\s*[:=]\s*(?:"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|\x60(?:\\.|[^\x60\\\r\n])*\x60|[^\s,;}\]]+)`;
+    REDACTED_ASSIGNMENT_SOURCE = String.raw`["'\x60]?\b${SENSITIVE_ASSIGNMENT_KEY_SOURCE}\b["'\x60]?\s*[:=]\s*["'\x60]?\[REDACTED\]["'\x60]?`;
+    CREDENTIAL_URL_SOURCE = String.raw`\b[a-z][a-z0-9+.-]*:\/\/[^\s\/@:]+:[^\s\/@]+@[^\s]+`;
   }
 });
 
@@ -1799,9 +1811,8 @@ var ADVISOR_PAYLOAD_KEYS = /* @__PURE__ */ new Set([
   "kind",
   "finding_kind",
   "severity",
-  "current_request_redacted",
   "primary_behavior_redacted",
-  "advice_redacted",
+  "approved_behavior_redacted",
   "event_fingerprint",
   "primary_created_at"
 ]);
@@ -1840,11 +1851,10 @@ function validateOriginAndPayload(record) {
     if (!ADVISOR_PAYLOAD_KEYS.has(key)) throw new Error("Unsupported Advisor finding payload field");
   }
   if (Object.keys(payload).length !== ADVISOR_PAYLOAD_KEYS.size) throw new Error("Incomplete Advisor finding payload");
-  if (payload.finding_kind !== "generic_advice" && payload.finding_kind !== "habit_violation") throw new Error("Invalid Advisor finding kind");
-  if (payload.severity !== "nit" && payload.severity !== "concern" && payload.severity !== "blocker") throw new Error("Invalid Advisor finding severity");
-  if (typeof payload.current_request_redacted !== "string" || payload.current_request_redacted.length > 1e3) throw new Error("Invalid Advisor current request");
+  if (payload.finding_kind !== "habit_violation") throw new Error("Invalid Advisor finding kind");
+  if (payload.severity !== "concern" && payload.severity !== "blocker") throw new Error("Invalid Advisor finding severity");
   if (typeof payload.primary_behavior_redacted !== "string" || payload.primary_behavior_redacted.length > 3e3) throw new Error("Invalid Advisor primary behavior");
-  if (typeof payload.advice_redacted !== "string" || payload.advice_redacted.length > 1200) throw new Error("Invalid Advisor advice");
+  if (typeof payload.approved_behavior_redacted !== "string" || payload.approved_behavior_redacted.length > 1e3) throw new Error("Invalid Advisor approved behavior");
   if (typeof payload.event_fingerprint !== "string" || !/^[0-9a-f]{64}$/.test(payload.event_fingerprint)) throw new Error("Invalid Advisor event fingerprint");
   if (typeof payload.primary_created_at !== "string" || !Number.isFinite(Date.parse(payload.primary_created_at)) || new Date(payload.primary_created_at).toISOString() !== payload.primary_created_at) throw new Error("Invalid Advisor primary timestamp");
   if (JSON.stringify(payload).length > 6e3) throw new Error("Advisor finding payload exceeds size limit");
@@ -3799,9 +3809,8 @@ function observationsForModelPrompt(observations) {
         checksum: record.checksum,
         created_at: record.created_at,
         origin: "advisor_finding",
-        user: truncateForModel(payload.current_request_redacted, 900),
         assistant: truncateForModel(payload.primary_behavior_redacted, 1200),
-        advisor_finding: truncateForModel(payload.advice_redacted, 900),
+        advisor_finding: truncateForModel(payload.approved_behavior_redacted, 900),
         severity: payload.severity
       };
     }

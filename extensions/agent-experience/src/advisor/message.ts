@@ -6,25 +6,16 @@ export const ADVISOR_FINDING_MESSAGE_TYPE = "agent_experience.advisor_finding";
 export const ADVISOR_FINDING_VISIBLE_ENTRY_TYPE = "agent_experience.advisor_finding_visible";
 export const ADVISOR_FINDING_SCHEMA_VERSION = 1;
 
-const MAX_GENERIC_NOTE_CHARS = 1_200;
 const MAX_HABIT_FIELD_CHARS = 1_000;
 
-export type AdvisorFindingDetails =
-	| {
-			schema_version: 1;
-			kind: "generic_advice";
-			severity: AdvisorSeverity;
-			note: string;
-			created_at: string;
-	  }
-	| {
-			schema_version: 1;
-			kind: "habit_violation";
-			severity: AdvisorSeverity;
-			condition: string;
-			behavior: string;
-			created_at: string;
-	  };
+export interface AdvisorFindingDetails {
+	schema_version: 1;
+	kind: "habit_violation";
+	severity: AdvisorSeverity;
+	condition: string;
+	behavior: string;
+	created_at: string;
+}
 
 export interface AdvisorDeliveryInput {
 	severity: AdvisorSeverity;
@@ -51,9 +42,7 @@ function exactKeys(value: Record<string, unknown>, keys: string[]): void {
 }
 
 function severity(value: unknown): AdvisorSeverity {
-	if (value !== "nit" && value !== "concern" && value !== "blocker") {
-		throw new Error("Invalid Advisor finding severity");
-	}
+	if (value !== "concern" && value !== "blocker") throw new Error("Invalid Advisor finding severity");
 	return value;
 }
 
@@ -64,19 +53,6 @@ function exactIso(value: unknown): string {
 		throw new Error("Invalid Advisor finding timestamp");
 	}
 	return value;
-}
-
-function safeGenericNote(value: unknown): string {
-	if (typeof value !== "string") throw new Error("Invalid Advisor finding note");
-	const normalized = value.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, " ").trim();
-	if (!normalized || normalized.length > MAX_GENERIC_NOTE_CHARS) {
-		throw new Error("Invalid Advisor finding note");
-	}
-	const sanitized = redactText(normalized);
-	if (!sanitized || sanitized.length > MAX_GENERIC_NOTE_CHARS || containsUnredactedSensitiveText(sanitized)) {
-		throw new Error("Invalid Advisor finding note");
-	}
-	return sanitized;
 }
 
 function exactHabitWording(value: unknown): string {
@@ -93,37 +69,19 @@ function exactHabitWording(value: unknown): string {
 }
 
 export function validateAdvisorFindingDetails(value: unknown): AdvisorFindingDetails {
-	if (!value || typeof value !== "object" || Array.isArray(value)) {
-		throw new Error("Invalid Advisor finding details");
-	}
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid Advisor finding details");
 	const input = value as Record<string, unknown>;
-	if (input.schema_version !== ADVISOR_FINDING_SCHEMA_VERSION) {
-		throw new Error("Invalid Advisor finding schema version");
-	}
-	const validatedSeverity = severity(input.severity);
-	const createdAt = exactIso(input.created_at);
-	if (input.kind === "generic_advice") {
-		exactKeys(input, ["schema_version", "kind", "severity", "note", "created_at"]);
-		return {
-			schema_version: ADVISOR_FINDING_SCHEMA_VERSION,
-			kind: "generic_advice",
-			severity: validatedSeverity,
-			note: safeGenericNote(input.note),
-			created_at: createdAt,
-		};
-	}
-	if (input.kind === "habit_violation") {
-		exactKeys(input, ["schema_version", "kind", "severity", "condition", "behavior", "created_at"]);
-		return {
-			schema_version: ADVISOR_FINDING_SCHEMA_VERSION,
-			kind: "habit_violation",
-			severity: validatedSeverity,
-			condition: exactHabitWording(input.condition),
-			behavior: exactHabitWording(input.behavior),
-			created_at: createdAt,
-		};
-	}
-	throw new Error("Invalid Advisor finding kind");
+	exactKeys(input, ["schema_version", "kind", "severity", "condition", "behavior", "created_at"]);
+	if (input.schema_version !== ADVISOR_FINDING_SCHEMA_VERSION) throw new Error("Invalid Advisor finding schema version");
+	if (input.kind !== "habit_violation") throw new Error("Invalid Advisor finding kind");
+	return {
+		schema_version: ADVISOR_FINDING_SCHEMA_VERSION,
+		kind: "habit_violation",
+		severity: severity(input.severity),
+		condition: exactHabitWording(input.condition),
+		behavior: exactHabitWording(input.behavior),
+		created_at: exactIso(input.created_at),
+	};
 }
 
 function escapeXml(value: string): string {
@@ -136,10 +94,7 @@ function escapeXml(value: string): string {
 }
 
 function modelVisibleContent(details: AdvisorFindingDetails): string {
-	if (details.kind === "generic_advice") {
-		return `<advisory severity="${details.severity}" guidance="weigh, don&apos;t blindly obey">${escapeXml(details.note)}</advisory>`;
-	}
-	return `<advisory severity="${details.severity}" provenance="approved Experience habit"><condition>${escapeXml(details.condition)}</condition><behavior>${escapeXml(details.behavior)}</behavior><next_step>${escapeXml(details.behavior)}</next_step></advisory>`;
+	return `<advisory severity="${details.severity}" provenance="approved Experience habit"><precedence>Direct current user instructions and law override this habit.</precedence><condition>${escapeXml(details.condition)}</condition><behavior>${escapeXml(details.behavior)}</behavior><next_step>${escapeXml(details.behavior)}</next_step></advisory>`;
 }
 
 export interface AdvisorCustomMessage {
@@ -149,28 +104,18 @@ export interface AdvisorCustomMessage {
 	details: AdvisorFindingDetails;
 }
 
-
 export function buildAdvisorCustomMessage(
 	finding: AcceptedAdvisorFinding,
 	_update: AdvisorUpdate,
 ): AdvisorCustomMessage {
-	const createdAt = new Date(Date.now()).toISOString();
-	const details = finding.kind === "generic_advice"
-		? validateAdvisorFindingDetails({
-			schema_version: ADVISOR_FINDING_SCHEMA_VERSION,
-			kind: "generic_advice",
-			severity: finding.severity,
-			note: finding.note,
-			created_at: createdAt,
-		})
-		: validateAdvisorFindingDetails({
-			schema_version: ADVISOR_FINDING_SCHEMA_VERSION,
-			kind: "habit_violation",
-			severity: finding.severity,
-			condition: finding.candidate.condition,
-			behavior: finding.candidate.behavior,
-			created_at: createdAt,
-		});
+	const details = validateAdvisorFindingDetails({
+		schema_version: ADVISOR_FINDING_SCHEMA_VERSION,
+		kind: "habit_violation",
+		severity: finding.severity,
+		condition: finding.candidate.condition,
+		behavior: finding.candidate.behavior,
+		created_at: new Date(Date.now()).toISOString(),
+	});
 	return {
 		customType: ADVISOR_FINDING_MESSAGE_TYPE,
 		content: modelVisibleContent(details),
@@ -180,10 +125,6 @@ export function buildAdvisorCustomMessage(
 }
 
 function formatAdvisorFinding(details: AdvisorFindingDetails, expanded: boolean): string {
-	if (details.kind === "generic_advice") {
-		const title = `◇ Advisor · ${details.severity}`;
-		return expanded ? `${title}\n  ${details.note}` : `${title} · ${details.note}`;
-	}
 	const title = `◇ Experience · habit violation · ${details.severity}`;
 	if (!expanded) return `${title} · ${details.behavior}`;
 	return [
@@ -201,7 +142,7 @@ export function renderAdvisorFinding(
 ): Component {
 	try {
 		const details = validateAdvisorFindingDetails(message.details);
-		const color = details.severity === "blocker" ? "error" : details.severity === "concern" ? "warning" : "dim";
+		const color = details.severity === "blocker" ? "error" : "warning";
 		return new Text(theme.fg(color, formatAdvisorFinding(details, options.expanded)), 0, 0);
 	} catch {
 		return new Text(theme.fg("dim", "◇ Advisor finding unavailable"), 0, 0);
@@ -217,15 +158,10 @@ export function renderAdvisorVisibleFinding(
 }
 
 export function chooseAdvisorDelivery(input: AdvisorDeliveryInput): AdvisorDeliveryDecision {
-	if (input.shuttingDown || (!input.canAppendMessage && !input.canSteer)) {
-		return { mode: "visible_fallback" };
-	}
-	if (input.idle || !input.active) {
-		return input.canAppendMessage ? { mode: "append_now" } : { mode: "visible_fallback" };
-	}
+	if (input.shuttingDown || (!input.canAppendMessage && !input.canSteer)) return { mode: "visible_fallback" };
+	if (input.idle || !input.active) return input.canAppendMessage ? { mode: "append_now" } : { mode: "visible_fallback" };
 	const steerable =
 		input.canSteer &&
-		(input.severity === "concern" || input.severity === "blocker") &&
 		!input.cancelled &&
 		!input.terminal &&
 		input.planMode === "off" &&

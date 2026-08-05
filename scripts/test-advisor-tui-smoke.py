@@ -30,17 +30,10 @@ transcript.write_bytes(b'')
 csi = re.compile(rb'\x1b\[[0-?]*[ -/]*[@-~]')
 osc = re.compile(rb'\x1b\][^\x07]*(?:\x07|\x1b\\)')
 headings = [
-    '◇ Advisor · nit',
-    '◇ Advisor · concern',
-    '◇ Advisor · blocker',
+    '◇ Experience · habit violation · concern',
     '◇ Experience · habit violation · blocker',
 ]
-commands = ['generic-nit', 'generic-concern', 'generic-blocker', 'habit']
-notes = [
-    'Tighten the final summary so each claimed result names the exact command evidence that supports it without repeating implementation detail.',
-    'Check that the isolated verification really uses the freshly packed dependency tree rather than repository files, shared npm cache contents, or a global Pi installation.',
-    'Stop before release because the claimed package proof must include both grouped setup and Advisor terminal behavior at wide and narrow terminal widths.',
-]
+commands = ['habit-concern', 'habit-blocker']
 condition = 'When publishing an installed package from a clean branch'
 behavior = 'Verify the freshly packed artifact in an isolated Pi session before release'
 forbidden = re.compile(r'private-smoke|h-private|schema_version|eventFingerprint|habit[_-]?id|\balias\b|checksum|lawHash|\bscore\b|session\.jsonl|raw primary|raw user|<advisory|guidance=|__advisor|model output|transcript excerpt|[cdf]{48,}', re.I)
@@ -116,18 +109,13 @@ def assert_cards(screen, expanded, cols):
     normalized = squash(screen)
     for heading in headings:
         assert screen.count(heading) == 1, f'expected exactly one card for {heading!r}'
-    for note in notes:
-        assert note in normalized, f'generic advice lost or reordered while wrapping: {note}'
-    assert behavior in normalized, 'habit action wording lost while wrapping'
+    assert normalized.count(behavior) >= len(headings), 'approved habit action wording lost while wrapping'
     assert all(len(line) <= cols for line in screen.splitlines()), f'card screen overflowed {cols} columns'
     assert not forbidden.search(screen), 'Advisor card leaked fixture provenance or private state'
     if expanded:
         assert f'When: {condition}' in normalized, 'expanded habit card lost exact When wording'
         assert f'Do: {behavior}' in normalized, 'expanded habit card lost exact Do wording'
         assert f'Next step: {behavior}' in normalized, 'habit authority must render its exact next step'
-        for index, heading in enumerate(headings[:3]):
-            generic = ' '.join(card_lines(screen, heading, headings[index + 1]))
-            assert 'Next step:' not in generic and 'When:' not in generic and 'Do:' not in generic, 'generic advice must remain non-authoritative'
     else:
         assert f'When: {condition}' not in normalized and f'Do: {behavior}' not in normalized, 'habit card must start collapsed'
         assert 'Next step:' not in normalized, 'collapsed cards must not expose expanded authority rows'
@@ -189,8 +177,8 @@ def run_case(label, rows, cols):
 
 wide_collapsed, wide_expanded, wide_raw = run_case('wide', 42, 120)
 narrow_collapsed, narrow_expanded, narrow_raw = run_case('narrow', 42, 68)
-assert len(card_lines(narrow_collapsed, headings[1], headings[2])) > len(card_lines(wide_collapsed, headings[1], headings[2])), 'narrow generic card did not wrap more than wide card'
-assert len(card_lines(narrow_expanded, headings[3])) > len(card_lines(wide_expanded, headings[3])), 'narrow habit card did not wrap more than wide card'
+assert len(card_lines(narrow_collapsed, headings[0], headings[1])) > len(card_lines(wide_collapsed, headings[0], headings[1])), 'narrow concern card did not wrap more than wide card'
+assert len(card_lines(narrow_expanded, headings[1])) > len(card_lines(wide_expanded, headings[1])), 'narrow blocker card did not wrap more than wide card'
 assert not forbidden.search(clean(wide_raw + narrow_raw)), 'PTY transcript leaked private Advisor fixture fields'
 assert transcript.stat().st_size > 0, 'Advisor PTY transcript must be persisted before success'
 print(f'Advisor Pi TUI smoke passed; transcript={transcript}; artifacts=' + ';'.join(f'{name}={path}' for name, path in artifact_paths.items()))

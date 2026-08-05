@@ -21,9 +21,8 @@ const ADVISOR_PAYLOAD_KEYS = new Set([
 	"kind",
 	"finding_kind",
 	"severity",
-	"current_request_redacted",
 	"primary_behavior_redacted",
-	"advice_redacted",
+	"approved_behavior_redacted",
 	"event_fingerprint",
 	"primary_created_at",
 ]);
@@ -72,11 +71,10 @@ function validateOriginAndPayload(record: ObservationRecord): void {
 		if (!ADVISOR_PAYLOAD_KEYS.has(key)) throw new Error("Unsupported Advisor finding payload field");
 	}
 	if (Object.keys(payload).length !== ADVISOR_PAYLOAD_KEYS.size) throw new Error("Incomplete Advisor finding payload");
-	if (payload.finding_kind !== "generic_advice" && payload.finding_kind !== "habit_violation") throw new Error("Invalid Advisor finding kind");
-	if (payload.severity !== "nit" && payload.severity !== "concern" && payload.severity !== "blocker") throw new Error("Invalid Advisor finding severity");
-	if (typeof payload.current_request_redacted !== "string" || payload.current_request_redacted.length > 1_000) throw new Error("Invalid Advisor current request");
+	if (payload.finding_kind !== "habit_violation") throw new Error("Invalid Advisor finding kind");
+	if (payload.severity !== "concern" && payload.severity !== "blocker") throw new Error("Invalid Advisor finding severity");
 	if (typeof payload.primary_behavior_redacted !== "string" || payload.primary_behavior_redacted.length > 3_000) throw new Error("Invalid Advisor primary behavior");
-	if (typeof payload.advice_redacted !== "string" || payload.advice_redacted.length > 1_200) throw new Error("Invalid Advisor advice");
+	if (typeof payload.approved_behavior_redacted !== "string" || payload.approved_behavior_redacted.length > 1_000) throw new Error("Invalid Advisor approved behavior");
 	if (typeof payload.event_fingerprint !== "string" || !/^[0-9a-f]{64}$/.test(payload.event_fingerprint)) throw new Error("Invalid Advisor event fingerprint");
 	if (typeof payload.primary_created_at !== "string" || !Number.isFinite(Date.parse(payload.primary_created_at)) || new Date(payload.primary_created_at).toISOString() !== payload.primary_created_at) throw new Error("Invalid Advisor primary timestamp");
 	if (JSON.stringify(payload).length > 6_000) throw new Error("Advisor finding payload exceeds size limit");

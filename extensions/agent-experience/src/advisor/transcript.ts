@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { containsUnredactedSensitiveText, redactText } from "../storage/redaction.ts";
+import { containsUnredactedSensitiveText, redactJson, redactText } from "../storage/redaction.ts";
 import type { AdvisorPrimaryDelta, AdvisorScope } from "./types.ts";
 
 const MAX_DELTA_CHARS = 24_000;
@@ -42,7 +42,7 @@ function extractText(block: ContentBlock): string {
 	if (block.type === "thinking" && typeof block.thinking === "string") return block.thinking;
 	if (block.type === "toolCall") {
 		const name = typeof block.name === "string" ? block.name : "tool";
-		const args = block.arguments ? JSON.stringify(block.arguments) : "";
+		const args = block.arguments ? JSON.stringify(redactJson(block.arguments)) : "";
 		return `[tool_call:${name}] ${args}`;
 	}
 	return "";
@@ -95,8 +95,15 @@ export function extractAdvisorTurnDelta(input: AdvisorTurnContext): AdvisorPrima
 	const totalToolEvents = countToolEvents(content);
 	const cappedToolCount = Math.min(totalToolEvents, MAX_TOOL_EVENTS);
 
-	// Extract text
+	// Extract review-only text. Tool arguments/results may be reviewed after redaction,
+	// but must never be copied into durable learning observations.
 	const parts: string[] = [];
+	const observationParts = content
+		.filter((block) => block.type === "text" && typeof block.text === "string")
+		.map((block) => String(block.text));
+	let observationText = redactText(observationParts.join("\n"));
+	if (containsUnredactedSensitiveText(observationText)) observationText = "";
+	if (observationText.length > 3_000) observationText = observationText.slice(0, 3_000);
 
 	// Current request
 	if (typeof input.currentRequest === "string" && input.currentRequest.trim()) {
@@ -145,6 +152,7 @@ export function extractAdvisorTurnDelta(input: AdvisorTurnContext): AdvisorPrima
 		causalEpisodeId: input.causalEpisodeId,
 		causedByAdvisor: false,
 		text: rawText,
+		observationText,
 		currentRequest: input.currentRequest,
 		inProgress: false,
 		toolEventCount: cappedToolCount,

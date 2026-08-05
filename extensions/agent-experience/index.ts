@@ -81,7 +81,7 @@ import { disableScheduledAnalyzeSystemd, inspectScheduledAnalyzeSystemd, install
 import { AdvisorRuntime, type AdvisorRuntimeHost } from "./src/advisor/runtime.ts";
 import { createPiAdvisorAgentAdapter, type AdvisorAgentAdapter } from "./src/advisor/model.ts";
 import { extractAdvisorTurnDelta } from "./src/advisor/transcript.ts";
-import { retrieveAdvisorHabitCandidates, revalidateAdvisorHabitFinding, type AdvisorHabitRetrievalCandidate } from "./src/advisor/habits.ts";
+import { retrieveActiveAdvisorHabitCandidates, retrieveAdvisorHabitCandidates, revalidateAdvisorHabitFinding, type AdvisorHabitRetrievalCandidate } from "./src/advisor/habits.ts";
 import {
 	ADVISOR_FINDING_MESSAGE_TYPE,
 	ADVISOR_FINDING_VISIBLE_ENTRY_TYPE,
@@ -103,6 +103,7 @@ let selectorEmbeddingAdapterOverride: EmbeddingAdapter | undefined;
 let selectorLocalEmbeddingAdapter: LocalEmbeddingAdapter | undefined;
 let selectorLocalEmbeddingRoot: string | undefined;
 let advisorAdapterOverride: AdvisorAgentAdapter | undefined;
+let advisorObservationAppendGateForTest: (() => Promise<void>) | undefined;
 let advisorTransitionValidationGateForTest: (() => Promise<void>) | undefined;
 let advisorTransitionSettlementGateForTest: (() => Promise<void>) | undefined;
 const selectorDiagnosticsShown = new Set<string>();
@@ -653,6 +654,10 @@ export function __setAgentExperienceSelectorEmbeddingAdapterForTest(adapter: Emb
 
 export function __setAgentExperienceAdvisorAdapterForTest(adapter: AdvisorAgentAdapter | undefined) {
 	advisorAdapterOverride = adapter;
+}
+
+export function __setAgentExperienceAdvisorObservationAppendGateForTest(gate: (() => Promise<void>) | undefined) {
+	advisorObservationAppendGateForTest = gate;
 }
 
 export function __setAgentExperienceAdvisorTransitionValidationGateForTest(gate: (() => Promise<void>) | undefined) {
@@ -3313,6 +3318,7 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 		createdAt: string,
 	): Promise<void> => {
 		try {
+			await advisorObservationAppendGateForTest?.();
 			await appendAdvisorFindingObservation(getAgentExperiencePaths().root, {
 				userId: update.scope.userId,
 				finding,
@@ -3321,8 +3327,12 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 				modelVisibleDelivered: true,
 			});
 		} catch {
-			// Advisor delivery is already model-visible. Observation failure must
-			// fail closed without retrying delivery or mutating habit state.
+			// Delivery is already model-visible: report once, but never retry it or mutate habit state.
+			const diagnostic = "advisor_observation_write_failed";
+			if (advisorDiagnosticsShown.has(diagnostic)) return;
+			advisorDiagnosticsShown.add(diagnostic);
+			const state = advisorStates.get(advisorScopeKey(update.scope));
+			if (state) notify(state.latestContext, `Advisor finding was delivered, but local learning evidence was not saved (${diagnostic}).`, "warn");
 		}
 	};
 
@@ -3629,6 +3639,7 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 					? [...state.activeGeneration.activeRequestHabitIds]
 					: [];
 				let habits: AdvisorHabitRetrievalCandidate[] = [];
+				let configuredLaw = "";
 				let storageDb: DatabaseSync | undefined;
 				try {
 					const paths = getAgentExperiencePaths();
@@ -3644,6 +3655,15 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 						storageDb = storage.db;
 						if (!advisorUpdateIsCurrent(state, delta)) return undefined;
 						const law = await readConfiguredLawSnapshot(storage.root, loaded.config);
+						if (!advisorUpdateIsCurrent(state, delta)) return undefined;
+						configuredLaw = law.text;
+						habits = retrieveActiveAdvisorHabitCandidates(storageDb, {
+							userId: state.scope.userId,
+							delta,
+							activeRequestHabitIds: activeHabitIds,
+							law,
+							config: loaded.config,
+						});
 						if (!advisorUpdateIsCurrent(state, delta)) return undefined;
 						const assets = await getLocalEmbeddingAssetStatus(storage.root, { deep: true });
 						if (!advisorUpdateIsCurrent(state, delta)) return undefined;
@@ -3683,7 +3703,9 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 					cursor: delta.cursor,
 					inProgress: delta.inProgress,
 					primaryDelta: delta.text,
+					observationText: delta.observationText,
 					currentRequest: delta.currentRequest,
+					configuredLaw,
 					habits,
 					eventFingerprint: delta.eventFingerprint,
 					causalEpisodeId: delta.causalEpisodeId,
@@ -3694,35 +3716,33 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 				if (!advisorUpdateIsCurrent(state, update)) return;
 				const config = await currentAdvisorConfig(state, "advisor_accept_config_change");
 				if (!config || !advisorUpdateIsCurrent(state, update)) return;
-				let accepted = finding;
-				if (finding.kind === "habit_violation") {
-					let storageDb: DatabaseSync | undefined;
-					try {
-						const paths = getAgentExperiencePaths();
-						const storage = await openExistingExperienceStorage(paths.root, { userId: state.scope.userId });
-						storageDb = storage.db;
-						if (!advisorUpdateIsCurrent(state, update)) return;
-						const law = await readConfiguredLawSnapshot(storage.root, config);
-						if (!advisorUpdateIsCurrent(state, update)) return;
-						const candidates = state.habitCandidatesByFingerprint.get(update.eventFingerprint);
-						if (!candidates) return;
-						const candidate = revalidateAdvisorHabitFinding(storageDb, {
-							userId: state.scope.userId,
-							alias: finding.candidate.alias,
-							candidates,
-							originalIdByAlias: new Map(candidates.map((item) => [item.alias, item.habitId])),
-							law,
-							config,
-							responseGeneration: update.generation,
-							cursor: update.cursor,
-							advisorEpoch: update.epoch,
-						});
-						accepted = { ...finding, candidate };
-					} catch {
-						return;
-					} finally {
-						storageDb?.close();
-					}
+				let storageDb: DatabaseSync | undefined;
+				let accepted: AcceptedAdvisorFinding;
+				try {
+					const paths = getAgentExperiencePaths();
+					const storage = await openExistingExperienceStorage(paths.root, { userId: state.scope.userId });
+					storageDb = storage.db;
+					if (!advisorUpdateIsCurrent(state, update)) return;
+					const law = await readConfiguredLawSnapshot(storage.root, config);
+					if (!advisorUpdateIsCurrent(state, update)) return;
+					const candidates = state.habitCandidatesByFingerprint.get(update.eventFingerprint);
+					if (!candidates) return;
+					const candidate = revalidateAdvisorHabitFinding(storageDb, {
+						userId: state.scope.userId,
+						alias: finding.candidate.alias,
+						candidates,
+						originalIdByAlias: new Map(candidates.map((item) => [item.alias, item.habitId])),
+						law,
+						config,
+						responseGeneration: update.generation,
+						cursor: update.cursor,
+						advisorEpoch: update.epoch,
+					});
+					accepted = { ...finding, candidate };
+				} catch {
+					return;
+				} finally {
+					storageDb?.close();
 				}
 				if (!advisorUpdateIsCurrent(state, update)) return;
 				let message: AdvisorCustomMessage;
@@ -3751,9 +3771,7 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 					message,
 					finding: accepted,
 					update,
-					habitCandidates: accepted.kind === "habit_violation"
-						? state.habitCandidatesByFingerprint.get(update.eventFingerprint)
-						: undefined,
+					habitCandidates: state.habitCandidatesByFingerprint.get(update.eventFingerprint),
 					createdAt: message.details.created_at,
 					scopeKey: state.scopeKey,
 					epoch: update.epoch,
@@ -3793,7 +3811,7 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 			onStaticDiagnostic: (diagnostic: string): void => {
 				if (advisorDiagnosticsShown.has(diagnostic)) return;
 				advisorDiagnosticsShown.add(diagnostic);
-				notify(state.latestContext, "Advisor review was skipped for this update because its private reviewer was unavailable.", "warn");
+				notify(state.latestContext, `Runtime Advisor skipped or degraded one review (${diagnostic}).`, "warn");
 			},
 		};
 		state.host = host;
