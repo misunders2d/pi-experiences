@@ -1,5 +1,12 @@
+import type { AdvisorRuntimeConfig } from "./advisor/types.ts";
+
 export interface AgentExperienceConfig {
 	enabled: boolean;
+	advisor_enabled: boolean;
+	advisor_model: string;
+	advisor_timeout_ms: number;
+	advisor_sync_backlog: "off" | 1 | 3 | 5;
+	advisor_immune_turns: number;
 	capture_enabled: boolean;
 	selector_enabled: boolean;
 	embedding_enabled: boolean;
@@ -22,6 +29,11 @@ export interface AgentExperienceConfig {
 
 export const DEFAULT_AGENT_EXPERIENCE_CONFIG: AgentExperienceConfig = Object.freeze({
 	enabled: false,
+	advisor_enabled: false,
+	advisor_model: "",
+	advisor_timeout_ms: 60000,
+	advisor_sync_backlog: "off",
+	advisor_immune_turns: 3,
 	capture_enabled: false,
 	selector_enabled: false,
 	embedding_enabled: false,
@@ -42,26 +54,6 @@ export const DEFAULT_AGENT_EXPERIENCE_CONFIG: AgentExperienceConfig = Object.fre
 	law_path: "law.md",
 });
 
-const BOOLEAN_KEYS = new Set<keyof AgentExperienceConfig>([
-	"enabled",
-	"capture_enabled",
-	"selector_enabled",
-	"embedding_enabled",
-	"consolidation_enabled",
-	"timer_enabled",
-	"break_in_enabled",
-]);
-
-const NUMBER_KEYS = new Set<keyof AgentExperienceConfig>([
-	"selector_timeout_ms",
-	"selector_min_confidence_bp",
-	"selector_min_overlap_score",
-	"selector_max_habits",
-	"selector_staleness_max",
-	"observation_retention_days",
-	"analyze_batch_max_records",
-	"analyze_batch_max_bytes",
-]);
 
 function parseTomlScalar(raw: string): string | number | boolean | undefined {
 	const value = raw.trim();
@@ -74,6 +66,11 @@ function parseTomlScalar(raw: string): string | number | boolean | undefined {
 }
 
 const SECTION_KEY_MAP: Record<string, keyof AgentExperienceConfig> = {
+	"advisor.enabled": "advisor_enabled",
+	"advisor.model": "advisor_model",
+	"advisor.timeout_ms": "advisor_timeout_ms",
+	"advisor.sync_backlog": "advisor_sync_backlog",
+	"advisor.immune_turns": "advisor_immune_turns",
 	"selector.mode": "selector_mode",
 	"selector.model": "selector_model",
 	"selector.timeout_ms": "selector_timeout_ms",
@@ -84,6 +81,11 @@ const SECTION_KEY_MAP: Record<string, keyof AgentExperienceConfig> = {
 };
 
 const ENV_KEY_MAP: Record<string, keyof AgentExperienceConfig> = {
+	AX_ADVISOR_ENABLED: "advisor_enabled",
+	AX_ADVISOR_MODEL: "advisor_model",
+	AX_ADVISOR_TIMEOUT_MS: "advisor_timeout_ms",
+	AX_ADVISOR_SYNC_BACKLOG: "advisor_sync_backlog",
+	AX_ADVISOR_IMMUNE_TURNS: "advisor_immune_turns",
 	AX_SELECTOR_MODE: "selector_mode",
 	AX_SELECTOR_MODEL: "selector_model",
 	AX_SELECTOR_TIMEOUT_MS: "selector_timeout_ms",
@@ -97,13 +99,82 @@ function normalizeConfigKey(raw: string, section: string | undefined): keyof Age
 }
 
 function applyConfigValue(config: AgentExperienceConfig, key: keyof AgentExperienceConfig, parsed: string | number | boolean | undefined): void {
-	if (key === "observation_retention_days" && typeof parsed === "number" && [7, 14, 30].includes(Math.trunc(parsed))) config.observation_retention_days = Math.trunc(parsed);
-	else if (key === "analyze_batch_max_records" && typeof parsed === "number" && Number.isFinite(parsed)) config.analyze_batch_max_records = Math.max(1, Math.min(500, Math.trunc(parsed)));
-	else if (key === "analyze_batch_max_bytes" && typeof parsed === "number" && Number.isFinite(parsed)) config.analyze_batch_max_bytes = Math.max(65537, Math.min(2000000, Math.trunc(parsed)));
-	else if (BOOLEAN_KEYS.has(key) && typeof parsed === "boolean") (config as any)[key] = parsed;
-	else if (NUMBER_KEYS.has(key) && typeof parsed === "number" && Number.isFinite(parsed)) (config as any)[key] = parsed;
-	else if (key === "selector_mode" && (parsed === "instant" || parsed === "smart")) (config as any)[key] = parsed;
-	else if (!BOOLEAN_KEYS.has(key) && !NUMBER_KEYS.has(key) && key !== "selector_mode" && typeof parsed === "string") (config as any)[key] = parsed;
+	switch (key) {
+		case "advisor_timeout_ms":
+			if (typeof parsed === "number" && Number.isFinite(parsed)) config.advisor_timeout_ms = Math.max(5000, Math.min(120000, Math.trunc(parsed)));
+			return;
+		case "advisor_immune_turns":
+			if (typeof parsed === "number" && Number.isFinite(parsed)) config.advisor_immune_turns = Math.max(0, Math.min(10, Math.trunc(parsed)));
+			return;
+		case "advisor_sync_backlog":
+			if (parsed === "off" || parsed === 1 || parsed === 3 || parsed === 5) {
+				config.advisor_sync_backlog = parsed;
+				return;
+			}
+			throw new Error(`Invalid advisor_sync_backlog: expected "off", 1, 3, or 5`);
+		case "observation_retention_days":
+			if (typeof parsed === "number" && [7, 14, 30].includes(Math.trunc(parsed))) config.observation_retention_days = Math.trunc(parsed);
+			return;
+		case "analyze_batch_max_records":
+			if (typeof parsed === "number" && Number.isFinite(parsed)) config.analyze_batch_max_records = Math.max(1, Math.min(500, Math.trunc(parsed)));
+			return;
+		case "analyze_batch_max_bytes":
+			if (typeof parsed === "number" && Number.isFinite(parsed)) config.analyze_batch_max_bytes = Math.max(65537, Math.min(2000000, Math.trunc(parsed)));
+			return;
+		case "enabled":
+			if (typeof parsed === "boolean") config.enabled = parsed;
+			return;
+		case "advisor_enabled":
+			if (typeof parsed === "boolean") config.advisor_enabled = parsed;
+			return;
+		case "capture_enabled":
+			if (typeof parsed === "boolean") config.capture_enabled = parsed;
+			return;
+		case "selector_enabled":
+			if (typeof parsed === "boolean") config.selector_enabled = parsed;
+			return;
+		case "embedding_enabled":
+			if (typeof parsed === "boolean") config.embedding_enabled = parsed;
+			return;
+		case "consolidation_enabled":
+			if (typeof parsed === "boolean") config.consolidation_enabled = parsed;
+			return;
+		case "timer_enabled":
+			if (typeof parsed === "boolean") config.timer_enabled = parsed;
+			return;
+		case "break_in_enabled":
+			if (typeof parsed === "boolean") config.break_in_enabled = parsed;
+			return;
+		case "selector_timeout_ms":
+			if (typeof parsed === "number" && Number.isFinite(parsed)) config.selector_timeout_ms = parsed;
+			return;
+		case "selector_min_confidence_bp":
+			if (typeof parsed === "number" && Number.isFinite(parsed)) config.selector_min_confidence_bp = parsed;
+			return;
+		case "selector_min_overlap_score":
+			if (typeof parsed === "number" && Number.isFinite(parsed)) config.selector_min_overlap_score = parsed;
+			return;
+		case "selector_max_habits":
+			if (typeof parsed === "number" && Number.isFinite(parsed)) config.selector_max_habits = parsed;
+			return;
+		case "selector_staleness_max":
+			if (typeof parsed === "number" && Number.isFinite(parsed)) config.selector_staleness_max = parsed;
+			return;
+		case "selector_mode":
+			if (parsed === "instant" || parsed === "smart") config.selector_mode = parsed;
+			return;
+		case "advisor_model":
+			if (typeof parsed === "string") config.advisor_model = parsed;
+			return;
+		case "selector_model":
+			if (typeof parsed === "string") config.selector_model = parsed;
+			return;
+		case "consolidation_model":
+			if (typeof parsed === "string") config.consolidation_model = parsed;
+			return;
+		case "law_path":
+			if (typeof parsed === "string") config.law_path = parsed;
+	}
 }
 
 export function applyAgentExperienceEnvOverrides(config: AgentExperienceConfig, env: NodeJS.ProcessEnv = process.env): AgentExperienceConfig {
@@ -162,6 +233,13 @@ export function formatAgentExperienceConfig(config: AgentExperienceConfig): stri
 		`analyze_batch_max_bytes = ${Math.max(65537, Math.min(2000000, Math.trunc(merged.analyze_batch_max_bytes)))}`,
 		`law_path = ${quote(merged.law_path)}`,
 		"",
+		"[advisor]",
+		`enabled = ${merged.advisor_enabled}`,
+		`model = ${quote(merged.advisor_model)}`,
+		`timeout_ms = ${Math.max(5000, Math.min(120000, Math.trunc(merged.advisor_timeout_ms)))}`,
+		`sync_backlog = ${merged.advisor_sync_backlog === "off" ? quote("off") : merged.advisor_sync_backlog}`,
+		`immune_turns = ${Math.max(0, Math.min(10, Math.trunc(merged.advisor_immune_turns)))}`,
+		"",
 	].join("\n");
 }
 
@@ -172,6 +250,7 @@ export function summarizeAgentExperienceConfig(config: AgentExperienceConfig, co
 		`capture=${config.capture_enabled}`,
 		`selector=${config.selector_enabled} method=local_vectors_plus_bounded_judge timeout_ms=${config.selector_timeout_ms} min_confidence_bp=${config.selector_min_confidence_bp} max_habits=${config.selector_max_habits}`,
 		`selector: local condition-vector retrieval is mandatory; one bounded ${config.selector_model} applicability call follows retrieval and failures produce no guidance`,
+		`advisor=${config.enabled && config.advisor_enabled} configured=${config.advisor_enabled} model=${effectiveAdvisorModel(config)} timeout_ms=${config.advisor_timeout_ms} sync_backlog=${config.advisor_sync_backlog} immune_turns=${config.advisor_immune_turns}`,
 		`duplicate_prevention=${config.embedding_enabled ? "enabled_local" : "disabled"}`,
 		`consolidation=${config.consolidation_enabled} analyze_batch_max_records=${config.analyze_batch_max_records} analyze_batch_max_bytes=${config.analyze_batch_max_bytes}`,
 		`observation_retention_days=${config.observation_retention_days}`,
@@ -181,4 +260,18 @@ export function summarizeAgentExperienceConfig(config: AgentExperienceConfig, co
 		"Selector remains disabled unless master enabled and selector_enabled=true; selector activation requires the configured law file.",
 	];
 	return lines.join("\n");
+}
+
+export function effectiveAdvisorModel(config: Pick<AgentExperienceConfig, "advisor_model" | "selector_model">): string {
+	return config.advisor_model || config.selector_model;
+}
+
+export function advisorRuntimeConfig(config: AgentExperienceConfig): AdvisorRuntimeConfig {
+	return {
+		enabled: config.enabled && config.advisor_enabled,
+		model: effectiveAdvisorModel(config),
+		timeoutMs: config.advisor_timeout_ms,
+		syncBacklog: config.advisor_sync_backlog,
+		immuneTurns: config.advisor_immune_turns,
+	};
 }

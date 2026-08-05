@@ -1,5 +1,17 @@
 const REDACTED = "[REDACTED]";
 const SENSITIVE_KEY = /(?:token|api[_-]?key|secret|password|authorization|private[_-]?key|credential|path|file)/i;
+const SENSITIVE_ASSIGNMENT_KEY_SOURCE = String.raw`(?:api[_-]?key|secret|password|token|credential|authorization|private[_-]?key)`;
+const SENSITIVE_ASSIGNMENT_SOURCE = String.raw`["'\x60]?\b${SENSITIVE_ASSIGNMENT_KEY_SOURCE}\b["'\x60]?\s*[:=]\s*(?:"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|\x60(?:\\.|[^\x60\\\r\n])*\x60|[^\s,;}\]]+)`;
+const REDACTED_ASSIGNMENT_SOURCE = String.raw`["'\x60]?\b${SENSITIVE_ASSIGNMENT_KEY_SOURCE}\b["'\x60]?\s*[:=]\s*["'\x60]?\[REDACTED\]["'\x60]?`;
+const CREDENTIAL_URL_SOURCE = String.raw`\b[a-z][a-z0-9+.-]*:\/\/[^\s\/@:]+:[^\s\/@]+@[^\s]+`;
+
+function sensitiveAssignmentRegex(flags = "i"): RegExp {
+	return new RegExp(SENSITIVE_ASSIGNMENT_SOURCE, flags);
+}
+
+function credentialUrlRegex(flags = "i"): RegExp {
+	return new RegExp(CREDENTIAL_URL_SOURCE, flags);
+}
 
 export function redactText(input: string): string {
 	return String(input)
@@ -9,7 +21,8 @@ export function redactText(input: string): string {
 		.replace(/\b(?:sk|pk|ghp|xox[baprs]|ya29|AKIA)[A-Za-z0-9_\-]{8,}\b/g, REDACTED)
 		.replace(/\b[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\b/g, REDACTED)
 		.replace(/(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi, REDACTED)
-		.replace(/\b(?:api[_-]?key|secret|password|token|credential)\s*[:=]\s*["'`]?[^\s"'`]{8,}["'`]?/gi, REDACTED)
+		.replace(credentialUrlRegex("gi"), REDACTED)
+		.replace(sensitiveAssignmentRegex("gi"), REDACTED)
 		.replace(/(?:~\/|\/(?:home|Users|var\/folders|tmp|media|mnt|Volumes)\/[^\s"']+|[A-Za-z]:\\Users\\[^\s"']+)/g, REDACTED);
 }
 
@@ -30,5 +43,9 @@ export function redactJson<T>(input: T): T {
 
 export function containsUnredactedSensitiveText(value: unknown): boolean {
 	const text = typeof value === "string" ? value : JSON.stringify(value);
-	return /-----BEGIN [A-Z ]*(?:PRIVATE KEY|SECRET KEY)|[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}|(?:\+?1[-.\s])?(?:\(?\d{3}\)?[-.\s])\d{3}[-.\s]\d{4}|(?:sk|pk|ghp|xox[baprs]|ya29|AKIA)[A-Za-z0-9_\-]{8,}|\b[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\b|(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}|\b(?:api[_-]?key|secret|password|token|credential)\s*[:=]\s*["'`]?[^\s"'`]{8,}["'`]?|(?:~\/|\/(?:home|Users|var\/folders|tmp|media|mnt|Volumes)\/[^\s"']+|[A-Za-z]:\\Users\\[^\s"']+)/i.test(text || "");
+	const normalized = text || "";
+	const assignmentScan = normalized.replace(new RegExp(REDACTED_ASSIGNMENT_SOURCE, "gi"), REDACTED);
+	return /-----BEGIN [A-Z ]*(?:PRIVATE KEY|SECRET KEY)|[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}|(?:\+?1[-.\s])?(?:\(?\d{3}\)?[-.\s])\d{3}[-.\s]\d{4}|(?:sk|pk|ghp|xox[baprs]|ya29|AKIA)[A-Za-z0-9_\-]{8,}|\b[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\b|(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}|(?:~\/|\/(?:home|Users|var\/folders|tmp|media|mnt|Volumes)\/[^\s"']+|[A-Za-z]:\\Users\\[^\s"']+)/i.test(normalized)
+		|| credentialUrlRegex().test(normalized)
+		|| sensitiveAssignmentRegex().test(assignmentScan);
 }

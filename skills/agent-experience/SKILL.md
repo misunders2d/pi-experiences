@@ -2,9 +2,9 @@
 name: agent-experience
 description: >-
   Use when explaining, configuring, troubleshooting, or safely operating the Pi
-  Experiences / Agent Experience extension: natural habit declaration and
-  numbered conversational review, /experience setup, local capture, bounded
-  Analyze, suggestion review, approved-habit controls, local duplicate
+  Experiences / Agent Experience extension: /experience setup, Runtime Advisor,
+  natural habit declaration and numbered conversational review, local capture,
+  bounded Analyze, suggestion review, approved-habit controls, local duplicate
   prevention, short source retention, approved-habit reminders, privacy, law,
   and the distinction between skills, memory, and experience. Do not use for
   unrelated Pi extension development.
@@ -22,6 +22,12 @@ Experience may learn durable work preferences and recurring task/tool categories
 
 ## Normal-user rule
 
+For configuration or discovery, start with `/experience setup`. Read its groups in order: **Learning from conversations**, **Guidance and Advisor**, **Manage habits**, **Automation and privacy**, then **Status and help**. Setup must remain sufficient by itself; typed subcommands and internal IDs/settings are advanced maintainer controls, never normal-user prerequisites.
+
+Runtime Advisor is independently opt-in. Exact approved `When:` / `Do:` habits are its complete policy source; reviewer reasoning never becomes standalone advice, and direct user instructions/law still win. It must remain bounded, read-only, visible, non-blocking, non-mutating, non-forcing, and private. Learning still requires repeated evidence, Analyze, review, and approval.
+
+For Runtime Advisor configuration, troubleshooting, audits, or changes, first read [`references/runtime-advisor.md`](references/runtime-advisor.md). It owns model inheritance, confined tools, delivery, Pi-hook, observation, privacy, and fallback detail.
+
 Use natural conversation when the user directly discusses or declares a habit:
 
 1. clarify the behavioral pattern in ordinary language;
@@ -31,14 +37,6 @@ Use natural conversation when the user directly discusses or declares a habit:
 5. if the user changes wording, draft again and never confirm the replaced draft.
 
 For suggestions or possible duplicates, call `agent_experience_list_review`, discuss its numbered plain-language items, then call `agent_experience_apply_review` only after the user explicitly names the number and decision in a later message. Never expose or request IDs, checksums, source refs, scores, thresholds, providers, raw examples, private paths, audit fields, or capability tokens.
-
-The complete control panel/fallback remains:
-
-```text
-/experience setup
-```
-
-Setup must remain sufficient by itself. Do not require typed setup/review subcommands, IDs, checksums, thresholds, endpoints, provider settings, model-server details, or filesystem commands.
 
 If the panel does not render, tell the user to restart Pi so the latest extension loads, then run `/experience setup` again.
 
@@ -223,7 +221,7 @@ Maintainer invariants:
 - normal scans compare active/disabled approved habits only and never candidate-to-candidate pairs;
 - scan cap is 100 current habits / 4,950 pairs;
 - package Node floor is `>=22.19.0`;
-- Pi peers remain wildcard;
+- `pi-agent-core`, `pi-ai`, and `pi-tui` remain direct wildcard peers; `pi-coding-agent >=0.83.0` supplies public `agent_settled`;
 - package install has no model-download lifecycle hook;
 - packed installed artifact and real isolated Pi TUI must be validated before release.
 

@@ -1,3 +1,4 @@
+import type { DatabaseSync } from "node:sqlite";
 import {
 	chooseCanonicalHabit,
 	classifySimilarityBp,
@@ -42,14 +43,14 @@ export const MAX_SEMANTIC_SCAN_HABITS = 100;
 export const MAX_SEMANTIC_SCAN_PAIRS = 4_950;
 const MAX_ACTIVATION_REPREPARES = 2;
 
-interface PreparedFieldEmbedding {
+export interface PreparedFieldEmbedding {
 	embeddingInputVersion: string;
 	embeddingInputChecksum: string;
 	vector: Float32Array;
 	cached: boolean;
 }
 
-interface PreparedEmbedding {
+export interface PreparedEmbedding {
 	habit: SemanticHabitRow;
 	condition: PreparedFieldEmbedding;
 	behavior: PreparedFieldEmbedding;
@@ -126,7 +127,7 @@ function comparisonRows(db: any, input: { userId: string; target: SemanticHabitR
 		.filter((row) => !getKeptSeparateDuplicate(db, { userId: input.userId, habitId: input.target.id, otherHabitId: row.id, provider: input.policy.provider, model: input.policy.model, dimensions: input.policy.dimensions }));
 }
 
-async function prepareHabitEmbeddings(db: any, input: { userId: string; habits: SemanticHabitRow[]; policy: SemanticDedupePolicy; provider: EmbeddingAdapter; signal?: AbortSignal; batchSize?: number; onProgress?: (progress: SemanticProgress) => void }): Promise<Map<string, PreparedEmbedding>> {
+export async function prepareHabitFieldEmbeddings(db: DatabaseSync, input: { userId: string; habits: SemanticHabitRow[]; policy: SemanticDedupePolicy; provider: EmbeddingAdapter; signal?: AbortSignal; batchSize?: number; onProgress?: (progress: SemanticProgress) => void }): Promise<Map<string, PreparedEmbedding>> {
 	const policy = sanitizePolicy(input.policy);
 	assertProviderMatches(policy, input.provider);
 	const partial = new Map<string, { habit: SemanticHabitRow; condition?: PreparedFieldEmbedding; behavior?: PreparedFieldEmbedding }>();
@@ -289,7 +290,7 @@ export async function runAtomicSemanticDeclaration<T>(db: any, input: {
 		const duplicateState = relationSnapshot(db, input.userId);
 		let prepared: Map<string, PreparedEmbedding>;
 		try {
-			prepared = await prepareHabitEmbeddings(db, { userId: input.userId, habits: [input.target, ...comparators], policy, provider: input.provider, signal: input.signal, batchSize: LOCAL_EMBEDDING_MAX_BATCH });
+			prepared = await prepareHabitFieldEmbeddings(db, { userId: input.userId, habits: [input.target, ...comparators], policy, provider: input.provider, signal: input.signal, batchSize: LOCAL_EMBEDDING_MAX_BATCH });
 		} catch (error: any) {
 			return { semantic: unavailableDecision(policy, String(error?.message || error)), transitioned: false, target: input.target };
 		}
@@ -351,7 +352,7 @@ export async function runAtomicSemanticActivation<T>(db: any, input: { userId: s
 		const comparators = comparisonRows(db, { userId: input.userId, target, policy });
 		let prepared: Map<string, PreparedEmbedding>;
 		try {
-			prepared = await prepareHabitEmbeddings(db, { userId: input.userId, habits: [target, ...comparators], policy, provider: input.provider, signal: input.signal, batchSize: LOCAL_EMBEDDING_MAX_BATCH });
+			prepared = await prepareHabitFieldEmbeddings(db, { userId: input.userId, habits: [target, ...comparators], policy, provider: input.provider, signal: input.signal, batchSize: LOCAL_EMBEDDING_MAX_BATCH });
 		} catch (error: any) {
 			const blocked = auditUnavailable(db, { ...input, policy, reason: String(error?.message || error) });
 			return { ...blocked, transitioned: false };
@@ -390,7 +391,7 @@ export async function findSemanticDuplicateMatches(db: any, input: { userId: str
 	const policy = sanitizePolicy(input.policy);
 	if (!policy.enabled) return [];
 	const comparators = comparisonRows(db, { userId: input.userId, target: input.target, policy, statuses: input.statuses || SEMANTIC_COMPARISON_STATUSES });
-	const prepared = await prepareHabitEmbeddings(db, { userId: input.userId, habits: [input.target, ...comparators], policy, provider: input.provider, signal: input.signal, batchSize: LOCAL_EMBEDDING_MAX_BATCH });
+	const prepared = await prepareHabitFieldEmbeddings(db, { userId: input.userId, habits: [input.target, ...comparators], policy, provider: input.provider, signal: input.signal, batchSize: LOCAL_EMBEDDING_MAX_BATCH });
 	for (const item of prepared.values()) persistPreparedEmbedding(db, { userId: input.userId, prepared: item, policy, now: input.now });
 	return computeMatches({ target: input.target, comparators, prepared, policy });
 }
@@ -478,7 +479,7 @@ export async function scanAndBackfillSemanticDuplicates(db: any, input: { userId
 	input.onProgress?.({ phase: "snapshot", completed: stateRows.length, total: stateRows.length });
 	const pairHabits = [...new Map(pairs.flatMap((pair) => [pair.left, pair.right]).map((row) => [row.id, row])).values()];
 	const prepared = pairHabits.length
-		? await prepareHabitEmbeddings(db, { userId: input.userId, habits: pairHabits, policy, provider: input.provider, signal: input.signal, batchSize: input.batchSize, onProgress: input.onProgress })
+		? await prepareHabitFieldEmbeddings(db, { userId: input.userId, habits: pairHabits, policy, provider: input.provider, signal: input.signal, batchSize: input.batchSize, onProgress: input.onProgress })
 		: new Map<string, PreparedEmbedding>();
 	if (!pairHabits.length) input.onProgress?.({ phase: "embedding", completed: 0, total: 0 });
 	const proposed: Array<{ left: SemanticHabitRow; right: SemanticHabitRow; similarityBp: number; conditionSimilarityBp: number; behaviorSimilarityBp: number; strength: "review" | "strong" }> = [];

@@ -1,12 +1,14 @@
 import { existsSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
+import type { DatabaseSync } from "node:sqlite";
 import { completeSimple, type Model } from "@earendil-works/pi-ai/compat";
 import { getPackageDir, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Box, decodeKittyPrintable, fuzzyFilter, Input, Key, matchesKey, SettingsList, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component, type Focusable, type SettingItem, type SettingsListTheme } from "@earendil-works/pi-tui";
+import { Box, decodeKittyPrintable, fuzzyFilter, Input, Key, matchesKey, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component, type Focusable } from "@earendil-works/pi-tui";
 import {
 	getAgentExperiencePaths,
 	readAgentExperienceConfig,
+	setAgentExperienceAdvisorEnabled,
 	setAgentExperienceBreakInEnabled,
 	setAgentExperienceCaptureActive,
 	setAgentExperienceCaptureEnabled,
@@ -17,6 +19,7 @@ import {
 	setAgentExperienceObservationRetentionDays,
 	setAgentExperienceSelectorEnabled,
 	setAgentExperienceSelectorModel,
+	writeAgentExperienceConfig,
 	setAgentExperienceSimpleOn,
 	setAgentExperienceTimerEnabled,
 } from "./src/paths.ts";
@@ -61,7 +64,7 @@ import { prepareSelectorConditionVectors } from "./src/selector-vector.ts";
 import { extractSteeringContext, latestUserMessageBoundary, type SteeringContextTurn } from "./src/steering-context.ts";
 import { prepareActiveSelectorVectorsAfterChange } from "./src/selector-maintenance.ts";
 import { collectAgentExperienceMetrics, formatAgentExperienceMetrics } from "./src/metrics.ts";
-import type { AgentExperienceConfig } from "./src/config.ts";
+import { advisorRuntimeConfig, effectiveAdvisorModel, type AgentExperienceConfig } from "./src/config.ts";
 import type { ValidatedObservationRecord } from "./src/consolidate/observations.ts";
 import { buildCompactHabitContext, type CompactHabitContextItem } from "./src/consolidate/context.ts";
 import { getProposalReadWatermark } from "./src/consolidate/commit.ts";
@@ -75,12 +78,34 @@ import { appendHabitGuidanceToProviderPayload } from "./src/provider-guidance.ts
 import { consumeScheduledAnalyzeReceipts, deleteScheduledAnalyzeReceiptFiles, transitionScheduledAnalyzeReceiptBreakInDelivery, type ScheduledAnalyzeReceiptRecord } from "./src/schedule/receipts.ts";
 import { BreakInQueue, breakInScopeKey, type BreakInScope, type PendingBreakInBatch } from "./src/break-in.ts";
 import { disableScheduledAnalyzeSystemd, inspectScheduledAnalyzeSystemd, installScheduledAnalyzeSystemd, previewScheduledAnalyzeSystemd, removeScheduledAnalyzeSystemd, SCHEDULED_ANALYZE_ON_CALENDAR, SCHEDULED_ANALYZE_SERVICE, SCHEDULED_ANALYZE_TIMER } from "./src/schedule/systemd.ts";
+import { AdvisorRuntime, type AdvisorRuntimeHost } from "./src/advisor/runtime.ts";
+import { createPiAdvisorAgentAdapter, type AdvisorAgentAdapter } from "./src/advisor/model.ts";
+import { extractAdvisorTurnDelta } from "./src/advisor/transcript.ts";
+import { retrieveActiveAdvisorHabitCandidates, retrieveAdvisorHabitCandidates, revalidateAdvisorHabitFinding, type AdvisorHabitRetrievalCandidate } from "./src/advisor/habits.ts";
+import {
+	ADVISOR_FINDING_MESSAGE_TYPE,
+	ADVISOR_FINDING_VISIBLE_ENTRY_TYPE,
+	buildAdvisorCustomMessage,
+	chooseAdvisorDelivery,
+	renderAdvisorFinding,
+	renderAdvisorVisibleFinding,
+	validateAdvisorFindingDetails,
+	type AdvisorCustomMessage,
+	type AdvisorFindingDetails,
+} from "./src/advisor/message.ts";
+import type { AcceptedAdvisorFinding, AdvisorPrimaryDelta, AdvisorRuntimeConfig, AdvisorScope, AdvisorUpdate } from "./src/advisor/types.ts";
+import { appendAdvisorFindingObservation } from "./src/advisor/observation.ts";
+import { showSetupView, type SetupAction, type SetupSnapshot, type SetupView } from "./src/setup-ui.ts";
 
 const captureBuffer = new CapturePairBuffer();
 let selectorModelAdapter: SelectorModelAdapter | undefined;
 let selectorEmbeddingAdapterOverride: EmbeddingAdapter | undefined;
 let selectorLocalEmbeddingAdapter: LocalEmbeddingAdapter | undefined;
 let selectorLocalEmbeddingRoot: string | undefined;
+let advisorAdapterOverride: AdvisorAgentAdapter | undefined;
+let advisorObservationAppendGateForTest: (() => Promise<void>) | undefined;
+let advisorTransitionValidationGateForTest: (() => Promise<void>) | undefined;
+let advisorTransitionSettlementGateForTest: (() => Promise<void>) | undefined;
 const selectorDiagnosticsShown = new Set<string>();
 const captureDiagnosticsShown = new Set<string>();
 
@@ -115,7 +140,12 @@ const HABIT_ASSESSMENT_MODEL_PICKER: ModelPickerCopy = {
 	exactTitle: "Enter exact habit-assessment model id",
 	exactPlaceholder: "provider/model, e.g. openai-codex/gpt-5.4-mini",
 };
-type SetupAction = "save" | "model" | "assessmentModel" | "analyze" | "review" | "duplicates" | "habits" | "embedding" | "retention" | "use" | "schedule" | "breakIn" | "status" | "help" | "off" | "done";
+const ADVISOR_MODEL_PICKER: ModelPickerCopy = {
+	title: "Choose separate Advisor model",
+	searchTitle: "Search Advisor models",
+	exactTitle: "Enter exact Advisor model id",
+	exactPlaceholder: "provider/model, e.g. openai-codex/gpt-5.5",
+};
 
 const RESET = "\x1b[0m";
 const PANEL_BG = "\x1b[48;5;235m";
@@ -146,9 +176,6 @@ function boxedLines(lines: string[], width: number, padding = 1): string[] {
 	return out;
 }
 
-function checkboxValue(value: boolean): string {
-	return value ? "[x] ON" : "[ ] OFF";
-}
 
 function truncateLine(value: string, width: number): string {
 	return truncateToWidth(value, Math.max(1, width));
@@ -176,62 +203,6 @@ function modelSearchMatches(models: string[], query: string, limit = 25): string
 	return [...direct, ...fuzzy].slice(0, limit);
 }
 
-const setupSettingsTheme: SettingsListTheme = {
-	cursor: style("→ ", FG_ACCENT, BOLD),
-	label: (text, selected) => selected ? style(text, FG_ACCENT, BOLD) : text,
-	value: (text, selected) => selected ? style(text, FG_WARN, BOLD) : text,
-	description: (text) => style(text, FG_DIM),
-	hint: (text) => style(text, FG_DIM),
-};
-
-function modelValueForSetup(config: { consolidation_model: string }): string {
-	return config.consolidation_model || "choose model";
-}
-
-function assessmentModelValueForSetup(config: { selector_model: string }): string {
-	return config.selector_model || "choose model";
-}
-
-function buildSetupSettingItems(config: { enabled: boolean; capture_enabled: boolean; consolidation_enabled: boolean; consolidation_model: string; selector_enabled: boolean; selector_model: string; embedding_enabled?: boolean; observation_retention_days?: number; timer_enabled?: boolean; break_in_enabled?: boolean }): SettingItem[] {
-	const captureActive = config.enabled && config.capture_enabled;
-	const anythingEnabled = config.enabled || config.capture_enabled || config.consolidation_enabled || config.selector_enabled || config.embedding_enabled;
-	return [
-		{ id: "save", label: "Save chat examples locally", currentValue: checkboxValue(captureActive), values: ["[ ] OFF", "[x] ON"], description: "Space/Enter toggles local redacted example capture." },
-		{ id: "model", label: "Choose model for habit learning", currentValue: modelValueForSetup(config), values: [modelValueForSetup(config)], description: "Selects the model that turns saved examples into suggestions." },
-		{ id: "assessmentModel", label: "Choose model for habit assessment", currentValue: assessmentModelValueForSetup(config), values: [assessmentModelValueForSetup(config)], description: "Selects the model that checks whether approved habits apply before replies." },
-		{ id: "analyze", label: "Analyze all waiting examples now", currentValue: "open", values: ["open"], description: "Starts nonblocking analysis. No habits are auto-approved." },
-		{ id: "review", label: "Review suggested habits", currentValue: "open", values: ["open"], description: "Inspect each suggestion in a boxed panel, then approve/reject/back." },
-		{ id: "duplicates", label: "Resolve duplicate habits", currentValue: "open", values: ["open"], description: "Review semantically similar habits and choose merge/supersede/keep/archive." },
-		{ id: "habits", label: "Review approved habits", currentValue: "open", values: ["open"], description: "Browse active/disabled habits, then disable, re-enable, or archive/hide one." },
-		{ id: "embedding", label: "Prevent duplicate habits", currentValue: checkboxValue(config.embedding_enabled === true), values: ["[ ] OFF", "[x] ON"], description: "Space/Enter checks current habits before turning on private local duplicate prevention." },
-		{ id: "retention", label: "Keep analyzed source examples", currentValue: `${config.observation_retention_days || 7} days`, values: ["7 days", "14 days", "30 days"], description: "Choose short private retention for rotated redacted source text." },
-		{ id: "use", label: "Use approved habits before replies", currentValue: checkboxValue(config.selector_enabled), values: ["[ ] OFF", "[x] ON"], description: "Space/Enter toggles approved-habit reminders. Suggestions still require review first." },
-		{ id: "schedule", label: "Automatic schedule", currentValue: config.timer_enabled ? "ON" : "off", values: [config.timer_enabled ? "ON" : "off"], description: "Inspect, install, repair, disable, or remove the explicit local 03:30 systemd user timer." },
-		{ id: "breakIn", label: "Break-in review prompts", currentValue: config.break_in_enabled ? "ON" : "off", values: [config.break_in_enabled ? "ON" : "off"], description: "After Analyze creates suggestions and Pi is idle, privately ask whether to open Review. Never auto-applies." },
-		{ id: "status", label: "Show current settings", currentValue: "open", values: ["open"], description: "Show current Agent Experience status." },
-		{ id: "help", label: "Explain these settings", currentValue: "open", values: ["open"], description: "Show setup help." },
-		...(anythingEnabled ? [{ id: "off", label: "Turn all experience features off", currentValue: "open", values: ["open"], description: "Stops capture and runtime gates. Existing local records stay." } satisfies SettingItem] : []),
-		{ id: "done", label: "Done", currentValue: "close", values: ["close"], description: "Close setup." },
-	];
-}
-
-class SetupSettingsComponent implements Component {
-	private readonly box: Box;
-	private readonly list: SettingsList;
-
-	constructor(config: { enabled: boolean; capture_enabled: boolean; consolidation_enabled: boolean; consolidation_model: string; selector_enabled: boolean; selector_model: string; embedding_enabled?: boolean; observation_retention_days?: number; timer_enabled?: boolean; break_in_enabled?: boolean }, done: (result: SetupAction | undefined) => void) {
-		this.box = new Box(2, 1, panelBg);
-		this.box.addChild(new Text(style("Agent Experience setup", FG_ACCENT, BOLD), 0, 0));
-		this.box.addChild(new Text(style("Space/Enter toggles checkbox rows or opens action rows. Esc closes.", FG_DIM), 0, 0));
-		this.box.addChild({ render: () => [""], invalidate() {} });
-		this.list = new SettingsList(buildSetupSettingItems(config), 15, setupSettingsTheme, (id) => done(id as SetupAction), () => done("done"), { enableSearch: false });
-		this.box.addChild(this.list);
-	}
-
-	render(width: number): string[] { return this.box.render(width); }
-	handleInput(data: string): void { this.list.handleInput(data); }
-	invalidate(): void { this.box.invalidate(); }
-}
 
 interface SetupProgressUpdate {
 	label: string;
@@ -681,6 +652,26 @@ export function __setAgentExperienceSelectorEmbeddingAdapterForTest(adapter: Emb
 	selectorEmbeddingAdapterOverride = adapter;
 }
 
+export function __setAgentExperienceAdvisorAdapterForTest(adapter: AdvisorAgentAdapter | undefined) {
+	advisorAdapterOverride = adapter;
+}
+
+export function __setAgentExperienceAdvisorObservationAppendGateForTest(gate: (() => Promise<void>) | undefined) {
+	advisorObservationAppendGateForTest = gate;
+}
+
+export function __setAgentExperienceAdvisorTransitionValidationGateForTest(gate: (() => Promise<void>) | undefined) {
+	advisorTransitionValidationGateForTest = gate;
+}
+
+export function __setAgentExperienceAdvisorTransitionSettlementGateForTest(gate: (() => Promise<void>) | undefined) {
+	advisorTransitionSettlementGateForTest = gate;
+}
+
+export function __advisorCatchupRequiredForTest(syncBacklog: AdvisorRuntimeConfig["syncBacklog"], backlog: number): boolean {
+	return syncBacklog !== "off" && backlog >= syncBacklog;
+}
+
 export function __setAgentExperienceConsolidationAdapterForTest(adapter: ConsolidationModelAdapter | undefined) {
 	consolidationModelAdapter = adapter;
 }
@@ -916,9 +907,9 @@ async function configuredModelAuthenticated(ctx: Pick<ExtensionContext, "modelRe
 }
 
 
-async function reviewSummary(root: string, userId: string): Promise<{ ledger: boolean; pending: number; active: number; candidate: number; error?: string }> {
+async function reviewSummary(root: string, userId: string): Promise<{ ledger: boolean; pending: number; active: number; candidate: number; approvedWaiting: number; duplicates: number; error?: string }> {
 	const dbPath = resolvePrivatePath(root, "ledger.sqlite");
-	if (!(await fileExists(dbPath))) return { ledger: false, pending: 0, active: 0, candidate: 0, approvedWaiting: 0 };
+	if (!(await fileExists(dbPath))) return { ledger: false, pending: 0, active: 0, candidate: 0, approvedWaiting: 0, duplicates: 0 };
 	let storage: Awaited<ReturnType<typeof openExistingExperienceStorage>> | undefined;
 	try {
 		storage = await openExistingExperienceStorage(root, { userId });
@@ -929,13 +920,46 @@ async function reviewSummary(root: string, userId: string): Promise<{ ledger: bo
 		const candidate = visible.items.filter((item: any) => item.type === "candidate").length;
 		const active = Number(db.prepare("SELECT COUNT(*) AS count FROM habits WHERE user_id = ? AND status = 'active'").get(normalizedUserId).count);
 		const approvedWaiting = listApprovedPendingHabitsForSetup(db, { userId: normalizedUserId }).length;
-		return { ledger: true, pending, active, candidate, approvedWaiting };
+		const duplicates = listHabitDuplicates(db, { userId: normalizedUserId, decision: "pending" }).length;
+		return { ledger: true, pending, active, candidate, approvedWaiting, duplicates };
 	} catch (error) {
 		const raw = error instanceof Error ? error.message : String(error);
-		return { ledger: true, pending: 0, active: 0, candidate: 0, approvedWaiting: 0, error: redactText(raw).slice(0, 300) };
+		return { ledger: true, pending: 0, active: 0, candidate: 0, approvedWaiting: 0, duplicates: 0, error: redactText(raw).slice(0, 300) };
 	} finally {
 		storage?.db.close();
 	}
+}
+
+type SetupRuntimeStatus = Pick<SetupSnapshot, "advisorRuntime">;
+
+async function buildSetupSnapshot(runtimeStatus: SetupRuntimeStatus = {}): Promise<SetupSnapshot> {
+	const paths = getAgentExperiencePaths();
+	const [{ config }, observations, summary] = await Promise.all([
+		readAgentExperienceConfig(paths),
+		countObservationLines(paths.root),
+		reviewSummary(paths.root, getConfiguredUserId()),
+	]);
+	let semanticFiles: SetupSnapshot["semanticFiles"] = "Not prepared";
+	if (existsSync(resolvePrivatePath(paths.root, "models"))) {
+		try {
+			semanticFiles = (await getLocalEmbeddingAssetStatus(paths.root, { deep: false })).ready ? "Ready" : "Needs attention";
+		} catch {
+			semanticFiles = "Needs attention";
+		}
+	}
+	return {
+		config,
+		counts: {
+			observations: observations || 0,
+			approved: summary.active,
+			suggestions: summary.pending + summary.candidate + summary.approvedWaiting,
+			duplicates: summary.duplicates,
+		},
+		semanticFiles,
+		reviewState: summary.error ? "Needs attention" : "Ready",
+		effectiveAdvisorModel: effectiveAdvisorModel(config),
+		...runtimeStatus,
+	};
 }
 
 async function buildStatusText(): Promise<{ text: string; enabled: boolean }> {
@@ -996,28 +1020,6 @@ async function handleHelpSetup(ctx: ExtensionCommandContext, config: AgentExperi
 	notify(ctx, message, "info");
 }
 
-function buildSetupOptions(config: { enabled: boolean; capture_enabled: boolean; consolidation_enabled: boolean; consolidation_model: string; selector_enabled: boolean; selector_model: string; embedding_enabled?: boolean; observation_retention_days?: number; timer_enabled?: boolean; break_in_enabled?: boolean }): string[] {
-	const captureActive = config.enabled && config.capture_enabled;
-	const anythingEnabled = config.enabled || config.capture_enabled || config.consolidation_enabled || config.selector_enabled || config.embedding_enabled;
-	return [
-		`${captureActive ? "[x]" : "[ ]"} Save chat examples locally`,
-		`Choose model for habit learning (${modelValueForSetup(config)})`,
-		`Choose model for habit assessment (${assessmentModelValueForSetup(config)})`,
-		"Analyze all waiting examples now",
-		"Review suggested habits",
-		"Resolve duplicate habits",
-		"Review approved habits",
-		`${config.embedding_enabled ? "[x]" : "[ ]"} Prevent duplicate habits`,
-		`Keep analyzed source examples (${config.observation_retention_days || 7} days)`,
-		`${config.selector_enabled ? "[x]" : "[ ]"} Use approved habits before replies`,
-		`Automatic schedule: ${config.timer_enabled ? "ON" : "off"} (manage/explain)`,
-		`${config.break_in_enabled ? "[x]" : "[ ]"} Break-in review prompts`,
-		"Show current settings",
-		"Explain these settings",
-		...(anythingEnabled ? ["Turn all experience features off"] : []),
-		"Done",
-	];
-}
 
 function setupControlsMessage(): string {
 	return [
@@ -1104,20 +1106,20 @@ async function handleSetupEmbedding(ctx: ExtensionCommandContext) {
 		"Keep duplicate prevention ON",
 		"Turn duplicate prevention OFF",
 		"Scan for duplicate habits now",
-		"Turn off and remove local duplicate-check files",
+		...(!config.selector_enabled ? ["Turn off and remove local semantic files"] : []),
 		"Back/cancel (no changes)",
 	] : [
 		"Explain duplicate prevention (no changes)",
 		"Prepare local duplicate prevention and scan",
 		"Scan using already prepared local files",
-		"Remove local duplicate-check files",
+		...(!config.selector_enabled ? ["Remove local semantic files"] : []),
 		"Back/cancel (no changes)",
 	];
 	const choice = await chooseSetup(ctx, "Prevent duplicate habits", choices, false);
 	if (!choice || choice === "Back/cancel (no changes)" || choice === "Keep duplicate prevention ON") return;
 	if (choice === "Explain duplicate prevention (no changes)") return notify(ctx, [
 		"Duplicate prevention compares only normalized When/Do habit wording on this computer.",
-		"It never sends saved examples, source references, evidence summaries, paths, checksums, audit text, credentials, or tokens.",
+		"It never sends saved examples, source references, evidence summaries, private paths, audit text, credentials, or tokens.",
 		"Preparing it downloads about 150 MB of private local files once. No external app, account, key, service, or setup is required.",
 		"Similarity only routes possible duplicates for your review; it never merges or approves habits automatically.",
 	].join("\n"), "info");
@@ -1125,10 +1127,11 @@ async function handleSetupEmbedding(ctx: ExtensionCommandContext) {
 		const { path } = await setAgentExperienceEmbeddingEnabledAfterScan(false, paths);
 		return notify(ctx, [`Prevent duplicate habits: OFF`, `Local files are preserved for quick offline re-enable.`, `Config file: ${path}`].join("\n"), "info");
 	}
-	if (choice === "Turn off and remove local duplicate-check files" || choice === "Remove local duplicate-check files") {
+	if (choice === "Turn off and remove local semantic files" || choice === "Remove local semantic files") {
+		if (config.selector_enabled) return notify(ctx, "Local semantic files are still required by approved-habit guidance. Turn that feature off first; no files were removed.", "warn");
 		await setAgentExperienceEmbeddingEnabledAfterScan(false, paths);
 		await removeLocalEmbeddingAssets(paths.root);
-		return notify(ctx, "Duplicate prevention is OFF and its local model files were removed. Habits, review decisions, and audit remain.", "info");
+		return notify(ctx, "Duplicate prevention is OFF and its shared local semantic files were removed. Habits, review decisions, and audit remain.", "info");
 	}
 	const preparing = choice === "Prepare local duplicate prevention and scan";
 	const operation = await runSetupProgress(ctx, preparing ? "Preparing duplicate prevention (about 150 MB once)" : "Checking for duplicate habits", async (signal, update) => {
@@ -1164,6 +1167,52 @@ async function handleSetupEmbedding(ctx: ExtensionCommandContext) {
 	const scan = operation.value;
 	const reconciliation = (scan as any).threshold_reconciliation || { dismissed: [], refreshed: [] };
 	notify(ctx, [`Duplicate check complete: ${plural(scan.checked, "habit")} checked, ${plural(scan.relations.length, "possible duplicate")} found.`, `${plural(reconciliation.dismissed?.length || 0, "outdated duplicate suggestion")} cleared; ${plural(reconciliation.refreshed?.length || 0, "existing suggestion")} refreshed.`, preparing ? "Prevent duplicate habits: ON" : `Prevent duplicate habits: ${config.embedding_enabled ? "ON" : "OFF"}`, "Next: choose Resolve duplicate habits if any were found."].join("\n"), "info");
+}
+
+async function handleSetupSemanticFiles(ctx: ExtensionCommandContext) {
+	const paths = getAgentExperiencePaths();
+	const { config } = await readAgentExperienceConfig(paths);
+	const filesExist = existsSync(resolvePrivatePath(paths.root, "models"));
+	const required = config.selector_enabled || config.embedding_enabled;
+	const choices = [
+		"Explain local semantic files (no changes)",
+		...(filesExist ? ["Verify local semantic files"] : []),
+		...(filesExist && !required ? ["Remove local semantic files"] : []),
+		...(filesExist && required ? ["Why local semantic files cannot be removed"] : []),
+		"Back/cancel (no changes)",
+	];
+	const choice = await chooseSetup(ctx, "Local semantic files", choices, false);
+	if (!choice || choice === "Back/cancel (no changes)") return;
+	if (choice === "Explain local semantic files (no changes)") return notify(ctx, [
+		"These private files are shared by approved-habit guidance and duplicate prevention.",
+		"They are prepared only when you explicitly enable a dependent feature.",
+		"Turning features off preserves them for a quicker offline re-enable.",
+		"Removal never deletes habits, observations, suggestions, review decisions, or audit history.",
+	].join("\n"), "info");
+	if (choice === "Why local semantic files cannot be removed") {
+		return notify(ctx, [
+			"Local semantic files were not removed because an enabled feature still requires them.",
+			`Use approved habits: ${config.selector_enabled ? "ON" : "OFF"}`,
+			`Prevent duplicate habits: ${config.embedding_enabled ? "ON" : "OFF"}`,
+			"Turn the dependent feature or features off first, then return here to remove the files.",
+		].join("\n"), "warn");
+	}
+	if (choice === "Verify local semantic files") {
+		const result = await runSetupProgress(ctx, "Verifying local semantic files", async (_signal, update) => {
+			update({ label: "Checking private local files" });
+			return getLocalEmbeddingAssetStatus(paths.root, { deep: true });
+		});
+		if (!result.ok) return notify(ctx, `Local semantic files could not be verified safely: ${formatReviewReadError(result.error)}`, "warn");
+		return notify(ctx, result.value.ready ? "Local semantic files are ready." : "Local semantic files need attention. Re-enable a dependent feature to prepare them safely.", result.value.ready ? "info" : "warn");
+	}
+	if (choice === "Remove local semantic files") {
+		const result = await runSetupProgress(ctx, "Removing local semantic files", async (_signal, update) => {
+			update({ label: "Removing private local files" });
+			await removeLocalEmbeddingAssets(paths.root);
+		});
+		if (!result.ok) return notify(ctx, `Local semantic files were not removed: ${formatReviewReadError(result.error)}`, "warn");
+		return notify(ctx, "Local semantic files removed. Habits, observations, suggestions, review decisions, and audit history remain.", "info");
+	}
 }
 
 async function handleSetupRetention(ctx: ExtensionCommandContext) {
@@ -1443,6 +1492,64 @@ async function handleSetupAssessmentModel(ctx: ExtensionCommandContext) {
 		`Config file: ${path}`,
 		`Use approved habits before replies: unchanged (${config.selector_enabled ? "ON" : "OFF"}).`,
 	].join("\n"), "info");
+}
+
+async function saveAdvisorModel(model: string) {
+	const paths = getAgentExperiencePaths();
+	const current = await readAgentExperienceConfig(paths);
+	await writeAgentExperienceConfig({ ...current.config, advisor_model: model }, paths);
+	return paths.configPath;
+}
+
+async function handleSetupAdvisorModel(ctx: ExtensionCommandContext) {
+	const paths = getAgentExperiencePaths();
+	const { config } = await readAgentExperienceConfig(paths);
+	const inherit = "Same as habit assessment";
+	const separate = "Choose separate authenticated model";
+	const choice = await chooseSetup(ctx, "Choose model for Advisor", [inherit, separate, "Back/cancel (no changes)"], false);
+	if (!choice || choice === "Back/cancel (no changes)") return notify(ctx, "Advisor model unchanged.", "info");
+	if (choice === inherit) {
+		if (config.advisor_enabled) {
+			const auth = await configuredModelAuthenticated(ctx, config.selector_model);
+			if (!auth.ok) return notify(ctx, `Advisor model unchanged because the inherited model is not authenticated. Detail: ${auth.reason}`, "warn");
+		}
+		const path = await saveAdvisorModel("");
+		return notify(ctx, [`Advisor model: Same as habit assessment (${config.selector_model})`, `Config file: ${path}`, `Runtime Advisor: unchanged (${config.advisor_enabled ? "ON" : "OFF"}).`].join("\n"), "info");
+	}
+	const models = availableTextModels(ctx);
+	if (models.length === 0) return notify(ctx, "No authenticated text models are available for Advisor. Configure a Pi model first, then return to setup.", "warn");
+	const currentModel = config.advisor_model || config.selector_model;
+	const selected = await chooseLiveModel(ctx, models, recommendedTextModels(ctx, currentModel), currentModel, ADVISOR_MODEL_PICKER);
+	if (!selected || selected === "Back/cancel (no changes)") return notify(ctx, "Advisor model unchanged.", "info");
+	if (!models.includes(selected) && !configuredModelAvailable(ctx, selected)) return notify(ctx, `Model is not available/authenticated: ${redactText(selected)}`, "warn");
+	const auth = await configuredModelAuthenticated(ctx, selected);
+	if (!auth.ok) return notify(ctx, `Advisor model unchanged because authentication failed. Detail: ${auth.reason}`, "warn");
+	const path = await saveAdvisorModel(selected);
+	return notify(ctx, [`Advisor model: ${selected}`, `Config file: ${path}`, `Runtime Advisor: unchanged (${config.advisor_enabled ? "ON" : "OFF"}).`].join("\n"), "info");
+}
+
+async function handleSetupAdvisorToggle(ctx: ExtensionCommandContext, enable: boolean) {
+	const paths = getAgentExperiencePaths();
+	const { config } = await readAgentExperienceConfig(paths);
+	if (!enable) {
+		const { path } = await setAgentExperienceAdvisorEnabled(false, paths);
+		return notify(ctx, [`Runtime Advisor: OFF`, `Config file: ${path}`, `Use approved habits: unchanged (${config.selector_enabled ? "ON" : "OFF"}).`].join("\n"), "info");
+	}
+	const model = effectiveAdvisorModel(config);
+	const auth = await configuredModelAuthenticated(ctx, model);
+	if (!auth.ok) return notify(ctx, `Runtime Advisor remains OFF because its model is not authenticated. Detail: ${auth.reason}`, "warn");
+	const confirmation = await chooseActionInPanel(ctx, "Confirm Runtime Advisor", [
+		`Runtime Advisor uses a separate call to ${model} and reviews incremental transcript updates.`,
+		"It may use isolated read-only workspace tools. It cannot edit files or run commands.",
+		"Any steering it adds is visible in the conversation.",
+		"It keeps bounded local queue and progress state under Agent Experience.",
+		config.capture_enabled
+			? "Because Learning is on, accepted Advisor findings may also become local learning evidence; no suggestion is auto-approved."
+			: "Learning is off, so Advisor findings do not become learning evidence.",
+	].join("\n"), ["Back/cancel (no changes)", "Turn Runtime Advisor ON"]);
+	if (confirmation !== "Turn Runtime Advisor ON") return notify(ctx, "Runtime Advisor remains OFF. No setting changed.", "info");
+	const { path } = await setAgentExperienceAdvisorEnabled(true, paths);
+	return notify(ctx, [`Runtime Advisor: ON`, `Advisor model: ${config.advisor_model ? model : `Same as habit assessment (${model})`}`, `Config file: ${path}`, `Use approved habits: unchanged (${config.selector_enabled ? "ON" : "OFF"}).`].join("\n"), "info");
 }
 
 async function acquireAnalyzeLock(root: string) {
@@ -2281,15 +2388,6 @@ async function handleSetupUseHabitsToggle(ctx: ExtensionCommandContext, enable: 
 	return handleSelector("off", ctx);
 }
 
-async function showSetupPanel(ctx: ExtensionCommandContext): Promise<SetupAction | undefined> {
-	const ui = (ctx as { hasUI?: boolean; ui?: { custom?: ExtensionCommandContext["ui"]["custom"] } })?.ui;
-	if ((ctx as { hasUI?: boolean }).hasUI === false || typeof ui?.custom !== "function") return undefined;
-	const { config } = await readAgentExperienceConfig(getAgentExperiencePaths());
-	return ui.custom<SetupAction | undefined>((_tui, _theme, _keybindings, done) => new SetupSettingsComponent(config, done), {
-		overlay: true,
-		overlayOptions: { width: "80%", minWidth: 72, maxHeight: "90%", anchor: "center", margin: 1 },
-	});
-}
 
 async function handleSetupDirect(args: string[], ctx: ExtensionCommandContext): Promise<boolean> {
 	const [action = "", value = ""] = args.map((arg) => arg.toLowerCase());
@@ -2399,63 +2497,98 @@ async function handleSetupDirect(args: string[], ctx: ExtensionCommandContext): 
 	}
 }
 
-async function handleSetup(ctx: ExtensionCommandContext, args: string[] = []) {
-	if (await handleSetupDirect(args, ctx)) return;
-	if ((ctx as { hasUI?: boolean }).hasUI === false || typeof (ctx as any).ui?.select !== "function") {
+async function handleSetup(
+	ctx: ExtensionCommandContext,
+	args: string[] = [],
+	runtimeStatus: () => SetupRuntimeStatus = () => ({}),
+	onAdvisorConfigMutation?: (reason: string) => Promise<void>,
+) {
+	const refreshAdvisorIfChanged = async (beforeSignature: string | undefined, reason: string): Promise<void> => {
+		if (!onAdvisorConfigMutation) return;
+		let afterSignature: string;
+		try {
+			afterSignature = advisorConfigSignature((await readAgentExperienceConfig(getAgentExperiencePaths())).config);
+		} catch {
+			await onAdvisorConfigMutation(`${reason}:config_unreadable`);
+			return;
+		}
+		if (beforeSignature !== afterSignature) await onAdvisorConfigMutation(reason);
+	};
+	let directSignature: string | undefined;
+	if (args.length && onAdvisorConfigMutation) {
+		try {
+			directSignature = advisorConfigSignature((await readAgentExperienceConfig(getAgentExperiencePaths())).config);
+		} catch {}
+	}
+	if (await handleSetupDirect(args, ctx)) {
+		await refreshAdvisorIfChanged(directSignature, "advisor_setup_direct_change");
+		return;
+	}
+	const setupContext = ctx as unknown as { hasUI?: boolean; ui?: { select?: unknown; custom?: unknown } };
+	if (setupContext.hasUI === false || (typeof setupContext.ui?.select !== "function" && typeof setupContext.ui?.custom !== "function")) {
 		notify(ctx, setupUnavailableMessage(), "info");
 		return;
 	}
+	let view: SetupView = "home";
 	while (true) {
-		const action = await showSetupPanel(ctx);
+		const snapshot = await buildSetupSnapshot(runtimeStatus());
+		let action: SetupAction | undefined;
+		try {
+			action = await showSetupView(ctx, view, snapshot);
+		} catch (error) {
+			const raw = error instanceof Error ? error.message : String(error);
+			notify(ctx, `Agent Experience setup menu failed: ${redactText(raw).slice(0, 300)}\nNo config changed.`, "warn");
+			return;
+		}
 		if (!action) {
-			const { config } = await readAgentExperienceConfig(getAgentExperiencePaths());
-			const options = buildSetupOptions(config);
-			const choice = await chooseSetup(ctx, "Agent Experience setup — choose what to configure", options, false);
-			if (!choice || choice === "Done") return notify(ctx, "Agent Experience setup closed.", "info");
-			if (choice === "Show current settings") await handleStatusSetup(ctx);
-			else if (choice === "Review suggested habits") await handleReviewSetup(ctx);
-			else if (choice === "Resolve duplicate habits") await handleDuplicateResolutionSetup(ctx);
-			else if (choice === "Review approved habits") await handleApprovedHabitsSetup(ctx);
-			else if (choice.endsWith("Prevent duplicate habits")) await handleSetupEmbedding(ctx);
-			else if (choice.startsWith("Keep analyzed source examples")) await handleSetupRetention(ctx);
-			else if (choice === "Explain these settings") await handleHelpSetup(ctx, config);
-			else if (choice === "Turn all experience features off") await handleOff(ctx);
-			else if (choice.startsWith("Choose model for habit learning")) await handleSetupModel(ctx);
-			else if (choice.startsWith("Choose model for habit assessment")) await handleSetupAssessmentModel(ctx);
-			else if (choice === "Analyze all waiting examples now") { await handleAnalyzeNow(ctx); return; }
-			else if (choice.startsWith("Automatic schedule")) await handleSetupTimer(ctx);
-			else if (choice.includes("Break-in review prompts")) await handleSetupBreakIn(ctx);
-			else if (choice.includes("Use approved habits before replies")) await handleSetupUseHabitsToggle(ctx, !config.selector_enabled);
-			else if (choice.includes("Save chat examples locally")) {
-				if (config.enabled && config.capture_enabled) captureBuffer.clearAll();
-				const { config: updated, path } = await setAgentExperienceCaptureActive(!(config.enabled && config.capture_enabled));
-				notify(ctx, [`Save chat examples locally: ${updated.enabled && updated.capture_enabled ? "ON" : "OFF"}`, `Config file: ${path}`].join("\n"), "info");
-			}
+			notify(ctx, "Agent Experience setup ignored an unknown menu choice. No config changed.", "warn");
 			continue;
 		}
 		if (action === "done") return notify(ctx, "Agent Experience setup closed.", "info");
-		const { config } = await readAgentExperienceConfig(getAgentExperiencePaths());
-		if (action === "save") {
+		if (action === "back") {
+			view = "home";
+			continue;
+		}
+		const nextView: Partial<Record<SetupAction, SetupView>> = {
+			openLearning: "learning",
+			openGuidance: "guidance",
+			openHabits: "habits",
+			openAutomation: "automation",
+			openStatus: "status",
+		};
+		const destination = nextView[action];
+		if (destination) {
+			view = destination;
+			continue;
+		}
+		const { config } = snapshot;
+		const beforeAdvisorSignature = advisorConfigSignature(config);
+		if (action === "capture") {
 			if (config.enabled && config.capture_enabled) captureBuffer.clearAll();
 			const { config: updated, path } = await setAgentExperienceCaptureActive(!(config.enabled && config.capture_enabled));
-			notify(ctx, [`Save chat examples locally: ${updated.enabled && updated.capture_enabled ? "ON" : "OFF"}`, `Config file: ${path}`].join("\n"), "info");
-		} else if (action === "model") await handleSetupModel(ctx);
-		else if (action === "assessmentModel") await handleSetupAssessmentModel(ctx);
+			notify(ctx, [`Learn from conversations: ${updated.enabled && updated.capture_enabled ? "ON" : "OFF"}`, `Config file: ${path}`, "Suggested habits still require explicit review."].join("\n"), "info");
+		} else if (action === "learningModel") await handleSetupModel(ctx);
 		else if (action === "analyze") { await handleAnalyzeNow(ctx); return; }
 		else if (action === "review") await handleReviewSetup(ctx);
-		else if (action === "duplicates") await handleDuplicateResolutionSetup(ctx);
+		else if (action === "advisor") await handleSetupAdvisorToggle(ctx, !(config.enabled && config.advisor_enabled));
+		else if (action === "advisorModel") await handleSetupAdvisorModel(ctx);
+		else if (action === "selector") await handleSetupUseHabitsToggle(ctx, !(config.enabled && config.selector_enabled));
+		else if (action === "assessmentModel") await handleSetupAssessmentModel(ctx);
 		else if (action === "habits") await handleApprovedHabitsSetup(ctx);
+		else if (action === "duplicates") await handleDuplicateResolutionSetup(ctx);
 		else if (action === "embedding") await handleSetupEmbedding(ctx);
 		else if (action === "retention") await handleSetupRetention(ctx);
-		else if (action === "use") await handleSetupUseHabitsToggle(ctx, !config.selector_enabled);
 		else if (action === "schedule") await handleSetupTimer(ctx);
 		else if (action === "breakIn") await handleSetupBreakIn(ctx);
-		else if (action === "status") await handleStatusSetup(ctx);
-		else if (action === "help") await handleHelpSetup(ctx, config);
-		else if (action === "off") await handleOff(ctx);
-		else notify(ctx, `Agent Experience setup ignored unknown action: ${redactText(String(action)).slice(0, 120)}\nNo config changed.`, "warn");
+		else if (action === "semanticFiles") await handleSetupSemanticFiles(ctx);
+		else if (action === "off") {
+			await handleOff(ctx);
+			view = "home";
+		} else notify(ctx, `Agent Experience setup ignored unknown action: ${redactText(String(action)).slice(0, 120)}\nNo config changed.`, "warn");
+		await refreshAdvisorIfChanged(beforeAdvisorSignature, `advisor_setup_change:${action}`);
 	}
 }
+
 
 async function handleOn(ctx: ExtensionCommandContext) {
 	const { config, path } = await setAgentExperienceSimpleOn();
@@ -2497,11 +2630,14 @@ async function handleOff(ctx: ExtensionCommandContext) {
 		[
 			"Agent Experience is OFF.",
 			`Config file: ${path}`,
-			"Save chat examples locally: OFF",
-			"Analyze all waiting examples now: OFF",
-			"Use approved habits before replies: OFF",
-			"Automatic schedule: OFF (unit files, if any, are retained)",
-			"Off drops in-memory capture buffers without writing observations. Existing records are preserved.",
+			"Learn from conversations: OFF",
+			"Runtime Advisor: OFF",
+			"Analyze: OFF",
+			"Use approved habits: OFF",
+			"Prevent duplicate habits: OFF",
+			"Automatic Analyze schedule: OFF (installed files, if any, are retained)",
+			"Review prompts after Analyze: OFF",
+			"All-off drops in-memory capture buffers without writing observations. Existing records and local semantic files are preserved.",
 		].join("\n"),
 		"info",
 	);
@@ -2914,9 +3050,794 @@ function scheduledAnalyzeNoticeExistsInActiveBranch(ctx: ExtensionContext, deliv
 	});
 }
 
+type AdvisorPlanModeState = "off" | "on" | "ambiguous";
+
+type AdvisorGenerationState = {
+	scopeKey: string;
+	epoch: number;
+	generation: number;
+	startLeafId: string | null;
+	currentRequest: string;
+	initialUserMessagePending: boolean;
+	causedByAdvisor: boolean;
+	cancelled: boolean;
+	activeRequestHabitIds: string[];
+	terminal: boolean;
+};
+
+type PendingAdvisorDelivery = {
+	message: AdvisorCustomMessage;
+	scopeKey: string;
+	epoch: number;
+	generation: number;
+	cursor: number;
+	finding: AcceptedAdvisorFinding;
+	update: AdvisorUpdate;
+	habitCandidates?: AdvisorHabitRetrievalCandidate[];
+	createdAt: string;
+};
+
+type AdvisorBeforeTransition = {
+	reason: string;
+	scopeKey: string;
+	epoch: number;
+	generation: number;
+	cursor: number;
+	leafId: string | null;
+};
+
+type AdvisorCanceledTransitionDelivery = {
+	scopeKey: string;
+	epoch: number;
+	generation: number;
+	sourceCursor: number;
+	validatedItem?: PendingAdvisorDelivery;
+	boundResponse?: {
+		cursor: number;
+		leafId: string | null;
+		currentUserEntryId: string;
+		primaryEntryIds: string[];
+		causalEpisodeId: string;
+	};
+	settlement?: Promise<void>;
+};
+
+type AdvisorLifecycleState = {
+	scope: AdvisorScope;
+	scopeKey: string;
+	epoch: number;
+	generation: number;
+	cursor: number;
+	runtimeConfig: AdvisorRuntimeConfig;
+	configSignature: string;
+	host?: AdvisorRuntimeHost;
+	adapter?: AdvisorAgentAdapter;
+	runtime?: AdvisorRuntime;
+	activeGeneration?: AdvisorGenerationState;
+	pending: PendingAdvisorDelivery[];
+	fallbackPending: PendingAdvisorDelivery[];
+	beforeTransition?: AdvisorBeforeTransition;
+	habitCandidatesByFingerprint: Map<string, AdvisorHabitRetrievalCandidate[]>;
+	backlog: number;
+	canceledTransitionDelivery?: AdvisorCanceledTransitionDelivery;
+	immuneTurnsRemaining: number;
+	needsReseed: boolean;
+	shuttingDown: boolean;
+	latestContext: ExtensionContext;
+};
+
+function advisorScopeKey(scope: AdvisorScope): string {
+	return `${scope.userId}\u0000${scope.sessionId}\u0000${scope.sessionFile}`;
+}
+
+function advisorConfigSignature(config: AgentExperienceConfig): string {
+	const runtime = advisorRuntimeConfig(config);
+	return JSON.stringify([
+		config.enabled,
+		config.advisor_enabled,
+		runtime.model,
+		runtime.timeoutMs,
+		runtime.syncBacklog,
+		runtime.immuneTurns,
+		config.selector_enabled,
+		config.embedding_enabled,
+		config.selector_mode,
+		config.selector_model,
+		config.selector_timeout_ms,
+		config.selector_min_confidence_bp,
+		config.selector_min_overlap_score,
+		config.selector_max_habits,
+		config.selector_staleness_max,
+		config.law_path,
+	]);
+}
+
+function activePlanModeState(ctx: ExtensionContext): AdvisorPlanModeState {
+	let latest: { data?: unknown } | undefined;
+	for (const entry of ctx.sessionManager.getBranch()) {
+		if (entry.type === "custom" && entry.customType === "plan-mode") latest = entry;
+	}
+	if (!latest) return "off";
+	const data = latest.data;
+	if (!data || typeof data !== "object" || Array.isArray(data)) return "ambiguous";
+	const value = data as Record<string, unknown>;
+	if (typeof value.enabled !== "boolean" || !Array.isArray(value.todos) || typeof value.executing !== "boolean") return "ambiguous";
+	if ("toolsBeforePlanMode" in value && value.toolsBeforePlanMode !== undefined && (!Array.isArray(value.toolsBeforePlanMode) || value.toolsBeforePlanMode.some((name) => typeof name !== "string"))) return "ambiguous";
+	return value.enabled ? "on" : "off";
+}
+
+function agentMessageText(message: unknown): string {
+	if (!message || typeof message !== "object" || !("content" in message)) return "";
+	const content = message.content;
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content
+		.filter((part): part is { type: "text"; text: string } => {
+			if (!part || typeof part !== "object" || !("type" in part) || !("text" in part)) return false;
+			return part.type === "text" && typeof part.text === "string";
+		})
+		.map((part) => part.text)
+		.join("\n");
+}
+
+function assistantTurnIsTerminal(message: unknown): boolean {
+	if (!message || typeof message !== "object" || !("stopReason" in message)) return true;
+	return message.stopReason !== "toolUse";
+}
+
 export default function agentExperienceExtension(pi: ExtensionAPI) {
 	registerAgentExperienceConversationalTools(pi);
 
+
+	let advisorMessageRendererReady = false;
+	let advisorVisibleRendererReady = false;
+	try {
+		if (typeof pi.registerMessageRenderer === "function") {
+			pi.registerMessageRenderer<AdvisorFindingDetails>(ADVISOR_FINDING_MESSAGE_TYPE, renderAdvisorFinding);
+			advisorMessageRendererReady = true;
+		}
+		if (typeof pi.registerEntryRenderer === "function" && typeof pi.appendEntry === "function") {
+			pi.registerEntryRenderer<AdvisorFindingDetails>(ADVISOR_FINDING_VISIBLE_ENTRY_TYPE, (entry, options, theme) => renderAdvisorVisibleFinding(entry.data, options, theme));
+			advisorVisibleRendererReady = true;
+		}
+	} catch {
+		advisorMessageRendererReady = false;
+		advisorVisibleRendererReady = false;
+	}
+	const advisorDiagnosticsShown = new Set<string>();
+
+	const advisorStates = new Map<string, AdvisorLifecycleState>();
+	let advisorEpoch = 0;
+
+	const advisorStateForContext = (ctx: ExtensionContext): AdvisorLifecycleState | undefined => {
+		const scope = breakInScopeFromContext(ctx);
+		if (!scope) return undefined;
+		const state = advisorStates.get(advisorScopeKey(scope));
+		if (state) state.latestContext = ctx;
+		return state;
+	};
+
+	const advisorUpdateIsCurrent = (state: AdvisorLifecycleState, update: Pick<AdvisorUpdate, "scope" | "epoch" | "generation" | "cursor">): boolean => {
+		const liveScope = breakInScopeFromContext(state.latestContext);
+		return !!liveScope
+			&& advisorScopeKey(liveScope) === state.scopeKey
+			&& advisorScopeKey(update.scope) === state.scopeKey
+			&& state.epoch === update.epoch
+			&& state.generation === update.generation
+			&& state.cursor === update.cursor
+			&& !state.needsReseed
+			&& !state.shuttingDown;
+	};
+
+	const appendAdvisorVisibleFallback = (details: AdvisorFindingDetails): boolean => {
+		if (!advisorVisibleRendererReady || typeof pi.appendEntry !== "function") return false;
+		try {
+			pi.appendEntry(ADVISOR_FINDING_VISIBLE_ENTRY_TYPE, validateAdvisorFindingDetails(details));
+			return true;
+		} catch {
+			return false;
+		}
+	};
+
+	const pendingAdvisorDeliveryIsCurrent = (state: AdvisorLifecycleState, pending: PendingAdvisorDelivery): boolean => {
+		const liveScope = breakInScopeFromContext(state.latestContext);
+		return !!liveScope
+			&& advisorScopeKey(liveScope) === pending.scopeKey
+			&& state.scopeKey === pending.scopeKey
+			&& state.epoch === pending.epoch
+			&& state.generation === pending.generation
+			&& state.cursor === pending.cursor;
+	};
+
+	const advisorBeforeTransitionIsUnchanged = (
+		state: AdvisorLifecycleState,
+		transition: AdvisorBeforeTransition,
+		pending: PendingAdvisorDelivery,
+	): boolean => {
+		const liveScope = breakInScopeFromContext(state.latestContext);
+		return state.beforeTransition === transition
+			&& state.needsReseed
+			&& !!liveScope
+			&& advisorScopeKey(liveScope) === transition.scopeKey
+			&& state.scopeKey === transition.scopeKey
+			&& pending.scopeKey === transition.scopeKey
+			&& pending.epoch === transition.epoch
+			&& pending.generation === transition.generation
+			&& pending.cursor === transition.cursor
+			&& state.latestContext.sessionManager.getBranch().length === transition.cursor
+			&& state.latestContext.sessionManager.getLeafId() === transition.leafId;
+	};
+
+	const canceledTransitionDeliveryBaseIsCurrent = (
+		state: AdvisorLifecycleState,
+		token: AdvisorCanceledTransitionDelivery,
+	): boolean => advisorStates.get(token.scopeKey) === state
+		&& state.canceledTransitionDelivery === token
+		&& state.scopeKey === token.scopeKey
+		&& state.epoch === token.epoch
+		&& state.generation === token.generation
+		&& !state.needsReseed
+		&& !state.shuttingDown;
+
+	const canceledTransitionValidationIsCurrent = (
+		state: AdvisorLifecycleState,
+		token: AdvisorCanceledTransitionDelivery,
+	): boolean => canceledTransitionDeliveryBaseIsCurrent(state, token)
+		&& !token.boundResponse
+		&& state.cursor === token.sourceCursor;
+
+	const canceledTransitionBoundResponseIsCurrent = (
+		state: AdvisorLifecycleState,
+		token: AdvisorCanceledTransitionDelivery,
+		ctx: ExtensionContext,
+	): boolean => {
+		const bound = token.boundResponse;
+		const generation = state.activeGeneration;
+		if (
+			!bound
+			|| !token.validatedItem
+			|| !canceledTransitionDeliveryBaseIsCurrent(state, token)
+			|| !generation
+			|| generation.epoch !== token.epoch
+			|| generation.generation !== token.generation
+			|| !generation.terminal
+			|| !ctx.isIdle()
+			|| state.cursor !== bound.cursor
+			|| ctx.sessionManager.getBranch().length !== bound.cursor
+			|| ctx.sessionManager.getLeafId() !== bound.leafId
+		) return false;
+		const branchIds = new Set(ctx.sessionManager.getBranch().map((entry) => entry.id));
+		return branchIds.has(bound.currentUserEntryId)
+			&& bound.primaryEntryIds.every((entryId) => branchIds.has(entryId))
+			&& bound.causalEpisodeId === `${bound.currentUserEntryId}:${token.generation}`;
+	};
+
+	const appendDeliveredAdvisorObservation = async (
+		finding: AcceptedAdvisorFinding,
+		update: AdvisorUpdate,
+		createdAt: string,
+	): Promise<void> => {
+		try {
+			await advisorObservationAppendGateForTest?.();
+			await appendAdvisorFindingObservation(getAgentExperiencePaths().root, {
+				userId: update.scope.userId,
+				finding,
+				update,
+				createdAt,
+				modelVisibleDelivered: true,
+			});
+		} catch {
+			// Delivery is already model-visible: report once, but never retry it or mutate habit state.
+			const diagnostic = "advisor_observation_write_failed";
+			if (advisorDiagnosticsShown.has(diagnostic)) return;
+			advisorDiagnosticsShown.add(diagnostic);
+			const state = advisorStates.get(advisorScopeKey(update.scope));
+			if (state) notify(state.latestContext, `Advisor finding was delivered, but local learning evidence was not saved (${diagnostic}).`, "warn");
+		}
+	};
+
+	const flushPendingAdvisorMessages = async (state: AdvisorLifecycleState, visibleOnly: boolean): Promise<void> => {
+		const pending = state.pending.splice(0);
+		for (const item of pending) {
+			await deliverPendingAdvisorItem(state, item, { visibleOnly });
+		}
+	};
+
+	const abortAdvisorState = (ctx: ExtensionContext, reason: string): PendingAdvisorDelivery[] => {
+		const state = advisorStateForContext(ctx);
+		if (!state) return [];
+		state.canceledTransitionDelivery = undefined;
+		const pending = state.pending.splice(0);
+		const beforeTransition = reason.startsWith("session_before_");
+		if (beforeTransition) {
+			state.beforeTransition = {
+				reason,
+				scopeKey: state.scopeKey,
+				epoch: state.epoch,
+				generation: state.generation,
+				cursor: state.cursor,
+				leafId: ctx.sessionManager.getLeafId(),
+			};
+			state.fallbackPending.push(...pending);
+		} else {
+			state.beforeTransition = undefined;
+			if (reason !== "session_shutdown") state.fallbackPending = [];
+		}
+		const pendingForCaller = reason === "session_shutdown" ? [...state.fallbackPending.splice(0), ...pending] : pending;
+		const oldRuntime = state.runtime;
+		const oldAdapter = state.adapter;
+		state.epoch = ++advisorEpoch;
+		state.needsReseed = true;
+		state.activeGeneration = undefined;
+		state.habitCandidatesByFingerprint.clear();
+		state.backlog = 0;
+		oldRuntime?.reset(reason);
+		oldAdapter?.reset();
+		state.runtime = undefined;
+		state.adapter = undefined;
+		if (beforeTransition && state.host) {
+			try {
+				const replacement = advisorAdapterOverride ?? createPiAdvisorAgentAdapter(ctx, {
+					cwd: ctx.cwd,
+					model: state.runtimeConfig.model,
+					timeoutMs: state.runtimeConfig.timeoutMs,
+				});
+				state.adapter = replacement;
+				state.runtime = new AdvisorRuntime(state.host, replacement);
+			} catch {
+				state.adapter = undefined;
+				state.runtime = undefined;
+			}
+		}
+		if (oldRuntime) void oldRuntime.dispose().catch(() => undefined);
+		if (oldAdapter && oldAdapter !== advisorAdapterOverride) void oldAdapter.dispose().catch(() => undefined);
+		return pendingForCaller;
+	};
+
+	const currentAdvisorConfig = async (
+		state: AdvisorLifecycleState,
+		reason: string,
+		resetOnChange = true,
+	): Promise<AgentExperienceConfig | undefined> => {
+		let config: AgentExperienceConfig;
+		try {
+			({ config } = await readAgentExperienceConfig(getAgentExperiencePaths()));
+		} catch {
+			if (resetOnChange) {
+				abortAdvisorState(state.latestContext, reason);
+				await rebuildAdvisorRuntime(state.latestContext, reason);
+			}
+			return undefined;
+		}
+		if (advisorConfigSignature(config) !== state.configSignature) {
+			if (resetOnChange) {
+				abortAdvisorState(state.latestContext, reason);
+				await rebuildAdvisorRuntime(state.latestContext, reason);
+			}
+			return undefined;
+		}
+		return config;
+	};
+
+	const revalidateAdvisorDelivery = async (
+		state: AdvisorLifecycleState,
+		item: PendingAdvisorDelivery,
+		options: { isCurrent?: () => boolean; resetOnConfigChange?: boolean } = {},
+	): Promise<boolean> => {
+		const isCurrent = options.isCurrent ?? (() => pendingAdvisorDeliveryIsCurrent(state, item));
+		if (!isCurrent()) return false;
+		const config = await currentAdvisorConfig(state, "advisor_delivery_config_change", options.resetOnConfigChange ?? true);
+		if (!config || !isCurrent()) return false;
+		if (item.finding.kind === "habit_violation") {
+			let storageDb: DatabaseSync | undefined;
+			try {
+				const paths = getAgentExperiencePaths();
+				const storage = await openExistingExperienceStorage(paths.root, { userId: state.scope.userId });
+				storageDb = storage.db;
+				if (!isCurrent()) return false;
+				const law = await readConfiguredLawSnapshot(storage.root, config);
+				if (!isCurrent()) return false;
+				const candidates = item.habitCandidates ?? state.habitCandidatesByFingerprint.get(item.update.eventFingerprint);
+				if (!candidates) return false;
+				const candidate = revalidateAdvisorHabitFinding(storageDb, {
+					userId: state.scope.userId,
+					alias: item.finding.candidate.alias,
+					candidates,
+					originalIdByAlias: new Map(candidates.map((candidate) => [candidate.alias, candidate.habitId])),
+					law,
+					config,
+					responseGeneration: item.update.generation,
+					cursor: item.update.cursor,
+					advisorEpoch: item.update.epoch,
+				});
+				if (
+					candidate.habitId !== item.finding.candidate.habitId
+					|| candidate.condition !== item.finding.candidate.condition
+					|| candidate.behavior !== item.finding.candidate.behavior
+					|| candidate.checksum !== item.finding.candidate.checksum
+					|| candidate.lawHash !== item.finding.candidate.lawHash
+				) return false;
+			} catch {
+				return false;
+			} finally {
+				storageDb?.close();
+			}
+			if (!await currentAdvisorConfig(state, "advisor_delivery_config_change", options.resetOnConfigChange ?? true)) return false;
+		}
+		return isCurrent();
+	};
+
+	const deliverPendingAdvisorItem = async (
+		state: AdvisorLifecycleState,
+		item: PendingAdvisorDelivery,
+		options: { visibleOnly: boolean; isCurrent?: () => boolean; resetOnConfigChange?: boolean },
+	): Promise<boolean> => {
+		if (!await revalidateAdvisorDelivery(state, item, options)) return false;
+		if (options.visibleOnly) return appendAdvisorVisibleFallback(item.message.details);
+		try {
+			pi.sendMessage(item.message, { triggerTurn: false });
+		} catch {
+			return appendAdvisorVisibleFallback(item.message.details);
+		}
+		await appendDeliveredAdvisorObservation(item.finding, item.update, item.createdAt);
+		return true;
+	};
+
+	const scheduleCanceledTransitionValidation = (
+		state: AdvisorLifecycleState,
+		retained: PendingAdvisorDelivery[],
+	): void => {
+		if (retained.length === 0) return;
+		const token: AdvisorCanceledTransitionDelivery = {
+			scopeKey: state.scopeKey,
+			epoch: state.epoch,
+			generation: state.generation,
+			sourceCursor: state.cursor,
+		};
+		state.canceledTransitionDelivery = token;
+		void (async () => {
+			try {
+				for (const pending of retained) {
+					const valid = await revalidateAdvisorDelivery(state, pending, {
+						isCurrent: () => canceledTransitionValidationIsCurrent(state, token),
+					});
+					if (!valid) continue;
+					await advisorTransitionValidationGateForTest?.();
+					if (!canceledTransitionValidationIsCurrent(state, token)) return;
+					token.validatedItem = pending;
+					return;
+				}
+			} catch {
+				// Canceled-transition validation is advisory and fails closed.
+			} finally {
+				if (!token.validatedItem && state.canceledTransitionDelivery === token) {
+					state.canceledTransitionDelivery = undefined;
+				}
+			}
+		})();
+	};
+
+	const disposeAdvisorState = async (state: AdvisorLifecycleState): Promise<void> => {
+		state.shuttingDown = true;
+		state.pending = [];
+		state.fallbackPending = [];
+		state.beforeTransition = undefined;
+		state.canceledTransitionDelivery = undefined;
+		state.habitCandidatesByFingerprint.clear();
+		const runtime = state.runtime;
+		const adapter = state.adapter;
+		runtime?.reset("dispose");
+		adapter?.reset();
+		await runtime?.dispose().catch(() => undefined);
+		if (adapter && adapter !== advisorAdapterOverride) await adapter.dispose().catch(() => undefined);
+		state.runtime = undefined;
+		state.adapter = undefined;
+	};
+
+	const resolveAdvisorTurnIdentity = (ctx: ExtensionContext, message: unknown, toolResults: readonly unknown[], generation: AdvisorGenerationState) => {
+		const branch = ctx.sessionManager.getBranch();
+		let assistantIndex = -1;
+		for (let index = branch.length - 1; index >= 0; index--) {
+			const entry = branch[index];
+			if (entry.type !== "message" || entry.message.role !== "assistant") continue;
+			const sameObject = entry.message === message;
+			const sameTimestamp = !!message && typeof message === "object" && "timestamp" in message && entry.message.timestamp === message.timestamp;
+			if (sameObject || sameTimestamp) {
+				assistantIndex = index;
+				break;
+			}
+		}
+		if (assistantIndex < 0) return undefined;
+		let userIndex = -1;
+		for (let index = assistantIndex - 1; index >= 0; index--) {
+			const entry = branch[index];
+			if (entry.type === "message" && entry.message.role === "user") {
+				userIndex = index;
+				break;
+			}
+		}
+		if (userIndex < 0) return undefined;
+		const currentUser = branch[userIndex];
+		const assistant = branch[assistantIndex];
+		if (currentUser.type !== "message" || assistant.type !== "message") return undefined;
+		const primaryEntryIds = [assistant.id];
+		for (const result of toolResults) {
+			for (let index = assistantIndex + 1; index < branch.length; index++) {
+				const entry = branch[index];
+				if (entry.type !== "message" || entry.message.role !== "toolResult") continue;
+				if (entry.message === result || (!!result && typeof result === "object" && "toolCallId" in result && entry.message.toolCallId === result.toolCallId)) {
+					if (!primaryEntryIds.includes(entry.id)) primaryEntryIds.push(entry.id);
+					break;
+				}
+			}
+		}
+		return {
+			currentUserEntryId: currentUser.id,
+			currentRequest: generation.currentRequest || agentMessageText(currentUser.message),
+			primaryEntryIds,
+			cursor: branch.length,
+			causalEpisodeId: `${currentUser.id}:${generation.generation}`,
+		};
+	};
+
+	const rebuildAdvisorRuntime = async (ctx: ExtensionContext, reason: string): Promise<AdvisorLifecycleState | undefined> => {
+		const scope = breakInScopeFromContext(ctx);
+		if (!scope) return undefined;
+		const key = advisorScopeKey(scope);
+		for (const [otherKey, other] of advisorStates) {
+			if (otherKey === key) continue;
+			advisorStates.delete(otherKey);
+			void disposeAdvisorState(other);
+		}
+		const old = advisorStates.get(key);
+		if (old) {
+			advisorStates.delete(key);
+			old.runtime?.reset(reason);
+			old.adapter?.reset();
+			void disposeAdvisorState(old);
+		}
+		let config: AgentExperienceConfig;
+		try {
+			({ config } = await readAgentExperienceConfig(getAgentExperiencePaths()));
+		} catch {
+			return undefined;
+		}
+		const runtimeConfig = advisorRuntimeConfig(config);
+		if (!runtimeConfig.enabled || !runtimeConfig.model || ctx.mode !== "tui" || !advisorMessageRendererReady) return undefined;
+		let adapter: AdvisorAgentAdapter;
+		try {
+			adapter = advisorAdapterOverride ?? createPiAdvisorAgentAdapter(ctx, {
+				cwd: ctx.cwd,
+				model: runtimeConfig.model,
+				timeoutMs: runtimeConfig.timeoutMs,
+			});
+		} catch {
+			return undefined;
+		}
+		const state: AdvisorLifecycleState = {
+			scope,
+			scopeKey: key,
+			epoch: ++advisorEpoch,
+			generation: 0,
+			cursor: ctx.sessionManager.getBranch().length,
+			runtimeConfig,
+			configSignature: advisorConfigSignature(config),
+			adapter,
+			habitCandidatesByFingerprint: new Map(),
+			pending: [],
+			fallbackPending: [],
+			backlog: 0,
+			immuneTurnsRemaining: 0,
+			needsReseed: false,
+			shuttingDown: false,
+			latestContext: ctx,
+		};
+		const host: AdvisorRuntimeHost = {
+			buildUpdate: async (delta: AdvisorPrimaryDelta): Promise<AdvisorUpdate | undefined> => {
+				if (!advisorUpdateIsCurrent(state, delta)) return undefined;
+				const activeHabitIds = state.activeGeneration?.generation === delta.generation
+					? [...state.activeGeneration.activeRequestHabitIds]
+					: [];
+				let habits: AdvisorHabitRetrievalCandidate[] = [];
+				let configuredLaw = "";
+				let storageDb: DatabaseSync | undefined;
+				try {
+					const paths = getAgentExperiencePaths();
+					const loaded = await readAgentExperienceConfig(paths);
+					if (!advisorUpdateIsCurrent(state, delta)) return undefined;
+					if (advisorConfigSignature(loaded.config) !== state.configSignature) {
+						abortAdvisorState(state.latestContext, "advisor_config_change");
+						void rebuildAdvisorRuntime(state.latestContext, "advisor_config_change");
+						return undefined;
+					}
+					if (loaded.config.selector_enabled && loaded.config.embedding_enabled && await fileExists(resolvePrivatePath(paths.root, "ledger.sqlite"))) {
+						const storage = await openExistingExperienceStorage(paths.root, { userId: state.scope.userId });
+						storageDb = storage.db;
+						if (!advisorUpdateIsCurrent(state, delta)) return undefined;
+						const law = await readConfiguredLawSnapshot(storage.root, loaded.config);
+						if (!advisorUpdateIsCurrent(state, delta)) return undefined;
+						configuredLaw = law.text;
+						habits = retrieveActiveAdvisorHabitCandidates(storageDb, {
+							userId: state.scope.userId,
+							delta,
+							activeRequestHabitIds: activeHabitIds,
+							law,
+							config: loaded.config,
+						});
+						if (!advisorUpdateIsCurrent(state, delta)) return undefined;
+						const assets = await getLocalEmbeddingAssetStatus(storage.root, { deep: true });
+						if (!advisorUpdateIsCurrent(state, delta)) return undefined;
+						if (assets.ready) {
+							const embeddingAdapter = await selectorRuntimeEmbeddingAdapter(storage.root);
+							if (!advisorUpdateIsCurrent(state, delta)) return undefined;
+							habits = await retrieveAdvisorHabitCandidates(storageDb, {
+								userId: state.scope.userId,
+								delta,
+								activeRequestHabitIds: activeHabitIds,
+								law,
+								config: loaded.config,
+								embeddingAdapter,
+								tokenizerAssetDir: assets.assetDir,
+								signal: state.latestContext.signal,
+							});
+							if (!advisorUpdateIsCurrent(state, delta)) return undefined;
+						}
+					}
+				} catch {
+					habits = [];
+				} finally {
+					storageDb?.close();
+				}
+				if (!advisorUpdateIsCurrent(state, delta)) return undefined;
+				state.habitCandidatesByFingerprint.set(delta.eventFingerprint, habits);
+				while (state.habitCandidatesByFingerprint.size > 5) {
+					const oldest = state.habitCandidatesByFingerprint.keys().next().value;
+					if (typeof oldest !== "string") break;
+					state.habitCandidatesByFingerprint.delete(oldest);
+				}
+				return {
+					schemaVersion: 1,
+					scope: delta.scope,
+					generation: delta.generation,
+					epoch: delta.epoch,
+					cursor: delta.cursor,
+					inProgress: delta.inProgress,
+					primaryDelta: delta.text,
+					observationText: delta.observationText,
+					currentRequest: delta.currentRequest,
+					configuredLaw,
+					habits,
+					eventFingerprint: delta.eventFingerprint,
+					causalEpisodeId: delta.causalEpisodeId,
+					causedByAdvisor: delta.causedByAdvisor,
+				};
+			},
+			acceptFinding: async (finding: AcceptedAdvisorFinding, update: AdvisorUpdate): Promise<void> => {
+				if (!advisorUpdateIsCurrent(state, update)) return;
+				const config = await currentAdvisorConfig(state, "advisor_accept_config_change");
+				if (!config || !advisorUpdateIsCurrent(state, update)) return;
+				let storageDb: DatabaseSync | undefined;
+				let accepted: AcceptedAdvisorFinding;
+				try {
+					const paths = getAgentExperiencePaths();
+					const storage = await openExistingExperienceStorage(paths.root, { userId: state.scope.userId });
+					storageDb = storage.db;
+					if (!advisorUpdateIsCurrent(state, update)) return;
+					const law = await readConfiguredLawSnapshot(storage.root, config);
+					if (!advisorUpdateIsCurrent(state, update)) return;
+					const candidates = state.habitCandidatesByFingerprint.get(update.eventFingerprint);
+					if (!candidates) return;
+					const candidate = revalidateAdvisorHabitFinding(storageDb, {
+						userId: state.scope.userId,
+						alias: finding.candidate.alias,
+						candidates,
+						originalIdByAlias: new Map(candidates.map((item) => [item.alias, item.habitId])),
+						law,
+						config,
+						responseGeneration: update.generation,
+						cursor: update.cursor,
+						advisorEpoch: update.epoch,
+					});
+					accepted = { ...finding, candidate };
+				} catch {
+					return;
+				} finally {
+					storageDb?.close();
+				}
+				if (!advisorUpdateIsCurrent(state, update)) return;
+				let message: AdvisorCustomMessage;
+				try {
+					message = buildAdvisorCustomMessage(accepted, update);
+				} catch {
+					return;
+				}
+				const context = state.latestContext;
+				const generation = state.activeGeneration;
+				const decision = chooseAdvisorDelivery({
+					severity: accepted.severity,
+					active: !!generation && !context.isIdle(),
+					idle: context.isIdle(),
+					cancelled: !!generation?.cancelled || !!context.signal?.aborted,
+					terminal: !!generation?.terminal,
+					planMode: activePlanModeState(context),
+					canSteer: advisorMessageRendererReady && typeof pi.sendMessage === "function",
+					canAppendMessage: advisorMessageRendererReady && typeof pi.sendMessage === "function",
+					canAppendVisible: advisorVisibleRendererReady && typeof pi.appendEntry === "function",
+					immuneTurnsRemaining: state.immuneTurnsRemaining,
+					shuttingDown: state.shuttingDown,
+				});
+				if (!advisorUpdateIsCurrent(state, update)) return;
+				const delivery: PendingAdvisorDelivery = {
+					message,
+					finding: accepted,
+					update,
+					habitCandidates: state.habitCandidatesByFingerprint.get(update.eventFingerprint),
+					createdAt: message.details.created_at,
+					scopeKey: state.scopeKey,
+					epoch: update.epoch,
+					generation: update.generation,
+					cursor: update.cursor,
+				};
+				if (decision.mode === "steer") {
+					if (!await revalidateAdvisorDelivery(state, delivery)) return;
+					try {
+						pi.sendMessage(message, { triggerTurn: false, deliverAs: "steer" });
+					} catch {
+						state.pending.push(delivery);
+						return;
+					}
+					if (state.activeGeneration?.generation === update.generation) state.activeGeneration.causedByAdvisor = true;
+					state.immuneTurnsRemaining = state.runtimeConfig.immuneTurns + 1;
+					await appendDeliveredAdvisorObservation(accepted, update, delivery.createdAt);
+					return;
+				}
+				if (decision.mode === "append_when_settled") {
+					state.pending.push(delivery);
+					return;
+				}
+				if (!await revalidateAdvisorDelivery(state, delivery)) return;
+				if (decision.mode === "append_now") {
+					try {
+						pi.sendMessage(message, { triggerTurn: false });
+					} catch {
+						appendAdvisorVisibleFallback(message.details);
+						return;
+					}
+					await appendDeliveredAdvisorObservation(accepted, update, delivery.createdAt);
+					return;
+				}
+				appendAdvisorVisibleFallback(message.details);
+			},
+			onStaticDiagnostic: (diagnostic: string): void => {
+				if (advisorDiagnosticsShown.has(diagnostic)) return;
+				advisorDiagnosticsShown.add(diagnostic);
+				notify(state.latestContext, `Runtime Advisor skipped or degraded one review (${diagnostic}).`, "warn");
+			},
+		};
+		state.host = host;
+		state.runtime = new AdvisorRuntime(host, adapter);
+		advisorStates.set(key, state);
+		return state;
+	};
+	const refreshAdvisorRuntimeAfterConfigMutation = async (ctx: ExtensionContext, reason: string): Promise<void> => {
+		const previous = advisorStateForContext(ctx);
+		abortAdvisorState(ctx, reason);
+		let enabled = false;
+		try {
+			const { config } = await readAgentExperienceConfig(getAgentExperiencePaths());
+			enabled = advisorRuntimeConfig(config).enabled;
+		} catch {
+			// A config read failure is an authority failure: keep the old runtime revoked.
+		}
+		if (enabled) {
+			await rebuildAdvisorRuntime(ctx, reason);
+			return;
+		}
+		if (previous) {
+			advisorStates.delete(previous.scopeKey);
+			await disposeAdvisorState(previous);
+		}
+	};
 	let scheduledReceiptRendererReady = false;
 	try {
 		if (typeof pi.registerEntryRenderer === "function" && typeof pi.appendEntry === "function") {
@@ -2996,6 +3917,7 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 	};
 
 	pi.on("session_start", async (_event, ctx) => {
+		await rebuildAdvisorRuntime(ctx, `session_start:${_event.reason}`);
 		const scope = breakInScopeFromContext(ctx);
 		if (scope) breakInShutdown.delete(breakInScopeKey(scope));
 		if (ctx.mode !== "tui" || ctx.hasUI === false) return;
@@ -3009,6 +3931,7 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 		markerCommitted: boolean;
 		userMessageCount?: number;
 		contextTurns?: SteeringContextTurn[];
+		activeHabitIds?: string[];
 	};
 	const pendingSteeringRuns = new Map<string, PendingSteeringRun>();
 	const steeringScopeFromContext = (ctx: Pick<ExtensionContext, "sessionManager"> | { sessionManager?: ExtensionContext["sessionManager"] }): string | undefined => {
@@ -3039,15 +3962,23 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 					await handleStatus(ctx);
 					return;
 				case "setup":
-					await handleSetup(ctx, tokens.slice(1));
+					await handleSetup(ctx, tokens.slice(1), () => {
+						const state = advisorStateForContext(ctx);
+						if (!state) return {};
+						if (state.shuttingDown) return { advisorRuntime: "Paused" };
+						if (state.needsReseed || !state.runtime) return { advisorRuntime: "Needs attention" };
+						return { advisorRuntime: "Active" };
+					}, (reason) => refreshAdvisorRuntimeAfterConfigMutation(ctx, reason));
 					return;
 				case "on":
 				case "enable":
 					await handleOn(ctx);
+					await refreshAdvisorRuntimeAfterConfigMutation(ctx, "advisor_legacy_enable_change");
 					return;
 				case "off":
 				case "disable":
 					await handleOff(ctx);
+					await refreshAdvisorRuntimeAfterConfigMutation(ctx, "advisor_legacy_disable_change");
 					return;
 				case "review":
 					await handleReview(tokens.slice(1), ctx);
@@ -3094,6 +4025,48 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 	pi.on("before_agent_start", (event, ctx) => {
 		const breakScope = breakInScopeFromContext(ctx);
 		if (breakScope) breakInAgentActive.add(breakInScopeKey(breakScope));
+		const prompt = event.prompt;
+		const advisorState = advisorStateForContext(ctx);
+		let retained: PendingAdvisorDelivery[] = [];
+		let rebuildAfterSubmission = false;
+		if (advisorState?.canceledTransitionDelivery) advisorState.canceledTransitionDelivery = undefined;
+		if (advisorState?.needsReseed) {
+			const transition = advisorState.beforeTransition;
+			const candidates = advisorState.fallbackPending.splice(0);
+			if (transition) {
+				retained = candidates.filter((pending) => advisorBeforeTransitionIsUnchanged(advisorState, transition, pending));
+			}
+			advisorState.beforeTransition = undefined;
+			advisorState.pending = [];
+			if (advisorState.runtime) {
+				advisorState.needsReseed = false;
+				advisorState.cursor = ctx.sessionManager.getBranch().length;
+			} else {
+				rebuildAfterSubmission = true;
+			}
+		}
+		if (advisorState && !advisorState.needsReseed) {
+			advisorState.generation++;
+			if (advisorState.immuneTurnsRemaining > 0) advisorState.immuneTurnsRemaining--;
+			advisorState.pending = [];
+			advisorState.activeGeneration = {
+				scopeKey: advisorState.scopeKey,
+				epoch: advisorState.epoch,
+				generation: advisorState.generation,
+				startLeafId: ctx.sessionManager.getLeafId(),
+				currentRequest: prompt,
+				initialUserMessagePending: true,
+				causedByAdvisor: false,
+				cancelled: !!ctx.signal?.aborted,
+				activeRequestHabitIds: [],
+				terminal: false,
+			};
+		}
+		if (advisorState && retained.length > 0 && !advisorState.needsReseed) {
+			scheduleCanceledTransitionValidation(advisorState, retained);
+		} else if (advisorState && rebuildAfterSubmission) {
+			void rebuildAdvisorRuntime(advisorState.latestContext, "cancelled_before_event");
+		}
 		// Keep submission path synchronous and cheap so Pi can emit/persist/render
 		// the user message before local embedding and applicability assessment.
 		const steeringScope = steeringScopeFromContext(ctx);
@@ -3105,9 +4078,139 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 			});
 			return;
 		}
-		const prompt = String((event as { prompt?: unknown; text?: unknown }).prompt ?? (event as { text?: unknown }).text ?? "");
+		// The typed Pi 0.83 event exposes the exact expanded prompt.
 		if (!prompt.trim()) return;
 		pendingSteeringRuns.set(steeringScope, { prompt, phase: "armed", markerCommitted: false });
+	});
+
+	const startAdvisorQueuedUserGeneration = (message: unknown, ctx: ExtensionContext): void => {
+		if (!message || typeof message !== "object" || !("role" in message) || message.role !== "user") return;
+		const state = advisorStateForContext(ctx);
+		if (!state || state.needsReseed) return;
+		if (state.activeGeneration?.initialUserMessagePending) {
+			state.activeGeneration.initialUserMessagePending = false;
+			return;
+		}
+		state.generation++;
+		if (state.immuneTurnsRemaining > 0) state.immuneTurnsRemaining--;
+		state.cursor = ctx.sessionManager.getBranch().length;
+		state.activeGeneration = {
+			scopeKey: state.scopeKey,
+			epoch: state.epoch,
+			generation: state.generation,
+			startLeafId: ctx.sessionManager.getLeafId(),
+			currentRequest: agentMessageText(message),
+			initialUserMessagePending: false,
+			causedByAdvisor: false,
+			cancelled: !!ctx.signal?.aborted,
+			activeRequestHabitIds: [],
+			terminal: false,
+		};
+		state.pending = state.pending.filter((pending) => pendingAdvisorDeliveryIsCurrent(state, pending));
+	};
+
+	const markAdvisorCausalMessage = (message: unknown, ctx: ExtensionContext): void => {
+		if (!message || typeof message !== "object" || !("role" in message) || message.role !== "custom" || !("customType" in message) || message.customType !== ADVISOR_FINDING_MESSAGE_TYPE || !("details" in message)) return;
+		try {
+			validateAdvisorFindingDetails(message.details);
+		} catch {
+			return;
+		}
+		const state = advisorStateForContext(ctx);
+		if (state?.activeGeneration) state.activeGeneration.causedByAdvisor = true;
+	};
+
+	pi.on("message_start", (event, ctx) => {
+		startAdvisorQueuedUserGeneration(event.message, ctx);
+		markAdvisorCausalMessage(event.message, ctx);
+	});
+
+	pi.on("message_end", (event, ctx) => {
+		markAdvisorCausalMessage(event.message, ctx);
+	});
+
+	pi.on("turn_end", async (event, ctx) => {
+		const state = advisorStateForContext(ctx);
+		const generation = state?.activeGeneration;
+		if (!state || !state.runtime || !generation || generation.scopeKey !== state.scopeKey || generation.epoch !== state.epoch || generation.generation !== state.generation) {
+			if (state) state.canceledTransitionDelivery = undefined;
+			return;
+		}
+		generation.cancelled ||= !!ctx.signal?.aborted;
+		generation.terminal = assistantTurnIsTerminal(event.message);
+		const steeringState = pendingSteeringRuns.get(state.scopeKey);
+		generation.activeRequestHabitIds = steeringState?.activeHabitIds ? [...steeringState.activeHabitIds] : [];
+		const identity = resolveAdvisorTurnIdentity(ctx, event.message, event.toolResults, generation);
+		if (!identity) {
+			state.canceledTransitionDelivery = undefined;
+			return;
+		}
+		const canceledTransition = state.canceledTransitionDelivery;
+		if (canceledTransition) {
+			if (
+				!canceledTransition.validatedItem
+				|| canceledTransition.boundResponse
+				|| !canceledTransitionValidationIsCurrent(state, canceledTransition)
+			) {
+				state.canceledTransitionDelivery = undefined;
+			} else {
+				canceledTransition.boundResponse = {
+					cursor: identity.cursor,
+					leafId: ctx.sessionManager.getLeafId(),
+					currentUserEntryId: identity.currentUserEntryId,
+					primaryEntryIds: [...identity.primaryEntryIds],
+					causalEpisodeId: identity.causalEpisodeId,
+				};
+			}
+		}
+		state.cursor = identity.cursor;
+		state.pending = state.pending.filter((pending) => pendingAdvisorDeliveryIsCurrent(state, pending));
+		if (event.message.role !== "assistant") return;
+		const delta = extractAdvisorTurnDelta({
+			scope: state.scope,
+			epoch: state.epoch,
+			generation: state.generation,
+			cursor: state.cursor,
+			currentUserEntryId: identity.currentUserEntryId,
+			primaryEntryIds: identity.primaryEntryIds,
+			causalEpisodeId: identity.causalEpisodeId,
+			causedByAdvisor: generation.causedByAdvisor,
+			currentRequest: identity.currentRequest,
+			assistantMessage: event.message,
+			toolResults: event.toolResults,
+		});
+		if (!delta) return;
+		state.backlog++;
+		state.runtime.enqueue(delta);
+		if (!__advisorCatchupRequiredForTest(state.runtimeConfig.syncBacklog, state.backlog)) return;
+		const epoch = state.epoch;
+		const runtime = state.runtime;
+		try {
+			await runtime.waitForCatchup();
+		} finally {
+			if (state.epoch === epoch && state.runtime === runtime) state.backlog = 0;
+		}
+	});
+
+	pi.on("session_before_switch", (_event, ctx) => {
+		abortAdvisorState(ctx, "session_before_switch");
+	});
+
+	pi.on("session_before_fork", (_event, ctx) => {
+		abortAdvisorState(ctx, "session_before_fork");
+	});
+
+	pi.on("session_before_tree", (_event, ctx) => {
+		abortAdvisorState(ctx, "session_before_tree");
+	});
+
+	pi.on("session_tree", async (_event, ctx) => {
+		await rebuildAdvisorRuntime(ctx, "session_tree");
+	});
+
+	pi.on("model_select", async (_event, ctx) => {
+		abortAdvisorState(ctx, "model_select");
+		await rebuildAdvisorRuntime(ctx, "model_select");
 	});
 
 	pi.on("context", async (event, ctx) => {
@@ -3163,9 +4266,11 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 				try {
 					state.entry = buildHabitSteeringEntry({ candidates: result.candidates, selected: result.selected, createdAt: now });
 					state.guidance = result.message;
+					state.activeHabitIds = result.selected.map((item) => item.id);
 				} catch {
 					state.entry = undefined;
 					state.guidance = undefined;
+					state.activeHabitIds = undefined;
 					notifyDedupedDiagnostic(ctx, selectorDiagnosticsShown, {
 						key: "selector-runtime:steering-provenance-build-failed",
 						message: "Agent Experience habit steering was suppressed because response-specific provenance could not be prepared. No habit guidance was injected.",
@@ -3328,6 +4433,7 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 	});
 
 	pi.on("session_before_compact", async (_event, ctx) => {
+		abortAdvisorState(ctx, "session_before_compact");
 		const scope = breakInScopeFromContext(ctx);
 		if (scope) breakInCompacting.add(breakInScopeKey(scope));
 	});
@@ -3335,9 +4441,37 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 	pi.on("session_compact", async (_event, ctx) => {
 		const scope = breakInScopeFromContext(ctx);
 		if (scope) breakInCompacting.delete(breakInScopeKey(scope));
+		await rebuildAdvisorRuntime(ctx, "session_compact");
 	});
 
 	pi.on("agent_settled", async (_event, ctx) => {
+		const advisorState = advisorStateForContext(ctx);
+		if (advisorState) {
+			if (advisorState.activeGeneration) advisorState.activeGeneration.terminal = true;
+			const canceledTransition = advisorState.canceledTransitionDelivery;
+			if (canceledTransition) {
+				canceledTransition.settlement ??= (async () => {
+					try {
+						await advisorTransitionSettlementGateForTest?.();
+						const item = canceledTransition.validatedItem;
+						if (item && canceledTransitionBoundResponseIsCurrent(advisorState, canceledTransition, ctx)) {
+							await deliverPendingAdvisorItem(advisorState, item, {
+								visibleOnly: false,
+								isCurrent: () => canceledTransitionBoundResponseIsCurrent(advisorState, canceledTransition, ctx),
+							});
+						}
+					} catch {
+						// A claimed settled delivery fails closed and is never reopened.
+					} finally {
+						if (advisorState.canceledTransitionDelivery === canceledTransition) {
+							advisorState.canceledTransitionDelivery = undefined;
+						}
+					}
+				})();
+				await canceledTransition.settlement;
+			}
+			await flushPendingAdvisorMessages(advisorState, false);
+		}
 		const steeringScope = steeringScopeFromContext(ctx);
 		if (steeringScope) pendingSteeringRuns.delete(steeringScope);
 		const breakScope = breakInScopeFromContext(ctx);
@@ -3358,6 +4492,32 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {
+		const advisorState = advisorStateForContext(ctx);
+		if (advisorState) {
+			const currentPending = advisorState.pending.splice(0);
+			for (const pending of currentPending) {
+				await deliverPendingAdvisorItem(advisorState, pending, {
+					visibleOnly: true,
+					resetOnConfigChange: false,
+				});
+			}
+			const transition = advisorState.beforeTransition;
+			const transitionPending = advisorState.fallbackPending.splice(0);
+			if (transition) {
+				for (const pending of transitionPending) {
+					await deliverPendingAdvisorItem(advisorState, pending, {
+						visibleOnly: true,
+						isCurrent: () => advisorBeforeTransitionIsUnchanged(advisorState, transition, pending),
+						resetOnConfigChange: false,
+					});
+				}
+			}
+			advisorState.beforeTransition = undefined;
+			abortAdvisorState(ctx, "session_shutdown");
+			advisorState.shuttingDown = true;
+			advisorStates.delete(advisorState.scopeKey);
+			await disposeAdvisorState(advisorState);
+		}
 		stopScheduledReceiptPolling();
 		const steeringScope = steeringScopeFromContext(ctx);
 		if (steeringScope) pendingSteeringRuns.delete(steeringScope);

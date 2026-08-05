@@ -70,32 +70,24 @@ Run the same test with an actual Node 22.19+ binary before release, not only a n
 
 ## Packed artifact
 
-Build and inspect the exact tarball:
+The authoritative gate packs and installs the package itself:
 
 ```bash
-npm pack --dry-run
-npm pack --json --pack-destination /tmp/pi-experiences-047-pack
+node scripts/verify-isolated-package.mjs
 ```
 
-The tarball must include:
+The verifier first runs the source gate, creates one `mkdtemp` root outside the repository, live npm cache, global npm prefix, and live Experience state root, and then:
 
-- `package.json` version `0.1.49` and Node floor `>=22.19.0`;
-- `CHANGELOG.md` with a verified entry for the release;
-- wildcard Pi peer dependencies;
-- extension source, `steering-note.ts`, and public skill;
-- current executable `dist/experience-consolidate.mjs`;
-- `runtime/agent-experience/local-embedding-worker.mjs`;
-- the two pinned vendored runtime glue modules;
-- source/validation scripts used by package checks;
-- no model weights/WASM asset, private state, credentials, install hook, or source-map leakage.
+1. runs `npm pack --pack-destination <temp>/pack` with a temporary npm cache;
+2. performs a fresh `npm install --prefix <temp>/install` of that exact tarball with lifecycle scripts disabled;
+3. resolves direct `@earendil-works/pi-agent-core ^0.83.0` and supported `@earendil-works/pi-coding-agent >=0.83.0` peers inside the isolated prefix;
+4. checks package version, peer contracts, no install/postinstall/prepare hooks, the complete setup/Advisor source allowlist, CLI help/status, package-relative worker resolution, managed dependency size, and the installed skill with Pi's actual packaged skill/frontmatter loader;
+5. runs grouped setup and Advisor PTY smokes from the installed copy with explicit package/transcript paths and child-only `AX_STATE_ROOT`;
+6. prints transcript/screen artifact paths, byte counts, and SHA-256 digests before unconditional cleanup.
 
-Fresh installation must use the exact generated tarball and disable lifecycle scripts:
+The tarball must include `CHANGELOG.md`, current executable `dist/experience-consolidate.mjs`, setup and all Advisor modules, phase 23–25 checks, both PTY harnesses, the public skill, local worker, and pinned runtime glue. It must contain no model weight/WASM asset, private state, credentials, Python cache, install hook, or source-map leakage.
 
-```bash
-npm install --ignore-scripts --legacy-peer-deps /tmp/pi-experiences-049-pack/pi-experiences-0.1.49.tgz
-```
-
-Use a dedicated disposable `/tmp/*smoke*` prefix. Verify package version, CLI help/status, extension import, skill loading, package-relative worker resolution, and file allowlist from that installed copy—not the source checkout.
+Do not substitute `npm pack --dry-run`, a repository import, a global skill loader, the shared npm cache, or a legacy-peer-deps install for this gate.
 
 ## Real Pi skill/frontmatter loader
 
@@ -103,35 +95,32 @@ Run Pi's actual skill loader against the installed package and require zero diag
 
 ## Isolated installed-package TUI
 
-Use the packed/fresh-installed package with:
+`node scripts/verify-isolated-package.mjs` launches real Pi from the fresh isolated dependency tree with empty isolated Pi agent/session directories, offline mode, and defaults/context/templates/themes/approval disabled. It exercises the grouped `/experience setup` screen first:
 
-```bash
-AX_STATE_ROOT=/tmp/pi-experiences-047-tui-smoke-state
-```
+- **Learning from conversations**;
+- **Guidance and Advisor**;
+- **Manage habits**;
+- **Automation and privacy**;
+- **Status and help**;
+- both authenticated model controls in their expected fail-closed state when the isolated agent has no credentials, Analyze/review failure states, duplicate prevention, retention, schedule/review-prompt explanations, status, all-off, and Done.
 
-Launch the real Pi TUI in a disposable Pi config/package root that references the installed tarball copy, not this repository. Exercise every major `/experience setup` section:
+The companion Advisor driver is test-only, imports `buildAdvisorCustomMessage` from the installed package, and calls Pi's public `sendMessage(message, { triggerTurn:false })` API. It emits exactly one fixture per command/update and never changes production runtime behavior. Preserve installed-package artifacts proving:
 
-- save examples;
-- model picker/back;
-- Analyze prerequisite/fail-closed state;
-- suggestion review empty state;
-- duplicate resolution empty state;
-- approved habits and waiting recheck empty state;
-- duplicate-prevention explanation and cancel-safe progress surface;
-- source-retention 7/14/30 choices;
-- approved-habit reminder explanation;
-- schedule explanation plus explicit install/enable, repair, disable, and remove flows;
-- current settings;
-- help;
-- all-off/Done.
+- collapsed and expanded approved-habit concern and blocker cards;
+- exact `When:` / `Do:` provenance and next-step authority;
+- wide and narrow wrapping without terminal overflow;
+- silence when no supplied approved habit is violated;
+- one card per update;
+- no IDs, aliases, scores, checksums, raw output, transcript excerpts, or private paths;
+- unchanged live Experience state and no live/global install destination.
 
-Also exercise the conversational tools in a fresh session: exact draft display, same-turn confirmation rejection, later-turn save, corrected-draft replacement, numbered suggestion/duplicate listing, explicit decision application, stale-list refresh, and idempotent retry.
+The verifier must pass explicit installed-package and transcript arguments to both Python smokes, use only its child `AX_STATE_ROOT`, print the artifact manifest before cleanup, and remove its single temporary root in `finally`.
 
-Seed one specific approved habit plus weaker generic and behavior-only decoys, enable reminders, and submit a matching prompt. Verify the user prompt renders first, then a muted `◇ Steered by habit · <exact selected condition>` entry, then response work/answer. The collapsed marker must identify each selected condition rather than show a generic count; expansion shows every exact approved `When:` / `Do:` pair. Weaker-overlap and behavior-only decoys must not appear. An unrelated prompt shows no marker. Repeated eligible messages on the same day must continue receiving guidance with no quota. Verify tool-loop calls retain guidance without duplicate markers, a new user message cannot inherit it, and non-TUI/renderer/malformed/append failures suppress guidance.
+Also exercise conversational tools separately when changing them: exact draft display, same-turn confirmation rejection, later-turn save, corrected-draft replacement, numbered suggestion/duplicate listing, explicit decision application, stale-list refresh, and idempotent retry.
 
-Verify all visible UI/tool results contain no habit IDs, checksums, duplicate thresholds, local-model identifiers, provider endpoints, source refs, private paths, API-key instructions, audit fields, or required advanced subcommands.
+For direct approved-habit reminder changes, retain the separate steering smoke: the prompt renders first, then `◇ Steered by habit · <exact selected condition>`, then response work/answer; expansion shows exact approved `When:` / `Do:` pairs and unrelated/unsupported cases remain silent.
 
-For any user-visible report/HTML surface, capture real screenshots for each major navigation section before completion. For this terminal-only package, preserve PTY transcript/screenshot evidence of the installed TUI smoke.
+All visible UI/tool results must contain no habit IDs, checksums, duplicate thresholds, local-model identifiers, provider endpoints, source refs, private paths, API-key instructions, audit fields, or required advanced subcommands.
 
 ## Adversarial acceptance matrix
 

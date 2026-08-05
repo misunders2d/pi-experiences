@@ -14,7 +14,7 @@ import { redactJson, redactText } from "./redaction.ts";
 import { canonicalJson, checksumJson } from "./checksum.ts";
 import { withOwnedLock } from "./locks.ts";
 
-export type ObservationOrigin = { source: "test" | "manual" | "local_interactive"; command?: string };
+export type ObservationOrigin = { source: "test" | "manual" | "local_interactive" | "advisor_finding"; command?: string };
 
 export interface AppendObservationInput {
 	userId?: string;
@@ -23,6 +23,14 @@ export interface AppendObservationInput {
 	id?: string;
 	createdAt?: string;
 }
+
+export interface AppendUniqueObservationInput extends AppendObservationInput {
+	eventFingerprint: string;
+}
+
+export type AppendUniqueObservationResult =
+	| { appended: true; reason: "appended"; record: ObservationRecord; path: string; manifest: ObservationTailManifest }
+	| { appended: false; reason: "duplicate" | "scan_cap_exceeded" };
 
 export interface ObservationRecord {
 	id: string;
@@ -67,11 +75,19 @@ const DEFAULT_RANGE_RECORDS = 200;
 const DEFAULT_RANGE_BYTES = 80_000;
 const INDEX_ENTRY_BYTES = 8;
 const ALLOWED_RETENTION_DAYS = new Set([7, 14, 30]);
+const UNIQUE_SCAN_BATCH_RECORDS = 64;
+const UNIQUE_SCAN_CAP_RECORDS = 512;
+const UNIQUE_RING_CAPACITY = 256;
 
 let ioDiagnostics = { full_scans: 0, bounded_bytes_read: 0 };
+const recentUniqueKeys = new Map<string, true>();
 
 function normalizeOrigin(origin: ObservationOrigin): ObservationOrigin {
-	if (!origin || !["test", "manual", "local_interactive"].includes(origin.source)) throw new Error("Unsupported Agent Experience observation origin");
+	if (!origin || !["test", "manual", "local_interactive", "advisor_finding"].includes(origin.source)) throw new Error("Unsupported Agent Experience observation origin");
+	if (origin.source === "advisor_finding") {
+		if (origin.command !== undefined) throw new Error("Advisor finding observation origin must be exact");
+		return { source: "advisor_finding" };
+	}
 	return origin.command ? { source: origin.source, command: String(origin.command) } : { source: origin.source };
 }
 
@@ -393,49 +409,119 @@ export async function initializeFreshObservationGeneration(root: string, created
 	}, { waitMs: 10_000 });
 }
 
+async function appendObservationLocked(
+	privateRoot: string,
+	manifest: ObservationTailManifest,
+	input: AppendObservationInput,
+	origin: ObservationOrigin,
+	payloadRedacted: unknown,
+) {
+	const recordBase: Omit<ObservationRecord, "checksum"> = {
+		id: input.id || randomUUID(),
+		seq: manifest.last_seq + 1,
+		user_id: normalizeUserId(input.userId),
+		origin,
+		prev_pair_ref: manifest.last_pair_ref,
+		payload_redacted: payloadRedacted,
+		created_at: input.createdAt || new Date().toISOString(),
+	};
+	const record: ObservationRecord = { ...recordBase, checksum: checksumRecord(recordBase) };
+	const line = Buffer.from(`${canonicalJson(record)}\n`, "utf8");
+	if (line.length > MAX_RECORD_BYTES + 1) throw new Error("Observation record exceeds size limit");
+	const jsonPath = resolvePrivatePath(privateRoot, OBSERVATIONS_FILE);
+	const jsonHandle = await openSensitiveFileForWrite(privateRoot, jsonPath, constants.O_APPEND | constants.O_WRONLY);
+	try { await jsonHandle.writeFile(line); await jsonHandle.sync(); } finally { await jsonHandle.close(); }
+	const nextJsonBytes = manifest.jsonl_bytes + line.length;
+	const indexPath = resolvePrivatePath(privateRoot, OBSERVATIONS_INDEX);
+	const indexHandle = await openSensitiveFileForWrite(privateRoot, indexPath, constants.O_APPEND | constants.O_WRONLY);
+	try {
+		const entry = Buffer.alloc(INDEX_ENTRY_BYTES);
+		entry.writeBigUInt64BE(BigInt(nextJsonBytes));
+		await indexHandle.writeFile(entry);
+		await indexHandle.sync();
+	} finally { await indexHandle.close(); }
+	const { manifest_checksum: _manifestChecksum, ...manifestBase } = manifest;
+	const next = withTailChecksum({
+		...manifestBase,
+		last_seq: record.seq,
+		last_checksum: record.checksum,
+		last_pair_ref: pairRef(record),
+		jsonl_bytes: nextJsonBytes,
+		index_bytes: manifest.index_bytes + INDEX_ENTRY_BYTES,
+		updated_at: record.created_at,
+	});
+	await writeTailManifest(privateRoot, next);
+	return { record, path: jsonPath, manifest: next };
+}
+
+function rememberUniqueKey(key: string): void {
+	recentUniqueKeys.delete(key);
+	recentUniqueKeys.set(key, true);
+	while (recentUniqueKeys.size > UNIQUE_RING_CAPACITY) {
+		const oldest = recentUniqueKeys.keys().next().value;
+		if (typeof oldest !== "string") break;
+		recentUniqueKeys.delete(oldest);
+	}
+}
+
+function uniqueKeys(root: string, generation: string, id: string, eventFingerprint: string): [string, string] {
+	const prefix = `${root}\u0000${generation}\u0000`;
+	return [`${prefix}id:${id}`, `${prefix}fingerprint:${eventFingerprint}`];
+}
+
+function advisorEventFingerprint(record: ObservationRecord): string | undefined {
+	if (record.origin.source !== "advisor_finding") return undefined;
+	const payload = record.payload_redacted as { kind?: unknown; event_fingerprint?: unknown } | undefined;
+	return payload?.kind === "advisor_finding_v1" && typeof payload.event_fingerprint === "string"
+		? payload.event_fingerprint
+		: undefined;
+}
+
+async function activeGenerationContainsUniqueObservation(
+	privateRoot: string,
+	manifest: ObservationTailManifest,
+	id: string,
+	eventFingerprint: string,
+): Promise<"duplicate" | "absent" | "scan_cap_exceeded"> {
+	let seq = manifest.last_seq;
+	let scanned = 0;
+	while (seq > 0 && scanned < UNIQUE_SCAN_CAP_RECORDS) {
+		const chunkStart = Math.max(1, seq - Math.min(UNIQUE_SCAN_BATCH_RECORDS, UNIQUE_SCAN_CAP_RECORDS - scanned) + 1);
+		for (let current = seq; current >= chunkStart; current--) {
+			const record = await readRecordAt(privateRoot, manifest, current);
+			if (record.id === id || advisorEventFingerprint(record) === eventFingerprint) return "duplicate";
+		}
+		scanned += seq - chunkStart + 1;
+		seq = chunkStart - 1;
+	}
+	return seq > 0 ? "scan_cap_exceeded" : "absent";
+}
+
 export async function appendObservation(root: string, input: AppendObservationInput) {
 	const privateRoot = await ensurePrivateRoot(root);
-	const userId = normalizeUserId(input.userId);
 	const origin = normalizeOrigin(input.origin);
 	const payloadRedacted = redactJson(input.payload);
 	return withOwnedLock(privateRoot, LOCK_NAME, async () => {
 		const manifest = await loadStateLocked(privateRoot);
-		const recordBase: Omit<ObservationRecord, "checksum"> = {
-			id: input.id || randomUUID(),
-			seq: manifest.last_seq + 1,
-			user_id: userId,
-			origin,
-			prev_pair_ref: manifest.last_pair_ref,
-			payload_redacted: payloadRedacted,
-			created_at: input.createdAt || new Date().toISOString(),
-		};
-		const record: ObservationRecord = { ...recordBase, checksum: checksumRecord(recordBase) };
-		const line = Buffer.from(`${canonicalJson(record)}\n`, "utf8");
-		if (line.length > MAX_RECORD_BYTES + 1) throw new Error("Observation record exceeds size limit");
-		const jsonPath = resolvePrivatePath(privateRoot, OBSERVATIONS_FILE);
-		const jsonHandle = await openSensitiveFileForWrite(privateRoot, jsonPath, constants.O_APPEND | constants.O_WRONLY);
-		try { await jsonHandle.writeFile(line); await jsonHandle.sync(); } finally { await jsonHandle.close(); }
-		const nextJsonBytes = manifest.jsonl_bytes + line.length;
-		const indexPath = resolvePrivatePath(privateRoot, OBSERVATIONS_INDEX);
-		const indexHandle = await openSensitiveFileForWrite(privateRoot, indexPath, constants.O_APPEND | constants.O_WRONLY);
-		try {
-			const entry = Buffer.alloc(INDEX_ENTRY_BYTES);
-			entry.writeBigUInt64BE(BigInt(nextJsonBytes));
-			await indexHandle.writeFile(entry);
-			await indexHandle.sync();
-		} finally { await indexHandle.close(); }
-		const { manifest_checksum: _manifestChecksum, ...manifestBase } = manifest;
-		const next = withTailChecksum({
-			...manifestBase,
-			last_seq: record.seq,
-			last_checksum: record.checksum,
-			last_pair_ref: pairRef(record),
-			jsonl_bytes: nextJsonBytes,
-			index_bytes: manifest.index_bytes + INDEX_ENTRY_BYTES,
-			updated_at: record.created_at,
-		});
-		await writeTailManifest(privateRoot, next);
-		return { record, path: jsonPath, manifest: next };
+		return appendObservationLocked(privateRoot, manifest, input, origin, payloadRedacted);
+	}, { waitMs: 10_000 });
+}
+
+export async function appendUniqueObservation(root: string, input: AppendUniqueObservationInput): Promise<AppendUniqueObservationResult> {
+	if (!/^[0-9a-f]{64}$/.test(input.eventFingerprint)) throw new Error("Invalid observation event fingerprint");
+	if (typeof input.id !== "string" || !input.id) throw new Error("Unique observation requires a deterministic id");
+	const privateRoot = await ensurePrivateRoot(root);
+	const origin = normalizeOrigin(input.origin);
+	const payloadRedacted = redactJson(input.payload);
+	return withOwnedLock(privateRoot, LOCK_NAME, async () => {
+		const manifest = await loadStateLocked(privateRoot);
+		const keys = uniqueKeys(privateRoot, manifest.file_generation, input.id!, input.eventFingerprint);
+		if (keys.some((key) => recentUniqueKeys.has(key))) return { appended: false, reason: "duplicate" };
+		const durable = await activeGenerationContainsUniqueObservation(privateRoot, manifest, input.id!, input.eventFingerprint);
+		if (durable !== "absent") return { appended: false, reason: durable };
+		const appended = await appendObservationLocked(privateRoot, manifest, input, origin, payloadRedacted);
+		for (const key of keys) rememberUniqueKey(key);
+		return { appended: true, reason: "appended", ...appended };
 	}, { waitMs: 10_000 });
 }
 
@@ -646,7 +732,12 @@ export function __getObservationIoDiagnosticsForTest() {
 	return { ...ioDiagnostics };
 }
 
+export function __resetObservationUniqueDedupeForTest(): void {
+	recentUniqueKeys.clear();
+}
+
 export const observationChecksumForTest = checksumRecord;
 export const observationPairRefForTest = pairRef;
 export const OBSERVATION_FILE_MODE = SENSITIVE_FILE_MODE;
 export const OBSERVATION_RETENTION_CHOICES = [7, 14, 30] as const;
+export const OBSERVATION_UNIQUE_SCAN_CAP_FOR_TEST = UNIQUE_SCAN_CAP_RECORDS;

@@ -32,13 +32,46 @@ export function truncateForModel(value: unknown, max = 900): string {
 	return text.length > max ? `${text.slice(0, max)}…` : text;
 }
 
+function advisorFingerprint(record: ValidatedObservationRecord): string | undefined {
+	if (record.origin.source !== "advisor_finding") return undefined;
+	const payload = record.payload_redacted as { kind?: unknown; event_fingerprint?: unknown } | undefined;
+	return payload?.kind === "advisor_finding_v1" && typeof payload.event_fingerprint === "string"
+		? payload.event_fingerprint
+		: undefined;
+}
+
+function collapseAdvisorObservations(observations: ValidatedObservationRecord[]): ValidatedObservationRecord[] {
+	const fingerprints = new Set<string>();
+	return observations.filter((record) => {
+		const fingerprint = advisorFingerprint(record);
+		if (!fingerprint) return true;
+		if (fingerprints.has(fingerprint)) return false;
+		fingerprints.add(fingerprint);
+		return true;
+	});
+}
+
 function observationsForModelPrompt(observations: ValidatedObservationRecord[]): unknown[] {
-	return observations.map((record) => {
-		const payload = record.payload_redacted as any;
+	return collapseAdvisorObservations(observations).map((record) => {
+		const payload = record.payload_redacted && typeof record.payload_redacted === "object" && !Array.isArray(record.payload_redacted)
+			? record.payload_redacted as Record<string, unknown>
+			: {};
+		if (payload?.kind === "advisor_finding_v1") {
+			return {
+				seq: record.seq,
+				checksum: record.checksum,
+				created_at: record.created_at,
+				origin: "advisor_finding",
+				assistant: truncateForModel(payload.primary_behavior_redacted, 1200),
+				advisor_finding: truncateForModel(payload.approved_behavior_redacted, 900),
+				severity: payload.severity,
+			};
+		}
 		return {
 			seq: record.seq,
 			checksum: record.checksum,
 			created_at: record.created_at,
+			origin: record.origin.source,
 			user: truncateForModel(payload?.user_text_redacted, 900),
 			assistant: truncateForModel(payload?.assistant_text_redacted, 1200),
 		};
@@ -115,7 +148,7 @@ export function buildConsolidationUserPrompt(input: ConsolidationModelAdapterInp
 		model: input.model,
 		created_at: new Date().toISOString(),
 		observations_read: { seq_start: input.expected.seq_start, seq_end: input.expected.seq_end, checksum: input.expected.read_checksum },
-		existing_habit_context: input.habitContext || [],
+		existing_habit_context: (input.habitContext || []).map(({ advisor_event_fingerprints: _internalFingerprints, ...visible }) => visible),
 		observations: observationsForModelPrompt(input.observations),
 	}, null, 2);
 }
@@ -141,9 +174,22 @@ function normalizeSourceRefs(rawRefs: unknown, input: ConsolidationModelAdapterI
 
 function newEvidenceStats(refs: { seq: number }[], input: ConsolidationModelAdapterInput) {
 	const bySeq = new Map(input.observations.map((record) => [record.seq, record]));
-	const uniqueSeqs = [...new Set(refs.map((ref) => ref.seq))];
-	const days = new Set(uniqueSeqs.map((seq) => bySeq.get(seq)?.created_at).filter(Boolean).map((iso) => new Date(String(iso)).toISOString().slice(0, 10)));
-	return { count: uniqueSeqs.length, days };
+	const nonAdvisorSeqs = new Set<number>();
+	const nonAdvisorDays = new Set<string>();
+	const advisorEvents = new Map<string, string>();
+	for (const ref of refs) {
+		const record = bySeq.get(ref.seq);
+		if (!record) continue;
+		const fingerprint = advisorFingerprint(record);
+		const day = new Date(record.created_at).toISOString().slice(0, 10);
+		if (fingerprint) {
+			if (!advisorEvents.has(fingerprint)) advisorEvents.set(fingerprint, day);
+			continue;
+		}
+		nonAdvisorSeqs.add(record.seq);
+		nonAdvisorDays.add(day);
+	}
+	return { nonAdvisorSeqs, nonAdvisorDays, advisorEvents };
 }
 
 function matchingHabitContext(input: ConsolidationModelAdapterInput, candidate: { condition: unknown; behavior: unknown; polarity: unknown }): CompactHabitContextItem | undefined {
@@ -154,8 +200,20 @@ function matchingHabitContext(input: ConsolidationModelAdapterInput, candidate: 
 function hasEnoughRepeatedEvidence(refs: { seq: number }[], input: ConsolidationModelAdapterInput, candidate: { condition: unknown; behavior: unknown; polarity: unknown }): boolean {
 	const fresh = newEvidenceStats(refs, input);
 	const existing = matchingHabitContext(input, candidate);
-	const days = new Set([...(existing?.source_dates || []), ...fresh.days]);
-	return fresh.count + Number(existing?.unique_observations || 0) >= 3 && days.size >= 2;
+	const existingFingerprints = new Set(existing?.advisor_event_fingerprints || []);
+	const newAdvisorEvents = [...fresh.advisorEvents].filter(([fingerprint]) => !existingFingerprints.has(fingerprint));
+	const days = new Set([
+		...(existing?.source_dates || []),
+		...fresh.nonAdvisorDays,
+		...newAdvisorEvents.map(([, day]) => day),
+	]);
+	const count = Number(existing?.unique_observations || 0) + fresh.nonAdvisorSeqs.size + newAdvisorEvents.length;
+	return count >= 3 && days.size >= 2;
+}
+
+function withoutAdvisorEvidence(refs: { seq: number }[], input: ConsolidationModelAdapterInput): { seq: number }[] {
+	const bySeq = new Map(input.observations.map((record) => [record.seq, record]));
+	return refs.filter((ref) => bySeq.get(ref.seq)?.origin.source !== "advisor_finding");
 }
 
 function normalizeConfidence(value: unknown): number {
@@ -172,9 +230,10 @@ export function normalizeConsolidationModelOutput(raw: any, input: Consolidation
 			const new_condition = requireNonEmptyString(proposal.new_condition, "new_condition");
 			const new_behavior = requireNonEmptyString(proposal.new_behavior, "new_behavior");
 			const confidence_bp = normalizeConfidence(proposal.confidence_bp);
-			const repeatedReplacement = hasEnoughRepeatedEvidence(source_refs, input, { condition: new_condition, behavior: new_behavior, polarity: 1 });
+			const correctionAuthorityRefs = withoutAdvisorEvidence(source_refs, input);
+			const repeatedReplacement = hasEnoughRepeatedEvidence(correctionAuthorityRefs, input, { condition: new_condition, behavior: new_behavior, polarity: 1 });
 			const oldContext = matchingHabitContext(input, { condition: old_condition, behavior: old_behavior, polarity: 1 });
-			const explicitCorrection = confidence_bp >= 8500 && source_refs.length >= 1 && oldContext?.status === "active";
+			const explicitCorrection = confidence_bp >= 8500 && correctionAuthorityRefs.length >= 1 && oldContext?.status === "active";
 			const evidence_stage = repeatedReplacement || explicitCorrection ? "reviewable" : "collecting";
 			return [{
 				proposal_id: requireNonEmptyString(proposal.proposal_id, "proposal_id"),
