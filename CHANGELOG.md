@@ -6,6 +6,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 ## [Unreleased]
 
+## [0.1.50] - 2026-08-05
+
 ### Added
 
 - Added an opt-in Runtime Advisor that uses a separately configurable authenticated Pi model to review bounded incremental primary-turn updates only against exact approved habits. Reviewer reasoning and generic best practices cannot create standalone policy or advice; investigation remains workspace-confined and read-only, and Advisor never pre-execution-blocks primary tools.
@@ -155,7 +157,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 - Added synchronous submission-hook checks, deferred embedding/model assertions, and a packed Pi TUI smoke requiring submitted-message rendering within 1.5 seconds.
 
-[Unreleased]: https://github.com/misunders2d/pi-experiences/compare/v0.1.49...HEAD
+[Unreleased]: https://github.com/misunders2d/pi-experiences/compare/v0.1.50...HEAD
+[0.1.50]: https://github.com/misunders2d/pi-experiences/compare/v0.1.49...v0.1.50
 [0.1.49]: https://github.com/misunders2d/pi-experiences/compare/v0.1.48...v0.1.49
 [0.1.48]: https://github.com/misunders2d/pi-experiences/compare/v0.1.47...v0.1.48
 [0.1.47]: https://github.com/misunders2d/pi-experiences/compare/v0.1.46...v0.1.47
