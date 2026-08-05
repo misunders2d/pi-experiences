@@ -1320,12 +1320,12 @@ try {
     assert.equal(cursorHarness.sent.length, 0, 'a pending finding must retain its original cursor and be discarded after a later turn advances it');
     await cursorHarness.emit('session_shutdown', { reason: 'quit' });
 
+    process.env.AX_ADVISOR_SYNC_BACKLOG = '1';
     const fallbackConcernAdapter = fakeAdvisorAdapter(habitAttempt('concern'));
     const fallbackConcernHarness = makeAdvisorHarness(fallbackConcernAdapter, [planEntry]);
     await fallbackConcernHarness.emit('session_start', { reason: 'startup' });
     await runTurn(fallbackConcernHarness, 'fallback-concern', 'Prepare release notes.');
-    await waitUntil(() => fallbackConcernAdapter.updates.length === 1, 'pending concern review');
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(fallbackConcernAdapter.updates.length, 1, 'sync backlog must finish the pending concern review before the transition');
     await fallbackConcernHarness.emit('session_before_switch', { reason: 'resume', targetSessionFile: '/tmp/replacement.jsonl' });
     assert.equal(fallbackConcernHarness.sent.length, 0, 'plan-bound concern must not steer a live turn');
     await fallbackConcernHarness.emit('session_shutdown', { reason: 'quit' });
@@ -1333,6 +1333,7 @@ try {
     assert.equal(fallbackConcernHarness.visibleEntries.at(-1).customType, ADVISOR_FINDING_VISIBLE_ENTRY_TYPE);
     assert.deepEqual(fallbackConcernHarness.visibleEntries.at(-1).data, validateAdvisorFindingDetails(fallbackConcernHarness.visibleEntries.at(-1).data));
     assert.doesNotMatch(JSON.stringify(fallbackConcernHarness.visibleEntries.at(-1)), /delivered|guidance reached|followUp|nextTurn/);
+    process.env.AX_ADVISOR_SYNC_BACKLOG = 'off';
 
     delete process.env.AX_ENABLED;
     delete process.env.AX_ADVISOR_ENABLED;

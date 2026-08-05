@@ -6,6 +6,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 ## [Unreleased]
 
+## [0.1.51] - 2026-08-05
+
+### Fixed
+
+- Made the Node.js 24 release check deterministic by using the Advisor sync-backlog test control instead of a zero-delay timer before lifecycle fallback validation. Runtime behavior is unchanged.
+
 ## [0.1.50] - 2026-08-05
 
 ### Added
@@ -157,7 +163,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 - Added synchronous submission-hook checks, deferred embedding/model assertions, and a packed Pi TUI smoke requiring submitted-message rendering within 1.5 seconds.
 
-[Unreleased]: https://github.com/misunders2d/pi-experiences/compare/v0.1.50...HEAD
+[Unreleased]: https://github.com/misunders2d/pi-experiences/compare/v0.1.51...HEAD
+[0.1.51]: https://github.com/misunders2d/pi-experiences/compare/v0.1.50...v0.1.51
 [0.1.50]: https://github.com/misunders2d/pi-experiences/compare/v0.1.49...v0.1.50
 [0.1.49]: https://github.com/misunders2d/pi-experiences/compare/v0.1.48...v0.1.49
 [0.1.48]: https://github.com/misunders2d/pi-experiences/compare/v0.1.47...v0.1.48

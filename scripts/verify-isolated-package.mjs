@@ -377,12 +377,12 @@ async function safeCleanupTemporaryRoot({ afterValidation } = {}) {
 
 async function runSelfTests(root) {
   await mkdir(root, { recursive: true });
-  const metadata = { id: 'pi-experiences@0.1.50', name: 'pi-experiences', version: '0.1.50', filename: 'pi-experiences-0.1.50.tgz' };
-  assert.equal(validatePackResult(parseNpmPackJson(`lifecycle output\n${JSON.stringify([metadata])}`), 'pi-experiences', '0.1.50').filename, metadata.filename);
-  assert.equal(validatePackResult(parseNpmPackJson(`built output\n${JSON.stringify({ 'pi-experiences': metadata })}`), 'pi-experiences', '0.1.50').filename, metadata.filename);
-  assert.throws(() => validatePackResult([metadata, metadata], 'pi-experiences', '0.1.50'), /exactly one/);
-  assert.throws(() => validatePackResult([{ ...metadata, filename: '../escape.tgz' }], 'pi-experiences', '0.1.50'), /path|expected tarball/);
-  assert.throws(() => validatePackResult([{ ...metadata, version: '9.9.9' }], 'pi-experiences', '0.1.50'), /version/);
+  const metadata = { id: 'pi-experiences@0.1.51', name: 'pi-experiences', version: '0.1.51', filename: 'pi-experiences-0.1.51.tgz' };
+  assert.equal(validatePackResult(parseNpmPackJson(`lifecycle output\n${JSON.stringify([metadata])}`), 'pi-experiences', '0.1.51').filename, metadata.filename);
+  assert.equal(validatePackResult(parseNpmPackJson(`built output\n${JSON.stringify({ 'pi-experiences': metadata })}`), 'pi-experiences', '0.1.51').filename, metadata.filename);
+  assert.throws(() => validatePackResult([metadata, metadata], 'pi-experiences', '0.1.51'), /exactly one/);
+  assert.throws(() => validatePackResult([{ ...metadata, filename: '../escape.tgz' }], 'pi-experiences', '0.1.51'), /path|expected tarball/);
+  assert.throws(() => validatePackResult([{ ...metadata, version: '9.9.9' }], 'pi-experiences', '0.1.51'), /version/);
 
   const canonical = join(root, 'canonical-parent');
   const alias = join(root, 'symlink-parent');
