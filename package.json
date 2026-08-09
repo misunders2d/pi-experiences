@@ -1,6 +1,6 @@
 {
   "name": "pi-experiences",
-  "version": "0.1.49",
+  "version": "0.1.52",
   "description": "Human-reviewed habits for Pi and OMP coding agents—a local-first behavioral learning layer alongside skills and memory.",
   "license": "MIT",
   "type": "module",
@@ -71,7 +71,7 @@
     "skills": [
       "./skills"
     ],
-    "image": "https://raw.githubusercontent.com/misunders2d/pi-experiences/v0.1.49/docs/images/pi-experiences-habits.png"
+    "image": "https://raw.githubusercontent.com/misunders2d/pi-experiences/v0.1.52/docs/images/pi-experiences-habits.png"
   },
   "omp": {
     "extensions": [
@@ -80,7 +80,7 @@
     "skills": [
       "./skills"
     ],
-    "image": "https://raw.githubusercontent.com/misunders2d/pi-experiences/v0.1.49/docs/images/pi-experiences-habits.png"
+    "image": "https://raw.githubusercontent.com/misunders2d/pi-experiences/v0.1.52/docs/images/pi-experiences-habits.png"
   },
   "files": [
     "bin/",
