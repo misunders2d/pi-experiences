@@ -121,7 +121,7 @@ function nearDuplicate(a: any, b: any): boolean {
 
 export function listPendingReviewItems(db: any, input: { userId: string }) {
 	const userId = normalizeUserId(input.userId);
-	const pending = db.prepare("SELECT id, user_id, kind, status, payload_json, checksum, created_at, updated_at FROM pending_review WHERE user_id = ? AND status = 'open' ORDER BY created_at, id").all(userId)
+	const pending = db.prepare("SELECT id, user_id, kind, status, payload_json, checksum, created_at, updated_at FROM pending_review WHERE user_id = ? AND status = 'open' AND kind <> 'legacy_experience_migration' ORDER BY created_at, id").all(userId)
 		.map((row: any) => ({ type: "pending_review", ...row, payload: parseJson(row.payload_json) }));
 	const candidates = db.prepare("SELECT id, user_id, record_kind, status, condition, behavior, polarity, confidence_bp, data_json, checksum, created_at, updated_at FROM habits WHERE user_id = ? AND status = 'candidate' ORDER BY updated_at, id").all(userId)
 		.map((row: any) => ({ type: "candidate", ...row, payload: parseJson(row.data_json) }))
