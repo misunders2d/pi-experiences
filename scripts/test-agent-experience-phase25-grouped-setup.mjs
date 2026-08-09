@@ -9,6 +9,7 @@ import {
 
 function snapshot(overrides = {}) {
   const base = {
+    host: 'pi',
     config: {
       enabled: false,
       advisor_enabled: false,
@@ -102,6 +103,15 @@ assert.equal(buildSetupItems('guidance', snapshot({ config: { enabled: true, adv
 assert.equal(buildSetupItems('guidance', snapshot({ config: { enabled: true, advisor_enabled: false, selector_enabled: true } }))[2].currentValue, '[x] ON');
 assert.equal(buildSetupItems('guidance', snapshot({ config: { enabled: true, advisor_enabled: true, selector_enabled: false } }))[2].currentValue, '[ ] OFF', 'Advisor must not silently enable approved habits');
 assert.equal(buildSetupItems('guidance', snapshot({ config: { enabled: true, advisor_enabled: false, selector_enabled: true } }))[0].currentValue, '[ ] OFF', 'approved habits must not silently enable Advisor');
+
+const ompSnapshot = snapshot({ host: 'omp', config: { enabled: true, advisor_enabled: true, selector_enabled: true } });
+assert.deepEqual(
+  buildSetupItems('guidance', ompSnapshot).map((item) => item.label),
+  ['Use Experiences in OMP Advisor', 'Use approved habits', 'Habit-assessment model', 'Back'],
+  'OMP setup must use the native Advisor integration and omit a second Advisor model',
+);
+assert.match(buildSetupItems('home', ompSnapshot)[1].currentValue, /OMP Advisor context ON/);
+assert.equal(buildSetupItems('guidance', ompSnapshot)[0].currentValue, '[x] ON');
 
 const unavailable = snapshot({
   reviewState: 'Needs attention',

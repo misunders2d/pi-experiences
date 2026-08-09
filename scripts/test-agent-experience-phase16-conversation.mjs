@@ -75,7 +75,7 @@ agentExperienceExtension({
   registerFlag() {},
   registerShortcut() {},
 });
-assert.deepEqual([...tools.keys()].sort(), ['agent_experience_apply_review', 'agent_experience_confirm_habit', 'agent_experience_draft_habit', 'agent_experience_list_review']);
+assert.deepEqual([...tools.keys()].sort(), ['agent_experience_apply_experience_review', 'agent_experience_apply_review', 'agent_experience_confirm_habit', 'agent_experience_draft_habit', 'agent_experience_list_experiences', 'agent_experience_list_review']);
 for (const definition of tools.values()) {
   assert.equal(definition.executionMode, 'sequential');
   assert.ok(definition.parameters);

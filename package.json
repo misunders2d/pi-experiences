@@ -1,7 +1,7 @@
 {
   "name": "pi-experiences",
-  "version": "0.1.51",
-  "description": "Human-reviewed habits for Pi coding agents—a local-first behavioral learning layer alongside skills and memory.",
+  "version": "0.1.49",
+  "description": "Human-reviewed habits for Pi and OMP coding agents—a local-first behavioral learning layer alongside skills and memory.",
   "license": "MIT",
   "type": "module",
   "engines": {
@@ -40,8 +40,9 @@
     "experience-consolidate": "dist/experience-consolidate.mjs"
   },
   "scripts": {
-    "check": "npm run check:agent-experience && npm run check:source && npm run check:cli && npm run check:generated",
-    "check:agent-experience": "node --experimental-strip-types ./scripts/test-agent-experience-phase1.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase2-storage.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase3-capture.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase4a-consolidation.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase4b-model-output.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase5-review.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase6-selector.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase7a-selector-adapter.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase7b8.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase9-setup-analyze.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase10-semantic-dedupe.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase11-storage-hardening.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase12-observations.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase13-local-embedding.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase14-semantic-atomicity.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase15-lock-recovery.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase16-conversation.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase17-scheduled-analyze.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase18-break-in.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase19-vector-selector.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase20-context-selector.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase21-consolidation-identity.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase22-provider-guidance.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase23-advisor-core.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase24-advisor-habits-learning.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase25-grouped-setup.mjs",
+    "check": "npm run check:agent-experience && npm run check:host-adapters && npm run check:source && npm run check:cli && npm run check:generated",
+    "check:agent-experience": "node --experimental-strip-types ./scripts/test-agent-experience-phase1.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase2-storage.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase3-capture.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase4a-consolidation.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase4b-model-output.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase5-review.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase6-selector.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase7a-selector-adapter.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase7b8.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase9-setup-analyze.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase10-semantic-dedupe.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase11-storage-hardening.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase12-observations.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase13-local-embedding.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase14-semantic-atomicity.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase15-lock-recovery.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase16-conversation.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase17-scheduled-analyze.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase18-break-in.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase19-vector-selector.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase20-context-selector.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase21-consolidation-identity.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase22-provider-guidance.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase23-advisor-core.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase24-advisor-habits-learning.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase25-grouped-setup.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase26-experience-taxonomy.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase27-typed-learning.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase28-experience-retrieval.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase29-experience-review.mjs",
+    "check:host-adapters": "node --experimental-strip-types ./scripts/test-agent-experience-phase30-host-adapters.mjs && node --experimental-strip-types ./scripts/test-agent-experience-phase31-omp-advisor-retention.mjs",
     "check:source": "node --experimental-strip-types ./scripts/check-agent-experience-source.mjs",
     "build": "node ./scripts/build-cli.mjs",
     "prepack": "npm run build",
@@ -70,7 +71,16 @@
     "skills": [
       "./skills"
     ],
-    "image": "https://raw.githubusercontent.com/misunders2d/pi-experiences/v0.1.51/docs/images/pi-experiences-habits.png"
+    "image": "https://raw.githubusercontent.com/misunders2d/pi-experiences/v0.1.49/docs/images/pi-experiences-habits.png"
+  },
+  "omp": {
+    "extensions": [
+      "./extensions"
+    ],
+    "skills": [
+      "./skills"
+    ],
+    "image": "https://raw.githubusercontent.com/misunders2d/pi-experiences/v0.1.49/docs/images/pi-experiences-habits.png"
   },
   "files": [
     "bin/",

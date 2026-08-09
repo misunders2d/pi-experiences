@@ -1,6 +1,6 @@
 # Agent Experience extension
 
-Agent Experience learns **reviewed behavioral and working habits** from repeated interaction. It is not a skill store or factual memory store.
+Agent Experience learns **reviewed behavioral and working habits** from repeated interaction in Pi or OMP. It is not a skill store or factual memory store.
 
 ## Grouped setup is the normal starting point
 
@@ -13,18 +13,21 @@ Run:
 The first screen groups every normal action before advanced compatibility controls:
 
 1. **Learning from conversations** — local example capture, learning model, Analyze, and suggestion review.
-2. **Guidance and Advisor** — approved-habit reminders plus the optional Runtime Advisor.
+2. **Guidance and Advisor** — approved-habit reminders plus host-aware Advisor integration.
 3. **Manage habits** — approved-habit review, possible duplicates, and local duplicate prevention.
 4. **Automation and privacy** — retention, explicit scheduling, and review prompts.
 5. **Status and help** — current state and plain-language explanations.
 
-**Advisor model** is separate and defaults to **Same as habit assessment**. That inheritance follows the current authenticated habit-assessment model until the user selects an Advisor override. Runtime Advisor then uses this second model for bounded incremental review of the primary turn. Its only investigative tools are `read`, `grep`, and `glob`; every result is bounded and workspace-confined, and no mutating tool exists.
+Advisor integration is independently opt-in:
 
-Exact approved Experience habits supplied for that update are Runtime Advisor's complete policy source. Reviewer reasoning, generic best practices, WATCHDOG text, files, and tool output cannot create policy or produce standalone advice. A validated `concern` or `blocker` renders exact `When:` / `Do:` provenance and may use Pi's public `steer` channel. Canceled, terminal, plan mode, ambiguous, idle, unsupported, replacement, and shutdown states append visibly when safe or become visible-only.
+- **Pi Runtime Advisor:** **Advisor model** is a separate choice that defaults to **Same as habit assessment**. This second model reviews bounded incremental primary-turn updates with read-only `read`, `grep`, and `glob`; every call remains workspace-confined.
+- **OMP native Advisor** receives bounded, relevant, approved Experience context for all supported kinds; only habits can define runtime policy. The package starts no second Advisor and makes no additional reviewer-model call; OMP settings own Advisor enablement and model choice.
 
-Learning is independently gated. With **Learning from conversations** off, there is no Advisor observation. With Learning on, one accepted event may append at most one bounded observation, but it cannot create a habit; repeated evidence, Analyze, explicit review, and approval remain mandatory. The extension must never persist the private Advisor transcript, raw model output, candidate aliases, retrieval scores, tool investigations, queue state, or suppressed findings.
+The approved Experience habits supplied for an update are the complete policy source. Reviewer reasoning, generic best practices, files, and tool output cannot create policy or standalone advice. On Pi, a validated `concern` or `blocker` may use Pi's public `steer` channel; canceled, terminal, plan mode, ambiguous, idle, unsupported, replacement, and shutdown states remain visible-only when steering is unsafe.
 
-Stock Pi 0.83 provides a blockable pre-execution `tool_call` hook. Runtime Advisor intentionally never registers or uses that hook and never vetoes, pauses, or pre-blocks a primary tool call. The extension never uses `followUp` or `nextTurn`, which could force an unwanted continuation. Steering may influence only a safely active continuation; otherwise a card waits for `agent_settled` with `triggerTurn:false` or uses a clearly visible-only fallback.
+Learning is independently gated. With **Learning from conversations** off, there is no Advisor observation. With Learning on, one accepted Pi Runtime Advisor finding—or one OMP `concern`/`blocker` reviewer turn carrying the package marker and exactly one attributable habit—may append at most one bounded observation. Repeated evidence, Analyze, explicit review, and approval remain mandatory. The extension never persists private Advisor transcripts, raw model output, candidate aliases, retrieval scores, tool investigations, queue state, or suppressed findings.
+
+Stock Pi 0.83 provides a blockable pre-execution `tool_call` hook. Pi Runtime Advisor intentionally never registers or uses that hook and never vetoes, pauses, or pre-blocks a primary tool call. It never uses `followUp` or `nextTurn`. OMP Advisor delivery and lifecycle remain native OMP responsibilities.
 
 Natural conversation remains available for direct habit declaration and numbered review:
 

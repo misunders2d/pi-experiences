@@ -21,7 +21,7 @@ const changelog=await readFile(join(root,'CHANGELOG.md'),'utf8');
 assert.match(changelog,/^# Changelog$/m,'changelog heading missing');
 assert.match(changelog,/^## \[Unreleased\]$/m,'changelog must preserve an Unreleased section');
 assert.match(changelog,new RegExp(`^## \\[${packageJson.version.replaceAll('.', '\\.')}\\]`, 'm'),'changelog must contain the current published package version');
-assert.equal(packageJson.description,'Human-reviewed habits for Pi coding agents—a local-first behavioral learning layer alongside skills and memory.','package description must preserve the discoverable habits category');
+assert.equal(packageJson.description,'Human-reviewed habits for Pi and OMP coding agents—a local-first behavioral learning layer alongside skills and memory.','package description must preserve the discoverable dual-host habits category');
 assert.equal(packageJson.dependencies?.typebox,'1.1.38','conversational tool schemas must declare their TypeBox runtime directly');
 assert.equal(packageJson.peerDependencies?.['@earendil-works/pi-coding-agent'],'>=0.83.0','agent_settled requires pi-coding-agent >=0.83.0');
 assert.equal(packageJson.devDependencies?.['@earendil-works/pi-coding-agent'],'^0.83.0','development must test the first supported public agent_settled API line');
@@ -166,6 +166,9 @@ for(const keyword of ['pi-package','pi-coding-agent','coding-agent','agent-habit
   assert.ok(packageJson.keywords.includes(keyword),`package discovery keyword missing: ${keyword}`);
 }
 assert.equal(packageJson.pi?.image,`https://raw.githubusercontent.com/misunders2d/pi-experiences/v${packageJson.version}/docs/images/pi-experiences-habits.png`,'Pi gallery image must point at the immutable matching-release preview asset');
+assert.deepEqual(packageJson.omp?.extensions, packageJson.pi?.extensions, 'OMP must load the same extension entry points as Pi');
+assert.deepEqual(packageJson.omp?.skills, packageJson.pi?.skills, 'OMP must load the same skills as Pi');
+assert.equal(packageJson.omp?.image, packageJson.pi?.image, 'OMP and Pi galleries must use the same immutable preview asset');
 assert.equal(packageJson.scripts?.install,undefined);
 assert.equal(packageJson.scripts?.postinstall,undefined);
 assert.equal(packageJson.scripts?.prepare,undefined,'package installation must never download local model assets');
@@ -182,7 +185,7 @@ const technicalCloseIndex=readme.indexOf('</details>',technicalSummaryIndex);
 assert.notEqual(technicalOpenIndex,-1,'agent/maintainer technical contract must be inside <details>');
 assert.notEqual(technicalCloseIndex,-1,'agent/maintainer technical contract must close its <details> block');
 assert.equal(readme.slice(technicalOpenIndex,technicalSummaryIndex).trim(),'<details>','agent/maintainer technical contract must be collapsed by default');
-for(const marker of ['# Pi Experiences — habits for a coding agent that learns how you work','## The missing layer in AI agent improvement','## Why not put every preference in `profile.md`?','## Real-life habits Pi can learn','## How the review-first learning loop works','## Safety model','## Normal workflow','## See when a habit steers an answer','## Local duplicate prevention','## Privacy in plain language','## Frequently asked questions']){
+for(const marker of ['# Pi Experiences — habits for Pi and OMP coding agents','## The missing layer in AI agent improvement','## Why not put every preference in `profile.md`?','## Real-life habits Pi can learn','## How the review-first learning loop works','## Safety model','## Normal workflow','## See when a habit steers an answer','## Local duplicate prevention','## Privacy in plain language','## Frequently asked questions']){
   const index=readme.indexOf(marker);
   assert.ok(index>=0&&index<technicalOpenIndex,`README human-first product section missing before technical contract: ${marker}`);
 }
@@ -208,6 +211,8 @@ const experienceSkill=await readFile(join(root,'skills/agent-experience/SKILL.md
 const runtimeAdvisorReference=await readFile(join(root,'skills/agent-experience/references/runtime-advisor.md'),'utf8');
 const experienceSkillWithAdvisorReference=`${experienceSkill}\n${runtimeAdvisorReference}`;
 assert.match(experienceSkill,/references\/runtime-advisor\.md/, 'public skill must conditionally route detailed Runtime Advisor work to its reference');
+assert.match(experienceSkill,/Pi and OMP|Pi\/OMP/i, 'public skill must trigger for both Pi and OMP Experience operation');
+assert.match(experienceSkillWithAdvisorReference,/OMP[\s\S]*native Advisor[\s\S]*no second Advisor/i, 'skill guidance must distinguish OMP native Advisor context from Pi Runtime Advisor');
 const experienceEvals=JSON.parse(await readFile(join(root,'skills/agent-experience/evals/evals.json'),'utf8'));
 assert.deepEqual(Object.keys(experienceEvals).sort(),['evals','skill_name'],'skill eval corpus must use the repository skill-creator schema');
 assert.equal(experienceEvals.skill_name,'agent-experience','skill eval corpus must target agent-experience');
@@ -236,6 +241,7 @@ for(const [pattern,message] of [
   [/later user (?:message|turn)|later, explicit/i,'two-turn habit approval defense'],
   [/private Advisor transcript|raw model output/i,'Advisor privacy defense'],
 ])assert.match(evalCorpus,pattern,`skill eval corpus must cover ${message}`);
+assert.match(evalCorpus,/OMP[\s\S]*native Advisor|native OMP Advisor/i,'skill eval corpus must cover OMP native Advisor integration');
 for(const [name,text] of [['extension README',extensionReadme],['public skill',experienceSkill]]){
   assert.match(text,/condition and behavior.*two independent inputs/is,`${name} must preserve separate-field privacy contract`);
   assert.match(text,/candidate-to-candidate/is,`${name} must preserve candidate-pair exclusion`);

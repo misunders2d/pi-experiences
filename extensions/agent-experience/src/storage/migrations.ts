@@ -1,3 +1,6 @@
+import { computeExperienceChecksum, experienceApprovalIdentity, validateExperienceRecord } from "../experience/schema.ts";
+import type { ExperienceRecordV1 } from "../experience/types.ts";
+import { normalizeSemanticText } from "../semantic/core.ts";
 import { canonicalJson, checksumJson } from "./checksum.ts";
 import { redactJson } from "./redaction.ts";
 import { STORAGE_SCHEMA_SQL, STORAGE_SCHEMA_VERSION, STORAGE_STATUS_VALUES, STORAGE_TYPED_FIELDS } from "./schema.ts";
@@ -155,6 +158,127 @@ function migrateUserTable(db: any, table: typeof USER_TABLES[number], now: strin
 	db.exec(`ALTER TABLE ${tmp} RENAME TO ${table}`);
 }
 
+function quarantineHabitMigration(db: any, row: any, reason: string, now: string): void {
+	const payload = {
+		legacyHabitId: String(row.id),
+		legacyChecksum: String(row.checksum ?? ""),
+		reason,
+	};
+	const checksum = checksumJson(payload);
+	db.prepare(`INSERT OR IGNORE INTO pending_review
+		(id, user_id, kind, status, payload_json, checksum, created_at, updated_at)
+		VALUES (?, ?, 'legacy_experience_migration', 'open', ?, ?, ?, ?)`).run(
+		`legacy-experience-migration:${row.user_id}:${row.id}`,
+		row.user_id,
+		canonicalJson(payload),
+		checksum,
+		now,
+		now,
+	);
+}
+
+function migrateApprovedHabitsToExperiences(db: any, now: string): void {
+	if (!tableExists(db, "habits")) return;
+	const rows = db.prepare("SELECT * FROM habits ORDER BY user_id, id").all() as any[];
+	const insert = db.prepare(`INSERT INTO experiences (
+		id, user_id, kind, schema_version, status, scope_kind, scope_key, authority,
+		applicability, content, rationale, confidence_bp, valid_from, expires_at,
+		last_confirmed_at, data_json, checksum, created_at, updated_at
+	) VALUES (?, ?, ?, 1, ?, 'user', NULL, 'reviewed_inference', ?, ?, NULL, ?, ?, NULL, ?, ?, ?, ?, ?)`);
+	for (const row of rows) {
+		try {
+			if (row.checksum !== storageChecksum("habits", row)) {
+				quarantineHabitMigration(db, row, "legacy_checksum_mismatch", now);
+				continue;
+			}
+			const legacyData = parseOldData(row);
+			const status = row.status === "active" ? "active" : row.status === "candidate" ? "candidate" : "disabled";
+			const createdAt = String(row.created_at || now);
+			const updatedAt = String(row.updated_at || createdAt);
+			const draft: Omit<ExperienceRecordV1, "checksum"> = {
+				schemaVersion: 1,
+				id: String(row.id),
+				userId: String(row.user_id),
+				kind: "habit",
+				scope: { kind: "user" },
+				authority: "reviewed_inference",
+				status,
+				applicability: String(row.condition || ""),
+				content: String(row.behavior || ""),
+				exceptions: [],
+				confidenceBp: Number(row.confidence_bp),
+				validFrom: createdAt,
+				lastConfirmedAt: updatedAt,
+				supersedes: [],
+				conflictsWith: [],
+				provenance: [{
+					source: "migration",
+					host: "migration",
+					evidenceId: `legacy-habit:${row.id}:${row.checksum}`,
+					observedAt: updatedAt,
+				}],
+			};
+			const record = validateExperienceRecord({ ...draft, checksum: computeExperienceChecksum(draft) });
+			const legacyApprovalIdentity = legacyData.approved_identity;
+			const approvalMatches = !!legacyApprovalIdentity
+				&& typeof legacyApprovalIdentity === "object"
+				&& !Array.isArray(legacyApprovalIdentity)
+				&& "candidate_id" in legacyApprovalIdentity
+				&& legacyApprovalIdentity.candidate_id === record.id
+				&& "condition" in legacyApprovalIdentity
+				&& legacyApprovalIdentity.condition === normalizeSemanticText(record.applicability)
+				&& "behavior" in legacyApprovalIdentity
+				&& legacyApprovalIdentity.behavior === normalizeSemanticText(record.content)
+				&& "polarity" in legacyApprovalIdentity
+				&& Number(legacyApprovalIdentity.polarity) === Number(row.polarity);
+			if (status === "active" && !approvalMatches) {
+				quarantineHabitMigration(db, row, "legacy_approval_identity_mismatch", now);
+				continue;
+			}
+			const data: Record<string, unknown> = {
+				exceptions: record.exceptions,
+				provenance: record.provenance,
+				migration: {
+					legacyTable: "habits",
+					legacyChecksum: row.checksum,
+					...(approvalMatches ? { legacyApprovalIdentity } : {}),
+				},
+			};
+			if (status === "active") {
+				data.approval = {
+					id: `migration:${row.id}`,
+					identity: experienceApprovalIdentity(record),
+					reviewedChecksum: row.checksum,
+					approvedAt: updatedAt,
+					source: "migration",
+				};
+			}
+			const existing = db.prepare("SELECT checksum FROM experiences WHERE user_id = ? AND id = ?").get(record.userId, record.id) as { checksum: string } | undefined;
+			if (existing) {
+				if (existing.checksum !== record.checksum) throw new Error(`Conflicting migrated experience: ${record.id}`);
+				continue;
+			}
+			insert.run(
+				record.id,
+				record.userId,
+				record.kind,
+				record.status,
+				record.applicability,
+				record.content,
+				record.confidenceBp,
+				record.validFrom,
+				record.lastConfirmedAt,
+				canonicalJson(data),
+				record.checksum,
+				createdAt,
+				updatedAt,
+			);
+		} catch (error: any) {
+			quarantineHabitMigration(db, row, `legacy_migration_invalid:${String(error?.message || error).slice(0, 200)}`, now);
+		}
+	}
+}
+
 export function readStorageSchemaVersion(db: any): number {
 	const version = Number(db.prepare("PRAGMA user_version").get()?.user_version ?? 0);
 	if (!Number.isInteger(version) || version < 0) throw new Error("Invalid Agent Experience storage schema version");
@@ -175,6 +299,7 @@ export function applyStorageMigrations(db: any, now = new Date().toISOString()):
 		db.exec("CREATE TABLE IF NOT EXISTS migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)");
 		for (const table of USER_TABLES) migrateUserTable(db, table, now);
 		db.exec(STORAGE_SCHEMA_SQL);
+		if (beforeVersion < 7) migrateApprovedHabitsToExperiences(db, now);
 		const existing = db.prepare("SELECT version FROM migrations WHERE version = ?").get(STORAGE_SCHEMA_VERSION);
 		if (!existing) db.prepare("INSERT INTO migrations (version, applied_at) VALUES (?, ?)").run(STORAGE_SCHEMA_VERSION, now);
 		db.exec(`PRAGMA user_version = ${STORAGE_SCHEMA_VERSION}`);

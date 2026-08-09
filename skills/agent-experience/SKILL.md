@@ -1,13 +1,12 @@
 ---
 name: agent-experience
 description: >-
-  Use when explaining, configuring, troubleshooting, or safely operating the Pi
-  Experiences / Agent Experience extension: /experience setup, Runtime Advisor,
-  natural habit declaration and numbered conversational review, local capture,
-  bounded Analyze, suggestion review, approved-habit controls, local duplicate
-  prevention, short source retention, approved-habit reminders, privacy, law,
-  and the distinction between skills, memory, and experience. Do not use for
-  unrelated Pi extension development.
+  Use when explaining, configuring, troubleshooting, or safely operating Pi
+  Experiences / Agent Experience in Pi or OMP, including /experience setup,
+  native OMP Advisor context, Pi Runtime Advisor, habit declaration and review,
+  capture, Analyze, approvals, duplicate prevention, reminders, privacy, or the
+  skill-memory-experience boundary. Do not use for unrelated extension work or
+  generic advisors.
 ---
 
 # Agent Experience
@@ -24,9 +23,14 @@ Experience may learn durable work preferences and recurring task/tool categories
 
 For configuration or discovery, start with `/experience setup`. Read its groups in order: **Learning from conversations**, **Guidance and Advisor**, **Manage habits**, **Automation and privacy**, then **Status and help**. Setup must remain sufficient by itself; typed subcommands and internal IDs/settings are advanced maintainer controls, never normal-user prerequisites.
 
-Runtime Advisor is independently opt-in. Exact approved `When:` / `Do:` habits are its complete policy source; reviewer reasoning never becomes standalone advice, and direct user instructions/law still win. It must remain bounded, read-only, visible, non-blocking, non-mutating, non-forcing, and private. Learning still requires repeated evidence, Analyze, review, and approval.
+Advisor integration is independently opt-in and host-aware:
 
-For Runtime Advisor configuration, troubleshooting, audits, or changes, first read [`references/runtime-advisor.md`](references/runtime-advisor.md). It owns model inheritance, confined tools, delivery, Pi-hook, observation, privacy, and fallback detail.
+- **Pi:** Runtime Advisor is a second, separately configured model that reviews bounded incremental updates.
+- **OMP:** Agent Experience adds relevant approved Experience context to OMP's existing native Advisor. It creates no second Advisor and no additional reviewer-model call; OMP settings own Advisor enablement and model choice.
+
+Exact approved `When:` / `Do:` entries remain the only Experience-provided authority; reviewer reasoning never becomes standalone policy, and direct user instructions/law still win. The integration must remain bounded, read-only, visible, non-blocking, non-mutating, non-forcing, and private. Learning still requires capture, Analyze, review, and approval.
+
+For Advisor integration configuration, troubleshooting, audits, or changes, first read [`references/runtime-advisor.md`](references/runtime-advisor.md). It owns Pi/OMP host behavior, model ownership, confined context/tools, delivery, observation, privacy, and fallback detail.
 
 Use natural conversation when the user directly discusses or declares a habit:
 
@@ -38,7 +42,7 @@ Use natural conversation when the user directly discusses or declares a habit:
 
 For suggestions or possible duplicates, call `agent_experience_list_review`, discuss its numbered plain-language items, then call `agent_experience_apply_review` only after the user explicitly names the number and decision in a later message. Never expose or request IDs, checksums, source refs, scores, thresholds, providers, raw examples, private paths, audit fields, or capability tokens.
 
-If the panel does not render, tell the user to restart Pi so the latest extension loads, then run `/experience setup` again.
+If the panel does not render, restart the current Pi or OMP host so the latest extension loads, then run `/experience setup` again.
 
 ## Documentation and discovery contract
 
@@ -68,13 +72,13 @@ A direct declaration bypasses only the repeated-observation threshold. Law, conf
 
 1. Open `/experience setup`.
 2. Turn on **Save chat examples locally**.
-3. Use Pi normally until behavior repeats.
+3. Use Pi or OMP normally until behavior repeats.
 4. Select **Choose model for habit learning**.
 5. Choose **Analyze all waiting examples now**, or run `/experience analyze`.
 6. Open **Review suggested habits** and explicitly Approve or Reject.
 7. Open **Review approved habits** to inspect, disable, re-enable, archive, or recheck a waiting approval.
 8. Optionally prepare **Prevent duplicate habits**.
-9. Optionally select **Choose model for habit assessment** to choose the authenticated Pi model used for reply-time applicability checks.
+9. Optionally select **Choose model for habit assessment** to choose the authenticated host model used for reply-time applicability checks.
 10. Optionally enable **Use approved habits before replies**.
 11. Choose 7/14/30-day source-example retention as needed.
 

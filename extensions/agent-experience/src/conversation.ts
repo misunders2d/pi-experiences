@@ -26,7 +26,8 @@ export interface SanitizedDeclarationResult {
 
 export type ConversationalReviewMapping =
 	| { kind: "candidate"; type: "candidate" | "pending_review"; id: string; checksum: string }
-	| { kind: "duplicate"; id: string; checksum: string; expectedHabitChecksums: Record<string, string> };
+	| { kind: "duplicate"; id: string; checksum: string; expectedHabitChecksums: Record<string, string> }
+	| { kind: "experience"; type: string; id: string; checksum: string; status: string; conflicts: Array<{ id: string; checksum: string }> };
 
 interface ReviewSnapshot {
 	items: ConversationalReviewMapping[];

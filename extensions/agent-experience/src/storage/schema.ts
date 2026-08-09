@@ -1,4 +1,4 @@
-export const STORAGE_SCHEMA_VERSION = 6;
+export const STORAGE_SCHEMA_VERSION = 7;
 
 export const STORAGE_REQUIRED_TABLES = [
 	"migrations",
@@ -11,6 +11,8 @@ export const STORAGE_REQUIRED_TABLES = [
 	"model_output_quarantine",
 	"pending_review",
 	"experience_review_audit",
+	"experiences",
+	"experience_relations",
 	"habit_embeddings",
 	"habit_duplicates",
 	"habit_duplicate_audit",
@@ -28,6 +30,10 @@ export const STORAGE_REQUIRED_INDEXES = [
 	"idx_model_output_quarantine_user_generation",
 	"idx_pending_review_user_status",
 	"idx_experience_review_audit_user_target",
+	"idx_experiences_user_status_kind",
+	"idx_experiences_user_scope_status",
+	"idx_experiences_user_updated",
+	"idx_experience_relations_user_target",
 	"idx_habit_embeddings_user_habit",
 	"idx_habit_embeddings_user_model",
 	"idx_habit_duplicates_user_decision",
@@ -200,6 +206,48 @@ CREATE TABLE IF NOT EXISTS experience_review_audit (
 );
 
 CREATE INDEX IF NOT EXISTS idx_experience_review_audit_user_target ON experience_review_audit(user_id, target_kind, target_id);
+
+CREATE TABLE IF NOT EXISTS experiences (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK(kind IN ('habit','preference','constraint','fact','decision','episode','goal')),
+  schema_version INTEGER NOT NULL CHECK(schema_version = 1),
+  status TEXT NOT NULL CHECK(status IN ('candidate','active','superseded','expired','disabled')),
+  scope_kind TEXT NOT NULL CHECK(scope_kind IN ('user','runtime','workspace','repository','project')),
+  scope_key TEXT,
+  authority TEXT NOT NULL CHECK(authority IN ('explicit_user','reviewed_inference','observed_outcome')),
+  applicability TEXT NOT NULL,
+  content TEXT NOT NULL,
+  rationale TEXT,
+  confidence_bp INTEGER NOT NULL CHECK(confidence_bp BETWEEN 0 AND 10000),
+  valid_from TEXT NOT NULL,
+  expires_at TEXT,
+  last_confirmed_at TEXT NOT NULL,
+  data_json TEXT NOT NULL,
+  checksum TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(user_id, id),
+  CHECK((scope_kind = 'user' AND scope_key IS NULL) OR (scope_kind <> 'user' AND scope_key IS NOT NULL))
+);
+
+CREATE INDEX IF NOT EXISTS idx_experiences_user_status_kind ON experiences(user_id, status, kind);
+CREATE INDEX IF NOT EXISTS idx_experiences_user_scope_status ON experiences(user_id, scope_kind, scope_key, status);
+CREATE INDEX IF NOT EXISTS idx_experiences_user_updated ON experiences(user_id, updated_at);
+
+CREATE TABLE IF NOT EXISTS experience_relations (
+  user_id TEXT NOT NULL,
+  source_id TEXT NOT NULL,
+  relation TEXT NOT NULL CHECK(relation IN ('supersedes','conflicts_with')),
+  target_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (user_id, source_id, relation, target_id),
+  FOREIGN KEY (user_id, source_id) REFERENCES experiences(user_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id, target_id) REFERENCES experiences(user_id, id) ON DELETE CASCADE,
+  CHECK(source_id <> target_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_experience_relations_user_target ON experience_relations(user_id, target_id, relation);
 
 CREATE TABLE IF NOT EXISTS habit_embeddings (
   user_id TEXT NOT NULL,

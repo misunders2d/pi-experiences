@@ -82,6 +82,8 @@ import { AdvisorRuntime, type AdvisorRuntimeHost } from "./src/advisor/runtime.t
 import { createPiAdvisorAgentAdapter, type AdvisorAgentAdapter } from "./src/advisor/model.ts";
 import { extractAdvisorTurnDelta } from "./src/advisor/transcript.ts";
 import { retrieveActiveAdvisorHabitCandidates, retrieveAdvisorHabitCandidates, revalidateAdvisorHabitFinding, type AdvisorHabitRetrievalCandidate } from "./src/advisor/habits.ts";
+import { prepareExperienceVectors, type ExperienceRetrievalCandidate } from "./src/experience/retrieval.ts";
+import { boundedOmpAdvisorQuery, buildOmpExperienceAdvisorContext, retainOmpAdvisorTranscriptFindings } from "./src/host/omp.ts";
 import {
 	ADVISOR_FINDING_MESSAGE_TYPE,
 	ADVISOR_FINDING_VISIBLE_ENTRY_TYPE,
@@ -108,6 +110,7 @@ let advisorTransitionValidationGateForTest: (() => Promise<void>) | undefined;
 let advisorTransitionSettlementGateForTest: (() => Promise<void>) | undefined;
 const selectorDiagnosticsShown = new Set<string>();
 const captureDiagnosticsShown = new Set<string>();
+const ompAdvisorAttributions = new Map<string, Map<string, ExperienceRetrievalCandidate>>();
 
 
 let consolidationModelAdapter: ConsolidationModelAdapter | undefined;
@@ -932,7 +935,7 @@ async function reviewSummary(root: string, userId: string): Promise<{ ledger: bo
 
 type SetupRuntimeStatus = Pick<SetupSnapshot, "advisorRuntime">;
 
-async function buildSetupSnapshot(runtimeStatus: SetupRuntimeStatus = {}): Promise<SetupSnapshot> {
+async function buildSetupSnapshot(runtimeStatus: SetupRuntimeStatus = {}, host: "pi" | "omp" = "pi"): Promise<SetupSnapshot> {
 	const paths = getAgentExperiencePaths();
 	const [{ config }, observations, summary] = await Promise.all([
 		readAgentExperienceConfig(paths),
@@ -948,6 +951,7 @@ async function buildSetupSnapshot(runtimeStatus: SetupRuntimeStatus = {}): Promi
 		}
 	}
 	return {
+		host,
 		config,
 		counts: {
 			observations: observations || 0,
@@ -1173,7 +1177,7 @@ async function handleSetupSemanticFiles(ctx: ExtensionCommandContext) {
 	const paths = getAgentExperiencePaths();
 	const { config } = await readAgentExperienceConfig(paths);
 	const filesExist = existsSync(resolvePrivatePath(paths.root, "models"));
-	const required = config.selector_enabled || config.embedding_enabled;
+	const required = config.selector_enabled || config.embedding_enabled || config.advisor_enabled;
 	const choices = [
 		"Explain local semantic files (no changes)",
 		...(filesExist ? ["Verify local semantic files"] : []),
@@ -1528,12 +1532,54 @@ async function handleSetupAdvisorModel(ctx: ExtensionCommandContext) {
 	return notify(ctx, [`Advisor model: ${selected}`, `Config file: ${path}`, `Runtime Advisor: unchanged (${config.advisor_enabled ? "ON" : "OFF"}).`].join("\n"), "info");
 }
 
-async function handleSetupAdvisorToggle(ctx: ExtensionCommandContext, enable: boolean) {
+async function handleSetupAdvisorToggle(ctx: ExtensionCommandContext, enable: boolean, host: "pi" | "omp" = "pi") {
 	const paths = getAgentExperiencePaths();
 	const { config } = await readAgentExperienceConfig(paths);
+	const label = host === "omp" ? "OMP Advisor context" : "Runtime Advisor";
 	if (!enable) {
 		const { path } = await setAgentExperienceAdvisorEnabled(false, paths);
-		return notify(ctx, [`Runtime Advisor: OFF`, `Config file: ${path}`, `Use approved habits: unchanged (${config.selector_enabled ? "ON" : "OFF"}).`].join("\n"), "info");
+		return notify(ctx, [`${label}: OFF`, `Config file: ${path}`, `Use approved habits: unchanged (${config.selector_enabled ? "ON" : "OFF"}).`].join("\n"), "info");
+	}
+	if (host === "omp") {
+		const confirmation = await chooseActionInPanel(ctx, "Confirm OMP Advisor context", [
+			"Agent Experience will supply bounded, approved Experiences to OMP's existing native Advisor.",
+			"This creates no second Advisor and no additional reviewer-model call.",
+			"OMP settings continue to control whether Advisor runs and which model it uses.",
+			"Private local semantic files are prepared once so relevant approved entries can be retrieved.",
+			"Only human-approved entries are eligible; private identifiers and raw evidence are omitted.",
+		].join("\n"), ["Back/cancel (no changes)", "Turn OMP Advisor context ON"]);
+		if (confirmation !== "Turn OMP Advisor context ON") return notify(ctx, "OMP Advisor context remains OFF. No setting changed.", "info");
+		const preparation = await runSetupProgress(ctx, "Preparing OMP Advisor context", async (signal, update) => {
+			await ensureLocalEmbeddingAssets(paths.root, {
+				signal,
+				onProgress: (progress) => {
+					const labels = { checking: "Checking private local files", downloading: "Downloading private local files", verifying: "Verifying downloaded files", ready: "Local files ready", removing: "Removing local files" } as const;
+					update({ label: labels[progress.phase], completed: progress.downloaded_bytes, total: progress.total_bytes, unit: "bytes" });
+				},
+			});
+			if (!(await fileExists(resolvePrivatePath(paths.root, "ledger.sqlite")))) return;
+			const storage = await openExistingExperienceStorage(paths.root, { userId: getConfiguredUserId() });
+			try {
+				const embeddingAdapter = await selectorRuntimeEmbeddingAdapter(storage.root);
+				await prepareExperienceVectors(storage.db, {
+					userId: storage.userId,
+					now: new Date().toISOString(),
+					config: { ...config, enabled: true, advisor_enabled: true },
+					embeddingAdapter,
+					signal,
+				});
+			} finally {
+				storage.db.close();
+			}
+		});
+		if (!preparation.ok) {
+			return notify(ctx, preparation.cancelled
+				? "OMP Advisor context setup cancelled safely. The setting remains OFF."
+				: `OMP Advisor context remains OFF because preparation failed safely: ${redactText(String((preparation.error as any)?.message || preparation.error)).slice(0, 300)}`,
+			preparation.cancelled ? "info" : "warn");
+		}
+		const { path } = await setAgentExperienceAdvisorEnabled(true, paths);
+		return notify(ctx, ["OMP Advisor context: ON", "Native Advisor enablement and model remain controlled by OMP settings.", `Config file: ${path}`, `Use approved habits: unchanged (${config.selector_enabled ? "ON" : "OFF"}).`].join("\n"), "info");
 	}
 	const model = effectiveAdvisorModel(config);
 	const auth = await configuredModelAuthenticated(ctx, model);
@@ -2502,6 +2548,7 @@ async function handleSetup(
 	args: string[] = [],
 	runtimeStatus: () => SetupRuntimeStatus = () => ({}),
 	onAdvisorConfigMutation?: (reason: string) => Promise<void>,
+	host: "pi" | "omp" = "pi",
 ) {
 	const refreshAdvisorIfChanged = async (beforeSignature: string | undefined, reason: string): Promise<void> => {
 		if (!onAdvisorConfigMutation) return;
@@ -2531,7 +2578,7 @@ async function handleSetup(
 	}
 	let view: SetupView = "home";
 	while (true) {
-		const snapshot = await buildSetupSnapshot(runtimeStatus());
+		const snapshot = await buildSetupSnapshot(runtimeStatus(), host);
 		let action: SetupAction | undefined;
 		try {
 			action = await showSetupView(ctx, view, snapshot);
@@ -2570,8 +2617,8 @@ async function handleSetup(
 		} else if (action === "learningModel") await handleSetupModel(ctx);
 		else if (action === "analyze") { await handleAnalyzeNow(ctx); return; }
 		else if (action === "review") await handleReviewSetup(ctx);
-		else if (action === "advisor") await handleSetupAdvisorToggle(ctx, !(config.enabled && config.advisor_enabled));
-		else if (action === "advisorModel") await handleSetupAdvisorModel(ctx);
+		else if (action === "advisor") await handleSetupAdvisorToggle(ctx, !(config.enabled && config.advisor_enabled), host);
+		else if (action === "advisorModel" && host === "pi") await handleSetupAdvisorModel(ctx);
 		else if (action === "selector") await handleSetupUseHabitsToggle(ctx, !(config.enabled && config.selector_enabled));
 		else if (action === "assessmentModel") await handleSetupAssessmentModel(ctx);
 		else if (action === "habits") await handleApprovedHabitsSetup(ctx);
@@ -2735,10 +2782,33 @@ async function selectorRuntimeEmbeddingAdapter(root: string): Promise<EmbeddingA
 async function maintainSelectorVectorsAfterActiveChange(storage: { db: any; root: string; userId: string }, signal?: AbortSignal) {
 	const paths = getAgentExperiencePaths();
 	const { config } = await readAgentExperienceConfig(paths);
-	if (!config.enabled || !config.selector_enabled) return { attempted: false, ready: true };
+	if (!config.enabled) return { attempted: false, ready: true, experienceReady: true };
 	let embedding: EmbeddingAdapter | undefined;
 	try { embedding = await selectorRuntimeEmbeddingAdapter(storage.root); } catch {}
-	return prepareActiveSelectorVectorsAfterChange(storage.db, { root: storage.root, userId: storage.userId, config, now: new Date().toISOString(), signal, embeddingAdapter: embedding });
+	let experienceReady = true;
+	if ((config.embedding_enabled || config.advisor_enabled) && embedding) {
+		try {
+			await prepareExperienceVectors(storage.db, {
+				userId: storage.userId,
+				now: new Date().toISOString(),
+				config,
+				embeddingAdapter: embedding,
+				signal,
+			});
+		} catch {
+			experienceReady = false;
+		}
+	}
+	if (!config.selector_enabled) return { attempted: config.embedding_enabled || config.advisor_enabled, ready: true, experienceReady };
+	const selector = await prepareActiveSelectorVectorsAfterChange(storage.db, {
+		root: storage.root,
+		userId: storage.userId,
+		config,
+		now: new Date().toISOString(),
+		signal,
+		embeddingAdapter: embedding,
+	});
+	return { ...selector, experienceReady };
 }
 
 async function withReviewStorage<T>(fn: (storage: Awaited<ReturnType<typeof initExperienceStorage>>) => Promise<T> | T): Promise<T> {
@@ -3180,13 +3250,19 @@ function agentMessageText(message: unknown): string {
 		.join("\n");
 }
 
+
 function assistantTurnIsTerminal(message: unknown): boolean {
 	if (!message || typeof message !== "object" || !("stopReason" in message)) return true;
 	return message.stopReason !== "toolUse";
 }
 
 export default function agentExperienceExtension(pi: ExtensionAPI) {
-	registerAgentExperienceConversationalTools(pi);
+	const isOmpHost = (pi as ExtensionAPI & { host?: string }).host === "omp";
+	registerAgentExperienceConversationalTools(pi, {
+		afterExperienceChange: async (input) => {
+			await maintainSelectorVectorsAfterActiveChange(input, input.signal);
+		},
+	});
 
 
 	let advisorMessageRendererReady = false;
@@ -3581,6 +3657,7 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 	};
 
 	const rebuildAdvisorRuntime = async (ctx: ExtensionContext, reason: string): Promise<AdvisorLifecycleState | undefined> => {
+		if (isOmpHost) return undefined;
 		const scope = breakInScopeFromContext(ctx);
 		if (!scope) return undefined;
 		const key = advisorScopeKey(scope);
@@ -3891,8 +3968,48 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 			}
 		})();
 		scheduledReceiptCheck = run;
+
 		try { await run; } finally { if (scheduledReceiptCheck === run) scheduledReceiptCheck = undefined; }
 	};
+	if (isOmpHost) {
+		(pi.on as any)("advisor_context", async (event: { scopeKey?: string; updates?: readonly unknown[] }, ctx: ExtensionContext) => {
+			const paths = getAgentExperiencePaths();
+			let storage: Awaited<ReturnType<typeof openExistingExperienceStorage>> | undefined;
+			try {
+				const { config } = await readAgentExperienceConfig(paths);
+				if (!config.enabled || !config.advisor_enabled || !(await fileExists(resolvePrivatePath(paths.root, "ledger.sqlite")))) return undefined;
+				storage = await openExistingExperienceStorage(paths.root, { userId: getConfiguredUserId() });
+				const embeddingAdapter = await selectorRuntimeEmbeddingAdapter(storage.root);
+				const query = boundedOmpAdvisorQuery(event.updates || []);
+				if (!query.trim()) return undefined;
+				const contribution = await buildOmpExperienceAdvisorContext(storage.db, {
+					userId: storage.userId,
+					now: new Date().toISOString(),
+					query,
+					config,
+					embeddingAdapter,
+					signal: ctx.signal,
+					currentScope: { runtime: "omp", workspace: ctx.cwd, repository: ctx.cwd, project: ctx.cwd },
+				});
+				if (contribution.experienceCount <= 0) return undefined;
+				if (typeof event.scopeKey === "string" && contribution.attributions.size > 0) {
+					const scoped = ompAdvisorAttributions.get(event.scopeKey) ?? new Map<string, ExperienceRetrievalCandidate>();
+					for (const [attribution, candidate] of contribution.attributions) scoped.set(attribution, candidate);
+					while (scoped.size > 64) {
+						const oldest = scoped.keys().next().value;
+						if (typeof oldest !== "string") break;
+						scoped.delete(oldest);
+					}
+					ompAdvisorAttributions.set(event.scopeKey, scoped);
+				}
+				return { context: contribution.context };
+			} catch {
+				return undefined;
+			} finally {
+				storage?.db.close();
+			}
+		});
+	}
 	const startScheduledReceiptPolling = (ctx: ExtensionContext) => {
 		stopScheduledReceiptPolling();
 		scheduledReceiptStopped = false;
@@ -3918,6 +4035,20 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 
 	pi.on("session_start", async (_event, ctx) => {
 		await rebuildAdvisorRuntime(ctx, `session_start:${_event.reason}`);
+		if (isOmpHost) {
+			const paths = getAgentExperiencePaths();
+			let storage: Awaited<ReturnType<typeof openExistingExperienceStorage>> | undefined;
+			try {
+				if (await fileExists(resolvePrivatePath(paths.root, "ledger.sqlite"))) {
+					storage = await openExistingExperienceStorage(paths.root, { userId: getConfiguredUserId() });
+					await maintainSelectorVectorsAfterActiveChange(storage, ctx.signal);
+				}
+			} catch {
+				// Optional Experience context fails closed when cached vectors cannot be prepared.
+			} finally {
+				storage?.db.close();
+			}
+		}
 		const scope = breakInScopeFromContext(ctx);
 		if (scope) breakInShutdown.delete(breakInScopeKey(scope));
 		if (ctx.mode !== "tui" || ctx.hasUI === false) return;
@@ -3963,12 +4094,13 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 					return;
 				case "setup":
 					await handleSetup(ctx, tokens.slice(1), () => {
+						if (isOmpHost) return {};
 						const state = advisorStateForContext(ctx);
 						if (!state) return {};
 						if (state.shuttingDown) return { advisorRuntime: "Paused" };
 						if (state.needsReseed || !state.runtime) return { advisorRuntime: "Needs attention" };
 						return { advisorRuntime: "Active" };
-					}, (reason) => refreshAdvisorRuntimeAfterConfigMutation(ctx, reason));
+					}, (reason) => refreshAdvisorRuntimeAfterConfigMutation(ctx, reason), isOmpHost ? "omp" : "pi");
 					return;
 				case "on":
 				case "enable":
@@ -4071,6 +4203,7 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 		// the user message before local embedding and applicability assessment.
 		const steeringScope = steeringScopeFromContext(ctx);
 		if (steeringScope) pendingSteeringRuns.delete(steeringScope);
+		if (isOmpHost) return;
 		if (!steeringScope) {
 			notifyDedupedDiagnostic(ctx, selectorDiagnosticsShown, {
 				key: "selector-runtime:steering-session-scope-unavailable",
@@ -4535,6 +4668,31 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 		}
 		const { paths, active } = await getEffectiveCapture();
 		const key = captureKeyFromContext(ctx);
+		const ompAttributions = key ? ompAdvisorAttributions.get(key.sessionId) : undefined;
+		if (isOmpHost && active && key?.sessionFile && ompAttributions?.size) {
+			let storage: Awaited<ReturnType<typeof openExistingExperienceStorage>> | undefined;
+			try {
+				const { config } = await readAgentExperienceConfig(paths);
+				storage = await openExistingExperienceStorage(paths.root, { userId: key.userId });
+				await retainOmpAdvisorTranscriptFindings({
+					root: paths.root,
+					db: storage.db,
+					config,
+					userId: key.userId,
+					sessionFile: key.sessionFile,
+					attributions: ompAttributions,
+				});
+			} catch (error) {
+				const detail = redactText(error instanceof Error ? error.message : String(error)).slice(0, 300);
+				notifyDedupedDiagnostic(ctx, captureDiagnosticsShown, {
+					key: `advisor-observation:${detail}`,
+					message: `Agent Experience could not retain the OMP Advisor finding: ${detail}`,
+				});
+			} finally {
+				storage?.db.close();
+			}
+		}
+		if (key) ompAdvisorAttributions.delete(key.sessionId);
 		if (!active || !key) {
 			captureBuffer.dropKey(key);
 			return;

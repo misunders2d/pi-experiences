@@ -114,7 +114,7 @@ const temp = await mkdtemp(join(tmpdir(), 'agent-experience-semantic-'));
 const root = await ensurePrivateRoot(join(temp, 'state'));
 const storage = await initExperienceStorage(root, { allowInit: true, userId: 'owner' });
 try {
-  assert.equal(storage.db.prepare('PRAGMA user_version').get().user_version, 6);
+  assert.equal(storage.db.prepare('PRAGMA user_version').get().user_version, 7);
   assert.ok(storage.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='habit_embeddings'").get());
   assert.ok(storage.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='habit_duplicates'").get());
 

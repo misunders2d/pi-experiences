@@ -14,7 +14,7 @@ for name,path in [('package',package_path),('Pi binary',pi_bin),('Pi agent direc
     if not confined(path): raise SystemExit(f'{name} must stay under the isolated verifier root: {path}')
 artifacts=transcript.parent/f'{transcript.stem}-artifacts'; artifacts.mkdir(parents=True,exist_ok=True)
 shutil.rmtree(state,ignore_errors=True); state.mkdir(parents=True,exist_ok=True)
-work=isolation_root/'pi-experiences-0.1.51-tui-work'; work.mkdir(parents=True,exist_ok=True)
+work=isolation_root/'pi-experiences-0.1.49-tui-work'; work.mkdir(parents=True,exist_ok=True)
 raw=bytearray(); csi=re.compile(rb'\x1b\[[0-?]*[ -/]*[@-~]'); osc=re.compile(rb'\x1b\][^\x07]*(?:\x07|\x1b\\)')
 artifact_paths={}
 tmux_socket=f'pi-experiences-tui-{os.getpid()}'; tmux_session='smoke'
