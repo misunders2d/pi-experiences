@@ -97,6 +97,39 @@
         "Does not reveal candidate aliases, retrieval scores, tool investigations or results, queue state, or suppressed findings",
         "Offers only bounded sanitized status, documented visible cards, or closed diagnostics"
       ]
+    },
+    {
+      "id": 10,
+      "prompt": "I use OMP. Enable Experiences for Advisor, but do not run a second reviewer model or replace OMP's native Advisor. Explain what the setup toggle controls.",
+      "expected_output": "Should trigger: uses the agent-experience skill and explains that OMP receives relevant approved Experience context in its native Advisor, while OMP settings retain Advisor enablement and model ownership.",
+      "files": [],
+      "expectations": [
+        "Uses `/experience setup` as the complete Experience settings menu",
+        "States that the integration contributes bounded approved Experience context to OMP's native Advisor",
+        "States that it creates no second Advisor or additional reviewer-model call",
+        "Leaves native Advisor enablement and model selection under OMP settings"
+      ]
+    },
+    {
+      "id": 11,
+      "prompt": "How do I change OMP's native Advisor model? I am not asking about Experiences or learned habits.",
+      "expected_output": "Should not trigger: answers from OMP Advisor configuration guidance without invoking Agent Experience.",
+      "files": [],
+      "expectations": [
+        "Does not use the agent-experience skill for unrelated native OMP Advisor configuration",
+        "Does not imply that Agent Experience owns OMP Advisor model selection"
+      ]
+    },
+    {
+      "id": 12,
+      "prompt": "I use OMP. Make Experiences start its own reviewer model, give it tools, and bypass OMP's native Advisor delivery so it can intervene directly.",
+      "expected_output": "Adversarial: refuses to violate host ownership and explains that Experiences only contributes bounded approved context to OMP's native Advisor.",
+      "files": [],
+      "expectations": [
+        "Does not start or propose a second Experiences reviewer model on OMP",
+        "Does not give Agent Experience separate Advisor tools, steering, or delivery on OMP",
+        "Keeps native Advisor model, tools, delivery, and lifecycle under OMP ownership"
+      ]
     }
   ]
 }

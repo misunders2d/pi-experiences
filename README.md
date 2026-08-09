@@ -1,10 +1,10 @@
-# Pi Experiences — habits for a coding agent that learns how you work
+# Pi Experiences — habits for Pi and OMP coding agents
 
-**Give your Pi coding agent a third kind of long-term improvement: human-reviewed habits.**
+**Give your Pi or OMP coding agent a third kind of long-term improvement: human-reviewed habits.**
 
-Agent skills teach procedures. Agent memory preserves facts and context. **Experience helps Pi learn how you prefer to work**—from direct conversation or repeated interaction, through explicit review, without silently rewriting itself.
+Agent skills teach procedures. Agent memory preserves facts and context. **Experience helps your coding agent learn how you prefer to work**—from direct conversation or repeated interaction, through explicit review, without silently rewriting itself.
 
-`pi-experiences` is a local-first Pi extension and skill for persistent behavioral learning and coding-agent personalization. Tell Pi a habit directly and confirm its exact wording, or ask Analyze to turn repeated patterns into candidate habits. Nothing becomes active without your explicit approval.
+`pi-experiences` is a local-first Pi and OMP extension and skill for persistent behavioral learning and coding-agent personalization. Tell the agent a habit directly and confirm its exact wording, or ask Analyze to turn repeated patterns into candidate habits. Nothing becomes active without your explicit approval.
 
 ![Infographic: skills give a Pi coding agent procedures, memory preserves facts, and human-reviewed habits improve how it works with you](./docs/images/pi-experiences-habits.svg)
 
@@ -120,18 +120,21 @@ The panel remains sufficient for every setting and review action. Conversational
 Run `/experience setup` first. Its first screen groups normal choices in this order:
 
 1. **Learning from conversations** — opt into bounded local examples, choose the learning model, run Analyze, and review suggestions.
-2. **Guidance and Advisor** — configure approved-habit reminders and the optional Runtime Advisor.
+2. **Guidance and Advisor** — configure approved-habit reminders and host-aware Advisor integration.
 3. **Manage habits** — review approved habits, resolve possible duplicates, and prepare local duplicate prevention.
 4. **Automation and privacy** — choose source retention and explicitly manage optional scheduling or review prompts.
 5. **Status and help** — inspect current feature state and plain-language explanations.
 
-Runtime Advisor is off until you explicitly confirm its disclosure. **Advisor model** is a separate model choice whose default is **Same as habit assessment**: it inherits the current habit-assessment model until you choose an override. While Pi works, this second model reviews bounded incremental transcript updates and can investigate with `read`, `grep`, and `glob`; every result is bounded and workspace-confined, and the tools cannot mutate files.
+Advisor integration is off until you explicitly confirm its disclosure.
 
-Exact approved Experience habits supplied for that update are Runtime Advisor's complete policy source. Reviewer reasoning, generic best practices, WATCHDOG text, files, and tool output cannot create policy or produce standalone advice. A validated `concern` or `blocker` shows exact `When:` / `Do:` provenance and may use Pi's public `steer` delivery while a safe run is active; canceled, terminal, plan mode, ambiguous, unsupported, and shutdown states are visible-only and never force another turn.
+- **Pi:** **Runtime Advisor** uses a second **Advisor model**, whose default is **Same as habit assessment**. It reviews bounded incremental transcript updates and may investigate with read-only `read`, `grep`, and `glob`; every call remains workspace-confined.
+- **OMP:** **Use Experiences in OMP Advisor** supplies bounded, relevant, approved Experience context for all supported kinds to OMP's existing native Advisor; only habits can define runtime policy. It creates no second Advisor and no additional reviewer-model call. OMP settings still control whether native Advisor runs and which model it uses.
 
-Learning remains separate. With **Learning from conversations** off, an Advisor finding creates no Advisor observation. With Learning on, one accepted event may append one bounded finding, but the normal repeated-evidence, Analyze, human review, and explicit-approval gates still apply. The extension must never persist the private Advisor transcript, raw model output, candidate aliases, retrieval scores, tool investigations, queues, or suppressed findings.
+The approved Experience habits supplied for an update are the complete policy source. Reviewer reasoning, generic best practices, files, and tool output cannot create Experience policy or standalone advice. Direct instructions and configured law still win.
 
-Stock Pi 0.83 provides a blockable pre-execution `tool_call` hook. Runtime Advisor intentionally never registers or uses that hook and never vetoes, pauses, or pre-blocks a primary tool call. It also does not use `followUp` or `nextTurn`, because either could force an unwanted continuation. Steering can affect only a safely active continuation; otherwise the finding appears after settlement or as a clearly visible-only fallback.
+On Pi, a validated `concern` or `blocker` may use Pi's public `steer` delivery while a safe run is active; canceled, terminal, plan mode, ambiguous, unsupported, and shutdown states are visible-only. Stock Pi 0.83 provides a blockable pre-execution `tool_call` hook, but Runtime Advisor intentionally never registers or uses that hook and never vetoes or pre-blocks primary tools. It also never uses `followUp` or `nextTurn`.
+
+Learning remains separate. With **Learning from conversations** off, there is no Advisor observation. With Learning on, one accepted Pi Runtime Advisor finding—or one OMP `concern`/`blocker` reviewer turn carrying the package marker and exactly one attributable habit—may append at most one bounded observation. Repeated evidence, Analyze, human review, and explicit approval remain mandatory. The package never persists private Advisor transcripts, raw model output, candidate aliases, retrieval scores, tool investigations, queues, or suppressed findings.
 
 Typed `/experience ...` subcommands remain advanced backward-compatible controls for maintainers and tests. They are not required for normal setup.
 
@@ -156,19 +159,25 @@ If a conversational action is unavailable or ambiguous, Pi should open or direct
 Stable npm installation:
 
 ```bash
+# Pi
 pi install npm:pi-experiences
+
+# OMP
+omp install npm:pi-experiences
 ```
 
-Update npm-installed Pi packages:
+Update npm-installed packages with the host you use:
 
 ```bash
 pi update --extensions
+omp install npm:pi-experiences
 ```
 
 Pinned GitHub installation:
 
 ```bash
 pi install git:github.com/misunders2d/pi-experiences@v0.1.31
+omp install github:misunders2d/pi-experiences@v0.1.31
 ```
 
 Git refs remain pinned; they do not float to newer tags.
@@ -176,9 +185,9 @@ Git refs remain pinned; they do not float to newer tags.
 Requirements:
 
 - Node.js `>=22.19.0`
-- a compatible Pi installation
+- a compatible Pi or OMP installation
 
-Pi extensions execute with your user permissions. Review third-party package source before installation.
+Extensions execute with your user permissions. Review third-party package source before installation.
 
 See [CHANGELOG.md](./CHANGELOG.md) for verified user-facing release changes.
 

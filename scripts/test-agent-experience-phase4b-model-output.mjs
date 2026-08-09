@@ -151,10 +151,10 @@ try {
 
   const payload = buildProposalModelPayloadForTest({ userId: 'owner', model: 'openai-codex/gpt-5.5', observations });
   assert.equal(canonicalJson(payload).includes('phase4b@example.invalid'), false, 'model payload must use redacted/safe observations only');
-  assert.ok(payload.instructions.some((line) => /reusable behavioral essence/.test(line)), 'model prompt must require generalized habits, not project-specific summaries');
-  assert.ok(payload.instructions.some((line) => /Do not overfit/.test(line)), 'model prompt must forbid overfitting to project/package/tool names');
-  assert.ok(payload.instructions.some((line) => /When preparing a release/.test(line)), 'model prompt must show generalized condition example');
-  assert.ok(payload.instructions.some((line) => /no proposal/.test(line)), 'model prompt must suppress project-specific-only patterns');
+  assert.ok(payload.instructions.some((line) => /Classify the durable information/.test(line)), 'model prompt must classify the broader experience taxonomy');
+  assert.ok(payload.instructions.some((line) => /Do not overfit/.test(line)), 'model prompt must forbid overfitting inferred habits and preferences');
+  assert.ok(payload.instructions.some((line) => /narrowest accurate scope/.test(line)), 'model prompt must preserve scoped facts, decisions, goals, constraints, and episodes');
+  assert.ok(payload.instructions.some((line) => /one-off instruction/.test(line)), 'model prompt must reject transient one-off requests');
   let seenPayload;
   const proposed = await proposeFromObservations({ userId: 'owner', model: 'openai-codex/gpt-5.5', observations, callModel: (request) => { seenPayload = request.payload; return modelOutput(observations, { batch_id: 'adapter-batch' }); } });
   assert.equal(proposed.batch_id, 'adapter-batch');

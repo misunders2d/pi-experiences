@@ -57,17 +57,17 @@ async function assertV5MigrationAndCurrentVerification() {
     initial.db.close();
     const dbPath = resolvePrivatePath(root, 'ledger.sqlite');
     const downgradeFixture = new DatabaseSync(dbPath);
-    downgradeFixture.exec('PRAGMA journal_mode=DELETE; DELETE FROM migrations WHERE version=6; PRAGMA user_version=5;');
+    downgradeFixture.exec('PRAGMA journal_mode=DELETE; DELETE FROM migrations WHERE version=7; PRAGMA user_version=6;');
     downgradeFixture.close();
 
     const migrated = await initExperienceStorage(root, { allowInit: true, userId: 'owner' });
-    assert.equal(migrated.db.prepare('PRAGMA user_version').get().user_version, 6);
+    assert.equal(migrated.db.prepare('PRAGMA user_version').get().user_version, 7);
     assert.deepEqual(selectStorageRecordsByUser(migrated.db, 'habits', 'owner').map((row) => row.id), ['v5-preserved']);
-    assert.equal(migrated.db.prepare('SELECT COUNT(*) AS count FROM migrations WHERE version=6').get().count, 1);
+    assert.equal(migrated.db.prepare('SELECT COUNT(*) AS count FROM migrations WHERE version=7').get().count, 1);
     migrated.db.close();
 
     const second = await initExperienceStorage(root, { allowInit: true, userId: 'owner' });
-    assert.equal(second.db.prepare('SELECT COUNT(*) AS count FROM migrations WHERE version=6').get().count, 1, 'migration rerun is idempotent');
+    assert.equal(second.db.prepare('SELECT COUNT(*) AS count FROM migrations WHERE version=7').get().count, 1, 'migration rerun is idempotent');
     assert.deepEqual(selectStorageRecordsByUser(second.db, 'habits', 'owner').map((row) => row.id), ['v5-preserved']);
     second.db.close();
 
@@ -75,7 +75,7 @@ async function assertV5MigrationAndCurrentVerification() {
     const malformedRoot = await ensurePrivateRoot(join(malformedParent, 'state'));
     const malformedPath = resolvePrivatePath(malformedRoot, 'ledger.sqlite');
     const malformed = new DatabaseSync(malformedPath);
-    malformed.exec('CREATE TABLE migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL); PRAGMA user_version=6;');
+    malformed.exec('CREATE TABLE migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL); PRAGMA user_version=7;');
     malformed.close();
     await assert.rejects(() => initExperienceStorage(malformedRoot, { allowInit: true, userId: 'owner' }), /missing table/i);
     await rm(malformedParent, { recursive: true, force: true });
@@ -101,7 +101,7 @@ async function assertBackupRestoreHardening() {
     assert.equal(backup.manifest.privacy.observation_records, 'excluded_short_retention');
     await assert.rejects(() => createBackup(root, { backupId: 'hot-backup' }), /already exists/i);
     const validated = await prevalidateBackup(root, 'hot-backup');
-    assert.equal(validated.storageSchemaVersion, 6);
+    assert.equal(validated.storageSchemaVersion, 7);
     const snapshotDb = new DatabaseSync(validated.artifacts.find((item) => item.name === 'ledger.sqlite').path, { readOnly: true });
     assert.equal(snapshotDb.prepare('PRAGMA integrity_check').get().integrity_check, 'ok');
     assert.equal(snapshotDb.prepare("SELECT COUNT(*) AS count FROM habits WHERE id='baseline'").get().count, 1);

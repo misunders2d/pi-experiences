@@ -6,6 +6,23 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 ## [Unreleased]
 
+## [0.1.52] - 2026-08-09
+
+
+### Added
+
+- Added first-class OMP package discovery and host detection. OMP now receives bounded, relevant, approved Experience context through its native Advisor; the package does not start a second Advisor or add another reviewer-model call.
+- Kept `/experience setup` as the complete settings menu on both hosts, with OMP-specific Advisor context controls and OMP-owned native Advisor model/enablement.
+
+### Changed
+
+- Generalized approved Experience retrieval and conversational review tools beyond habits while preserving approval, revalidation, privacy, and exact-provenance gates.
+- Pi keeps the existing Runtime Advisor and provider-guidance behavior unchanged; OMP uses only its native Advisor path.
+
+### Validation
+
+- Added phase 26–31 taxonomy, typed-learning, retrieval, review, dual-host adapter, and OMP-native Advisor retention gates.
+
 ## [0.1.51] - 2026-08-05
 
 ### Fixed
@@ -27,7 +44,6 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 ### Validation
 
 - Added phase 23–25 package gates, packed Advisor/setup allowlists and peer checks, a fresh isolated-package verifier, and real Pi PTY coverage for grouped setup plus collapsed/expanded approved-habit Advisor cards at wide and narrow widths.
-
 
 ## [0.1.49] - 2026-07-21
 
@@ -163,7 +179,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 - Added synchronous submission-hook checks, deferred embedding/model assertions, and a packed Pi TUI smoke requiring submitted-message rendering within 1.5 seconds.
 
-[Unreleased]: https://github.com/misunders2d/pi-experiences/compare/v0.1.51...HEAD
+[Unreleased]: https://github.com/misunders2d/pi-experiences/compare/v0.1.52...HEAD
+[0.1.52]: https://github.com/misunders2d/pi-experiences/compare/v0.1.51...v0.1.52
 [0.1.51]: https://github.com/misunders2d/pi-experiences/compare/v0.1.50...v0.1.51
 [0.1.50]: https://github.com/misunders2d/pi-experiences/compare/v0.1.49...v0.1.50
 [0.1.49]: https://github.com/misunders2d/pi-experiences/compare/v0.1.48...v0.1.49

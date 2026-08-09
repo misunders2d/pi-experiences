@@ -1,12 +1,15 @@
+import type { DatabaseSync } from "node:sqlite";
+import { insertExperienceCandidateInTransaction, listEligibleExperiences } from "../experience/storage.ts";
+import { EXPERIENCE_AUTHORITIES, EXPERIENCE_KINDS, EXPERIENCE_SCOPE_KINDS, type ExperienceAuthority, type ExperienceHost, type ExperienceKind, type ExperienceScope } from "../experience/types.ts";
 import { normalizeUserId } from "../storage/private-root.ts";
 import { canonicalJson, checksumJson, sha256Hex } from "../storage/checksum.ts";
 import { containsUnredactedSensitiveText, redactJson } from "../storage/redaction.ts";
 import type { ValidatedObservationRecord } from "./observations.ts";
 import { observationKey } from "./observations.ts";
-import { consolidateProposalBatch, recordProposalReadCoverageInTransaction, recordZeroProposalReadCoverage, type ConsolidationResult } from "./commit.ts";
+import { consolidateProposalBatch, recordProposalReadCoverageInTransaction, recordZeroProposalReadCoverage, type ConsolidationResult, type Watermark } from "./commit.ts";
 import type { ProposalBatch, ProposalSourceRef } from "./proposals.ts";
 
-export type ModelProposalKind = "habit_candidate" | "correction_split";
+export type ModelProposalKind = ExperienceKind | "habit_candidate" | "correction_split";
 
 export interface ModelOutputSourceRef extends ProposalSourceRef {}
 
@@ -39,7 +42,23 @@ export interface CorrectionSplitModelProposal {
 	ambiguous?: false;
 }
 
-export type ValidatedModelProposal = HabitCandidateModelProposal | CorrectionSplitModelProposal;
+export interface ExperienceCandidateModelProposal {
+	proposal_id: string;
+	kind: ExperienceKind;
+	candidate_key: string;
+	scope: ExperienceScope;
+	authority: ExperienceAuthority;
+	applicability: string;
+	content: string;
+	rationale?: string;
+	exceptions: string[];
+	confidence_bp: number;
+	source_refs: ModelOutputSourceRef[];
+	evidence_summary?: string;
+	ambiguous?: false;
+}
+
+export type ValidatedModelProposal = ExperienceCandidateModelProposal | HabitCandidateModelProposal | CorrectionSplitModelProposal;
 
 export interface ValidatedModelOutputBatch {
 	schema_version: 1;
@@ -59,6 +78,11 @@ const MODEL_OUTPUT_KEYS = new Set(["schema_version", "user_id", "file_generation
 const OBSERVATIONS_READ_KEYS = new Set(["seq_start", "seq_end", "checksum"]);
 const HABIT_KEYS = new Set(["proposal_id", "kind", "candidate_key", "condition", "behavior", "polarity", "confidence_bp", "source_refs", "evidence_summary", "evidence_stage", "ambiguous"]);
 const CORRECTION_KEYS = new Set(["proposal_id", "kind", "candidate_key", "old_condition", "old_behavior", "new_condition", "new_behavior", "confidence_bp", "source_refs", "evidence_summary", "evidence_stage", "ambiguous"]);
+const EXPERIENCE_KEYS = new Set(["proposal_id", "kind", "candidate_key", "scope", "authority", "applicability", "content", "rationale", "exceptions", "confidence_bp", "source_refs", "evidence_summary", "ambiguous"]);
+const SCOPE_KEYS = new Set(["kind", "key"]);
+const EXPERIENCE_KIND_SET = new Set<string>(EXPERIENCE_KINDS);
+const EXPERIENCE_SCOPE_SET = new Set<string>(EXPERIENCE_SCOPE_KINDS);
+const EXPERIENCE_AUTHORITY_SET = new Set<string>(EXPERIENCE_AUTHORITIES);
 const REF_KEYS = new Set(["file_generation", "seq", "checksum"]);
 
 function assertExactKeys(value: Record<string, unknown>, allowed: Set<string>, label: string): void {
@@ -140,8 +164,14 @@ function validateProposal(value: unknown, seenIds: Set<string>, generation: stri
 	if (proposal.ambiguous === true) throw new Error("Ambiguous model proposal");
 	if (proposal.ambiguous !== undefined && proposal.ambiguous !== false) throw new Error("Invalid ambiguous flag");
 	const kind = proposal.kind;
-	if (kind !== "habit_candidate" && kind !== "correction_split") throw new Error("Unsupported model proposal kind");
-	assertExactKeys(proposal, kind === "habit_candidate" ? HABIT_KEYS : CORRECTION_KEYS, "model proposal");
+	if (typeof kind !== "string" || (!EXPERIENCE_KIND_SET.has(kind) && kind !== "habit_candidate" && kind !== "correction_split")) {
+		throw new Error("Unsupported model proposal kind");
+	}
+	assertExactKeys(
+		proposal,
+		EXPERIENCE_KIND_SET.has(kind) ? EXPERIENCE_KEYS : kind === "habit_candidate" ? HABIT_KEYS : CORRECTION_KEYS,
+		"model proposal",
+	);
 	const proposalId = assertSafeToken(proposal.proposal_id, "proposal_id");
 	if (seenIds.has(proposalId)) throw new Error("Duplicate model proposal_id");
 	seenIds.add(proposalId);
@@ -154,6 +184,37 @@ function validateProposal(value: unknown, seenIds: Set<string>, generation: stri
 		...(proposal.evidence_stage === undefined ? {} : { evidence_stage: proposal.evidence_stage === "collecting" || proposal.evidence_stage === "reviewable" ? proposal.evidence_stage : (() => { throw new Error("Invalid evidence_stage"); })() }),
 		...(proposal.ambiguous === undefined ? {} : { ambiguous: false as const }),
 	};
+	if (EXPERIENCE_KIND_SET.has(kind)) {
+		if (!proposal.scope || typeof proposal.scope !== "object" || Array.isArray(proposal.scope)) throw new Error("Invalid experience scope");
+		const scope = proposal.scope as Record<string, unknown>;
+		assertExactKeys(scope, SCOPE_KEYS, "experience scope");
+		if (typeof scope.kind !== "string" || !EXPERIENCE_SCOPE_SET.has(scope.kind)) throw new Error("Invalid experience scope kind");
+		const scopeKey = scope.key;
+		if (scope.kind === "user" ? scopeKey !== undefined : typeof scopeKey !== "string" || scopeKey.length === 0 || scopeKey.length > 500) {
+			throw new Error("Invalid experience scope key");
+		}
+		if (typeof proposal.authority !== "string" || !EXPERIENCE_AUTHORITY_SET.has(proposal.authority)) throw new Error("Invalid experience authority");
+		const applicability = assertSafeText(proposal.applicability, "applicability", 8_000);
+		const content = assertSafeText(proposal.content, "content", 8_000);
+		const rationale = proposal.rationale === undefined ? undefined : assertSafeText(proposal.rationale, "rationale", 8_000);
+		if (!Array.isArray(proposal.exceptions) || proposal.exceptions.length > 32) throw new Error("Invalid experience exceptions");
+		const exceptions = proposal.exceptions.map((exception, index) => assertSafeText(exception, `exceptions[${index}]`, 2_000));
+		if ((kind === "decision" || kind === "episode") && !rationale) throw new Error(`${kind} requires rationale`);
+		if (kind === "habit") {
+			assertGeneralizedHabitText(applicability, "applicability");
+			assertGeneralizedHabitText(content, "content");
+		}
+		return {
+			...base,
+			kind: kind as ExperienceKind,
+			scope: scopeKey === undefined ? { kind: scope.kind } : { kind: scope.kind, key: scopeKey },
+			authority: proposal.authority as ExperienceAuthority,
+			applicability,
+			content,
+			...(rationale === undefined ? {} : { rationale }),
+			exceptions,
+		} as ExperienceCandidateModelProposal;
+	}
 	if (kind === "habit_candidate") {
 		if (proposal.polarity !== 1 && proposal.polarity !== -1) throw new Error("Invalid model polarity");
 		const condition = assertSafeText(proposal.condition, "condition");
@@ -211,6 +272,7 @@ export function validateModelOutputBatch(value: unknown, expectedUserId?: string
 
 export function modelOutputToProposalBatch(batch: ValidatedModelOutputBatch): ProposalBatch {
 	const proposals = batch.proposals.flatMap((proposal): ProposalBatch["proposals"] => {
+		if (EXPERIENCE_KIND_SET.has(proposal.kind)) throw new Error("Typed experience proposal requires typed commit path");
 		if (proposal.kind === "habit_candidate") {
 			return [{
 				proposal_id: proposal.proposal_id,
@@ -310,14 +372,24 @@ export function insertModelOutputQuarantine(db: any, input: { userId: string; fi
 function normalizedIdentityText(value: string): string {
 	return value.trim().replace(/\s+/g, " ").toLowerCase();
 }
-
 function proposalIdentityForConflict(proposal: ValidatedModelProposal): string {
+	if (EXPERIENCE_KIND_SET.has(proposal.kind)) {
+		const typed = proposal as ExperienceCandidateModelProposal;
+		return canonicalJson({
+			kind: typed.kind,
+			scope: typed.scope,
+			authority: typed.authority,
+			applicability: normalizedIdentityText(typed.applicability),
+			content: normalizedIdentityText(typed.content),
+		});
+	}
 	if (proposal.kind === "habit_candidate") return canonicalJson({ kind: proposal.kind, condition: normalizedIdentityText(proposal.condition), behavior: normalizedIdentityText(proposal.behavior), polarity: proposal.polarity });
 	return canonicalJson({ kind: proposal.kind, old_condition: normalizedIdentityText(proposal.old_condition), old_behavior: normalizedIdentityText(proposal.old_behavior), new_condition: normalizedIdentityText(proposal.new_condition), new_behavior: normalizedIdentityText(proposal.new_behavior) });
 }
 
 function findCandidateKeyConflict(output: ValidatedModelOutputBatch): { candidate_key: string; identities: string[] } | null {
 	const byKey = new Map<string, Set<string>>();
+
 	for (const proposal of output.proposals) {
 		const set = byKey.get(proposal.candidate_key) || new Set<string>();
 		set.add(proposalIdentityForConflict(proposal));
@@ -328,8 +400,162 @@ function findCandidateKeyConflict(output: ValidatedModelOutputBatch): { candidat
 	}
 	return null;
 }
+interface TypedExperienceConsolidationResult {
+	user_id: string;
+	file_generation: string;
+	candidate_ids: string[];
+	evidence_ids: [];
+	watermark_after: null;
+	read_watermark_after: Watermark;
+	audit_id: string;
+	inserted: { candidates: number; evidence: 0; audit: 1; watermark: 0; read_watermark: 0 | 1 };
+}
 
-export async function processValidatedModelOutput(input: { db: any; userId: string; output: ValidatedModelOutputBatch; observations: ValidatedObservationRecord[]; expectedRange?: { file_generation: string; seq_start: number; seq_end: number; read_checksum: string }; semantic?: Parameters<typeof consolidateProposalBatch>[0]["semantic"] }): Promise<ConsolidationResult | { user_id: string; file_generation: string; candidate_ids: []; evidence_ids: []; watermark_after: null; read_watermark_after?: unknown; pending_review_id?: string; inserted: { read_watermark?: 0 | 1; pending_review?: 0 | 1 } }> {
+function commitTypedExperienceProposals(input: {
+	db: DatabaseSync;
+	userId: string;
+	output: ValidatedModelOutputBatch;
+	observations: ValidatedObservationRecord[];
+	sourceLast: ValidatedObservationRecord;
+	host: ExperienceHost;
+}): TypedExperienceConsolidationResult {
+	const proposals = input.output.proposals as ExperienceCandidateModelProposal[];
+	const observationByKey = new Map(input.observations.map(record => [observationKey(record), record]));
+	const current = listEligibleExperiences(input.db, { userId: input.userId, now: input.output.created_at });
+	const candidateIds: string[] = [];
+	let insertedCandidates = 0;
+	input.db.exec("BEGIN IMMEDIATE");
+	try {
+		for (const proposal of proposals) {
+			const sources = proposal.source_refs.map(ref => {
+				const observation = observationByKey.get(`${ref.file_generation}:${ref.seq}`);
+				if (!observation) throw new Error("Typed experience source observation is unavailable");
+				return observation;
+			});
+			if (proposal.authority === "explicit_user" && sources.every(source => source.origin.source === "advisor_finding")) {
+				throw new Error("Advisor findings cannot establish explicit-user authority");
+			}
+			const conflictsWith = proposal.kind === "episode"
+				? []
+				: current
+					.filter(record =>
+						record.kind === proposal.kind
+						&& record.scope.kind === proposal.scope.kind
+						&& record.scope.key === proposal.scope.key
+						&& normalizedIdentityText(record.applicability) === normalizedIdentityText(proposal.applicability)
+						&& normalizedIdentityText(record.content) !== normalizedIdentityText(proposal.content))
+					.map(record => record.id)
+					.sort();
+			const id = stableId("experience", {
+				userId: input.userId,
+				candidateKey: proposal.candidate_key,
+				kind: proposal.kind,
+				scope: proposal.scope,
+				applicability: normalizedIdentityText(proposal.applicability),
+				content: normalizedIdentityText(proposal.content),
+			});
+			const existed = !!input.db.prepare("SELECT 1 FROM experiences WHERE user_id = ? AND id = ?").get(input.userId, id);
+			insertExperienceCandidateInTransaction(input.db, {
+				id,
+				userId: input.userId,
+				kind: proposal.kind,
+				scope: proposal.scope,
+				authority: proposal.authority,
+				applicability: proposal.applicability,
+				content: proposal.content,
+				...(proposal.rationale === undefined ? {} : { rationale: proposal.rationale }),
+				exceptions: proposal.exceptions,
+				confidenceBp: proposal.confidence_bp,
+				validFrom: input.output.created_at,
+				lastConfirmedAt: input.output.created_at,
+				supersedes: [],
+				conflictsWith,
+				provenance: sources.map(source => ({
+					source: source.origin.source === "advisor_finding" ? "advisor_finding" as const : "conversation" as const,
+					host: input.host,
+					evidenceId: `observation:${source.file_generation}:${source.seq}:${source.checksum}`,
+					observedAt: source.created_at,
+				})),
+			}, { now: input.output.created_at });
+			candidateIds.push(id);
+			if (!existed) insertedCandidates += 1;
+		}
+		const readCoverage = recordProposalReadCoverageInTransaction({
+			db: input.db,
+			userId: input.userId,
+			fileGeneration: input.output.file_generation,
+			seqStart: input.output.seq_start,
+			last: input.sourceLast,
+			createdAt: input.output.created_at,
+		});
+		const auditPayload = {
+			user_id: input.userId,
+			file_generation: input.output.file_generation,
+			batch_checksum: input.output.checksum,
+			candidate_ids: candidateIds,
+			action: "commit_typed_experiences",
+		};
+		const auditId = stableId("audit", auditPayload);
+		const auditData = canonicalJson(auditPayload);
+		const auditChecksum = checksumJson({ table: "consolidation_audit", id: auditId, data: auditPayload });
+		input.db.prepare(`INSERT OR IGNORE INTO consolidation_audit
+			(id, user_id, file_generation, proposal_batch_checksum, action, data_json, checksum, created_at)
+			VALUES (?, ?, ?, ?, 'commit_typed_experiences', ?, ?, ?)`).run(
+			auditId,
+			input.userId,
+			input.output.file_generation,
+			input.output.checksum,
+			auditData,
+			auditChecksum,
+			input.output.created_at,
+		);
+		input.db.exec("COMMIT");
+		return {
+			user_id: input.userId,
+			file_generation: input.output.file_generation,
+			candidate_ids: candidateIds,
+			evidence_ids: [],
+			watermark_after: null,
+			read_watermark_after: readCoverage.watermark_after,
+			audit_id: auditId,
+			inserted: {
+				candidates: insertedCandidates,
+				evidence: 0,
+				audit: 1,
+				watermark: 0,
+				read_watermark: readCoverage.inserted.read_watermark,
+			},
+		};
+	} catch (error) {
+		try {
+			input.db.exec("ROLLBACK");
+		} catch {}
+		throw error;
+	}
+}
+
+export async function processValidatedModelOutput(input: {
+	db: DatabaseSync;
+	userId: string;
+	output: ValidatedModelOutputBatch;
+	observations: ValidatedObservationRecord[];
+	host?: ExperienceHost;
+	expectedRange?: { file_generation: string; seq_start: number; seq_end: number; read_checksum: string };
+	semantic?: Parameters<typeof consolidateProposalBatch>[0]["semantic"];
+}): Promise<
+	| ConsolidationResult
+	| TypedExperienceConsolidationResult
+	| {
+		user_id: string;
+		file_generation: string;
+		candidate_ids: [];
+		evidence_ids: [];
+		watermark_after: null;
+		read_watermark_after?: Watermark;
+		pending_review_id?: string;
+		inserted: { read_watermark?: 0 | 1; pending_review?: 0 | 1 };
+	}
+> {
 	const userId = normalizeUserId(input.userId);
 	if (input.output.user_id !== userId) throw new Error("Model output user mismatch");
 	validateModelOutputSourceRefs(input.output, input.observations);
@@ -338,10 +564,14 @@ export async function processValidatedModelOutput(input: { db: any; userId: stri
 	}
 	const sourceLast = input.observations.find((record) => record.file_generation === input.output.file_generation && record.seq === input.output.seq_end);
 	if (!sourceLast || sourceLast.checksum !== input.output.read_checksum) throw new Error("Model output read coverage mismatch");
+	const typedProposalCount = input.output.proposals.filter(proposal => EXPERIENCE_KIND_SET.has(proposal.kind)).length;
+	if (typedProposalCount > 0 && typedProposalCount !== input.output.proposals.length) {
+		throw new Error("Model output cannot mix typed and legacy proposals");
+	}
 	const conflict = findCandidateKeyConflict(input.output);
 	if (conflict) {
 		let pending: { id: string; inserted: boolean } | undefined;
-		let readCoverage: ReturnType<typeof recordProposalReadCoverageInTransaction> | undefined;
+		let readCoverage: { watermark_after: Watermark; inserted: { read_watermark: 0 | 1 } } | undefined;
 		input.db.exec("BEGIN IMMEDIATE");
 		try {
 			pending = insertPendingReview(input.db, { userId, kind: "candidate_key_conflict", payload: { file_generation: input.output.file_generation, seq_start: input.output.seq_start, seq_end: input.output.seq_end, conflict }, createdAt: input.output.created_at });
@@ -356,6 +586,16 @@ export async function processValidatedModelOutput(input: { db: any; userId: stri
 	if (input.output.proposals.length === 0) {
 		const zero = recordZeroProposalReadCoverage({ db: input.db, userId, fileGeneration: input.output.file_generation, seqStart: input.output.seq_start, last: sourceLast, createdAt: input.output.created_at });
 		return { user_id: userId, file_generation: input.output.file_generation, candidate_ids: [], evidence_ids: [], watermark_after: null, read_watermark_after: zero.watermark_after, inserted: zero.inserted };
+	}
+	if (typedProposalCount > 0) {
+		return commitTypedExperienceProposals({
+			db: input.db,
+			userId,
+			output: input.output,
+			observations: input.observations,
+			sourceLast,
+			host: input.host ?? "pi",
+		});
 	}
 	return consolidateProposalBatch({ db: input.db, userId, proposalBatch: modelOutputToProposalBatch(input.output), observations: input.observations, readCoverage: { seq_start: input.output.seq_start, last: sourceLast }, semantic: input.semantic });
 }

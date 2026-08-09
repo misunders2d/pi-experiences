@@ -10,17 +10,25 @@ import { prepareActiveSelectorVectorsAfterChange } from "./selector-maintenance.
 import {
 	acceptCandidateHabit,
 	acceptPendingReview,
+	approveReviewedExperience,
 	declareUserHabit,
+	disableReviewedExperience,
+	formatExperienceReviewItem,
+	keepReviewedExperienceSeparate,
+	listExperienceReviewItems,
 	listPendingReviewItems,
 	normalizeDeclaredHabitWording,
 	planHabitDuplicateResolution,
 	readConfiguredLawSnapshot,
 	rejectCandidateHabit,
 	rejectPendingReview,
+	rejectReviewedExperience,
 	resolveHabitDuplicate,
 	showPendingReviewItem,
+	supersedeWithReviewedExperience,
 	type HabitDuplicateResolutionAction,
 } from "./review.ts";
+import { getExperience } from "./experience/storage.ts";
 import {
 	AgentExperienceConversationState,
 	CONVERSATION_REVIEW_MAX_ITEMS,
@@ -187,7 +195,9 @@ export function noteAgentExperienceConversationInput(ctx: Pick<ExtensionContext,
 	if (key) state.noteUserInput(key);
 }
 
-export function registerAgentExperienceConversationalTools(pi: ExtensionAPI): void {
+export function registerAgentExperienceConversationalTools(pi: ExtensionAPI, options: {
+	afterExperienceChange?: (input: { db: any; root: string; userId: string; signal?: AbortSignal }) => Promise<void>;
+} = {}): void {
 	pi.registerTool({
 		name: "agent_experience_draft_habit",
 		label: "Draft habit",
@@ -368,6 +378,144 @@ export function registerAgentExperienceConversationalTools(pi: ExtensionAPI): vo
 				const stale = /stale|changed|refresh|not found|disappeared/i.test(String((error as any)?.message || ""));
 				if (mapping) state.failReviewAction(key, stale);
 				return stateFailure(error, "review") || (stale ? result("That review item changed. Nothing was applied; show the numbered review list again.", { outcome: "review_refresh_required" }) : unavailable("review"));
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "agent_experience_list_experiences",
+		label: "Show Experience review",
+		description: "Show a sanitized numbered list of typed Experience records for review, with kind, scope, authority, rationale, and conflicts.",
+		promptSnippet: "Show numbered sanitized typed Experience records",
+		promptGuidelines: [
+			"Use this for habits, preferences, constraints, facts, decisions, episodes, and goals.",
+			"Never expose internal record IDs, checksums, approval identities, source references, vectors, or private evidence.",
+			"Apply a choice only after the user explicitly names a number and action in a later message.",
+		],
+		parameters: Type.Object({
+			status: Type.Optional(Type.Union([
+				Type.Literal("candidate"),
+				Type.Literal("active"),
+				Type.Literal("disabled"),
+				Type.Literal("superseded"),
+				Type.Literal("expired"),
+			], { default: "candidate" })),
+			kind: Type.Optional(Type.Union([
+				Type.Literal("habit"),
+				Type.Literal("preference"),
+				Type.Literal("constraint"),
+				Type.Literal("fact"),
+				Type.Literal("decision"),
+				Type.Literal("episode"),
+				Type.Literal("goal"),
+			])),
+			limit: Type.Optional(Type.Integer({ minimum: 1, maximum: CONVERSATION_REVIEW_MAX_ITEMS, default: 20 })),
+		}),
+		executionMode: "sequential",
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const key = conversationKey(ctx);
+			if (!key) return result("Conversational Experience review is unavailable in this session. Use /experience setup.", { outcome: "missing_session" });
+			let storage: Awaited<ReturnType<typeof openExistingExperienceStorage>> | undefined;
+			try {
+				const enabled = await requireEnabled();
+				if (!enabled) return result("Agent Experience is off. Use /experience setup to turn it on.", { outcome: "disabled" });
+				storage = await openExistingExperienceStorage(enabled.root, { userId: key.userId });
+				const items = listExperienceReviewItems(storage.db, {
+					userId: storage.userId,
+					statuses: [params.status || "candidate"],
+					...(params.kind ? { kinds: [params.kind] } : {}),
+				}).slice(0, Math.max(1, Math.min(CONVERSATION_REVIEW_MAX_ITEMS, params.limit || 20)));
+				const mappings: ConversationalReviewMapping[] = [];
+				const displays: string[] = [];
+				for (const item of items) {
+					const conflicts = item.recordId
+						? (getExperience(storage.db, { userId: storage.userId, id: item.recordId })?.conflictsWith || []).flatMap(id => {
+							const conflict = getExperience(storage!.db, { userId: storage!.userId, id });
+							return conflict ? [{ id: conflict.id, checksum: conflict.checksum, summary: `${conflict.kind}: ${redactText(conflict.applicability)} — ${redactText(conflict.content)}` }] : [];
+						})
+						: [];
+					mappings.push({ kind: "experience", type: item.kind, id: item.recordId, checksum: item.checksum, status: item.status, conflicts: conflicts.map(({ id, checksum }) => ({ id, checksum })) });
+					const conflictLines = conflicts.map((conflict, index) => `Conflict ${index + 1}: ${safeText(conflict.summary, 500)}`);
+					displays.push([`${mappings.length}. ${formatExperienceReviewItem(item)}`, ...conflictLines].join("\n"));
+				}
+				state.putReviewSnapshot(key, mappings);
+				if (!displays.length) return result("No typed Experience records match that review filter.", { outcome: "empty", count: 0 });
+				return result(["Experience review:", "", ...displays, "", "Discuss any item naturally. Apply only after the user explicitly confirms its number and action in a new message."].join("\n\n"), { outcome: "listed", count: displays.length });
+			} catch {
+				return unavailable("Experience review");
+			} finally {
+				storage?.db.close();
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "agent_experience_apply_experience_review",
+		label: "Apply Experience review decision",
+		description: "Apply one explicit user decision to a numbered typed Experience review item.",
+		promptSnippet: "Apply an explicitly confirmed typed Experience review decision",
+		parameters: Type.Object({
+			item_number: Type.Integer({ minimum: 1, maximum: CONVERSATION_REVIEW_MAX_ITEMS }),
+			action: Type.Union([
+				Type.Literal("approve"),
+				Type.Literal("reject"),
+				Type.Literal("keep_separate"),
+				Type.Literal("supersede"),
+				Type.Literal("disable"),
+			]),
+			conflict_number: Type.Optional(Type.Integer({ minimum: 1, maximum: CONVERSATION_REVIEW_MAX_ITEMS })),
+			confirmed: Type.Boolean({ description: "Must be true only after explicit user confirmation in a later message" }),
+		}),
+		executionMode: "sequential",
+		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+			const key = conversationKey(ctx);
+			if (!key) return result("Conversational Experience review is unavailable in this session. Use /experience setup.", { outcome: "missing_session" });
+			let mapping: ConversationalReviewMapping | undefined;
+			let storage: Awaited<ReturnType<typeof openExistingExperienceStorage>> | undefined;
+			try {
+				mapping = state.beginReviewAction(key, params.item_number, params.confirmed);
+				if (mapping.kind !== "experience") throw new Error("stale Experience review");
+				const enabled = await requireEnabled();
+				if (!enabled) throw new Error("disabled");
+				storage = await openExistingExperienceStorage(enabled.root, { userId: key.userId });
+				const current = getExperience(storage.db, { userId: storage.userId, id: mapping.id });
+				if (!current || current.checksum !== mapping.checksum || current.status !== mapping.status) throw new Error("stale Experience review");
+				const now = new Date().toISOString();
+				const conflict = params.conflict_number ? mapping.conflicts[params.conflict_number - 1] : undefined;
+				if ((params.action === "keep_separate" || params.action === "supersede") && !conflict) throw new Error("Choose a listed conflict number");
+				if (conflict) {
+					const currentConflict = getExperience(storage.db, { userId: storage.userId, id: conflict.id });
+					if (!currentConflict || currentConflict.checksum !== conflict.checksum) throw new Error("stale Experience conflict");
+				}
+				if (params.action === "approve") {
+					approveReviewedExperience(storage.db, { userId: storage.userId, recordId: mapping.id, reviewedChecksum: mapping.checksum, approvalId: `review-${mapping.checksum.slice(0, 20)}-${Date.now()}`, now });
+				} else if (params.action === "reject") {
+					rejectReviewedExperience(storage.db, { userId: storage.userId, recordId: mapping.id, reviewedChecksum: mapping.checksum, now });
+				} else if (params.action === "keep_separate") {
+					keepReviewedExperienceSeparate(storage.db, { userId: storage.userId, recordId: mapping.id, otherRecordId: conflict!.id, reviewedChecksum: mapping.checksum, now });
+				} else if (params.action === "supersede") {
+					supersedeWithReviewedExperience(storage.db, { userId: storage.userId, recordId: conflict!.id, replacementId: mapping.id, reviewedReplacementChecksum: mapping.checksum, approvalId: `review-${mapping.checksum.slice(0, 20)}-${Date.now()}`, now });
+				} else {
+					disableReviewedExperience(storage.db, { userId: storage.userId, recordId: mapping.id, reviewedChecksum: mapping.checksum, now });
+				}
+				await options.afterExperienceChange?.({ db: storage.db, root: enabled.root, userId: storage.userId, signal });
+				state.completeReviewAction(key);
+				const messages = {
+					approve: "Experience approved and active.",
+					reject: "Experience rejected.",
+					keep_separate: "The reviewed Experiences were kept separate. The candidate remains inactive until separately approved.",
+					supersede: "The reviewed candidate is active and the conflicting prior Experience is superseded.",
+					disable: "Experience disabled.",
+				};
+				return result(messages[params.action], { outcome: params.action });
+			} catch (error) {
+				const stale = /stale|changed|refresh|not found|disappeared/i.test(String((error as any)?.message || ""));
+				if (mapping) state.failReviewAction(key, stale);
+				return stateFailure(error, "Experience review") || (stale
+					? result("That Experience review changed. Nothing was applied; show the numbered Experience review again.", { outcome: "review_refresh_required" })
+					: result(safeText((error as any)?.message || "Experience review is unavailable.", 300), { outcome: "unavailable" }));
+			} finally {
+				storage?.db.close();
 			}
 		},
 	});

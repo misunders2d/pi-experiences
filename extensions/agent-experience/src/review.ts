@@ -1,3 +1,4 @@
+import type { DatabaseSync } from "node:sqlite";
 import { lstat, readFile, writeFile } from "node:fs/promises";
 import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
@@ -8,6 +9,8 @@ import { buildTypedStorageRow, insertStorageRecord } from "./storage/sqlite.ts";
 import { runAtomicSemanticActivation, runAtomicSemanticDeclaration } from "./semantic/service.ts";
 import { insertHabitDuplicateAudit, listHabitDuplicates, restoreCandidateDuplicateResolution, updateHabitDuplicateDecision } from "./semantic/storage.ts";
 import type { EmbeddingAdapter, SemanticDedupePolicy } from "./semantic/types.ts";
+import { activateExperience, disableExperience, getExperience, keepExperienceSeparate, listExperiences, supersedeExperience } from "./experience/storage.ts";
+import type { ExperienceKind, ExperienceRecordV1, ExperienceScope, ExperienceStatus } from "./experience/types.ts";
 
 export const LAW_CHECKER_VERSION = "agent_experience_law_check_v1";
 const REPORT_NAME = "habits-report.md";
@@ -817,4 +820,130 @@ export async function generateHabitsReport(db: any, input: { root: string; userI
 	const path = resolvePrivatePath(await ensurePrivateRoot(input.root), REPORT_NAME);
 	if (input.write !== false) await writeFile(path, content, { mode: 0o600 });
 	return { user_id: userId, path, content, report_only: true, injectable: false };
+}
+
+export interface ExperienceReviewItem {
+	recordId: string;
+	reviewKey: string;
+	kind: ExperienceKind;
+	scope: ExperienceScope;
+	authority: ExperienceRecordV1["authority"];
+	status: ExperienceStatus;
+	applicability: string;
+	content: string;
+	rationale?: string;
+	exceptions: string[];
+	confidenceBp: number;
+	conflictCount: number;
+	checksum: string;
+}
+
+export function listExperienceReviewItems(db: DatabaseSync, input: {
+	userId: string;
+	statuses?: ExperienceStatus[];
+	kinds?: ExperienceKind[];
+	scope?: ExperienceScope;
+}): ExperienceReviewItem[] {
+	return listExperiences(db, { userId: input.userId, statuses: input.statuses, kinds: input.kinds })
+		.filter(record => !input.scope || (record.scope.kind === input.scope.kind && record.scope.key === input.scope.key))
+		.map(record => ({
+			recordId: record.id,
+			reviewKey: `review-${record.checksum.slice(0, 12)}`,
+			kind: record.kind,
+			scope: record.scope,
+			authority: record.authority,
+			status: record.status,
+			applicability: redactText(record.applicability),
+			content: redactText(record.content),
+			...(record.rationale === undefined ? {} : { rationale: redactText(record.rationale) }),
+			exceptions: record.exceptions.map(exception => redactText(exception)),
+			confidenceBp: record.confidenceBp,
+			conflictCount: record.conflictsWith.length,
+			checksum: record.checksum,
+		}));
+}
+
+export function formatExperienceReviewItem(item: ExperienceReviewItem): string {
+	const scope = item.scope.key ? `${item.scope.kind}:${redactText(item.scope.key)}` : item.scope.kind;
+	const lines = [
+		`${item.kind} · ${item.status} · ${scope} · ${item.authority}`,
+		`When: ${item.applicability}`,
+		`Content: ${item.content}`,
+	];
+	if (item.rationale) lines.push(`Rationale: ${item.rationale}`);
+	if (item.exceptions.length) lines.push(`Exceptions: ${item.exceptions.join("; ")}`);
+	if (item.conflictCount) lines.push(`Conflicts requiring review: ${item.conflictCount}`);
+	return lines.join("\n");
+}
+
+export function approveReviewedExperience(db: DatabaseSync, input: {
+	userId: string;
+	recordId: string;
+	reviewedChecksum: string;
+	approvalId: string;
+	now?: string;
+}): ExperienceRecordV1 {
+	return activateExperience(db, {
+		userId: input.userId,
+		id: input.recordId,
+		reviewedChecksum: input.reviewedChecksum,
+		approvalId: input.approvalId,
+		now: input.now,
+	});
+}
+
+export function rejectReviewedExperience(db: DatabaseSync, input: {
+	userId: string;
+	recordId: string;
+	reviewedChecksum: string;
+	now?: string;
+}): ExperienceRecordV1 {
+	const current = getExperience(db, { userId: input.userId, id: input.recordId });
+	if (!current || current.status !== "candidate" || current.checksum !== input.reviewedChecksum) throw new Error("Experience candidate changed after review");
+	return disableExperience(db, { userId: input.userId, id: input.recordId, now: input.now });
+}
+
+export function keepReviewedExperienceSeparate(db: DatabaseSync, input: {
+	userId: string;
+	recordId: string;
+	otherRecordId: string;
+	reviewedChecksum: string;
+	now?: string;
+}): ExperienceRecordV1 {
+	return keepExperienceSeparate(db, {
+		userId: input.userId,
+		id: input.recordId,
+		otherId: input.otherRecordId,
+		reviewedChecksum: input.reviewedChecksum,
+		now: input.now,
+	});
+}
+
+export function supersedeWithReviewedExperience(db: DatabaseSync, input: {
+	userId: string;
+	recordId: string;
+	replacementId: string;
+	reviewedReplacementChecksum?: string;
+	approvalId?: string;
+	now?: string;
+}): ExperienceRecordV1 {
+	return supersedeExperience(db, {
+		userId: input.userId,
+		id: input.recordId,
+		replacementId: input.replacementId,
+		reviewedChecksum: input.reviewedReplacementChecksum,
+		approvalId: input.approvalId,
+		now: input.now,
+	});
+}
+
+export function disableReviewedExperience(db: DatabaseSync, input: {
+	userId: string;
+	recordId: string;
+	reviewedChecksum: string;
+	now?: string;
+}): ExperienceRecordV1 {
+	const current = getExperience(db, { userId: input.userId, id: input.recordId });
+	if (!current || current.status !== "active" || current.checksum !== input.reviewedChecksum) throw new Error("Active experience changed after review");
+	return disableExperience(db, { userId: input.userId, id: input.recordId, now: input.now });
 }

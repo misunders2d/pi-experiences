@@ -43,6 +43,7 @@ export interface SetupConfigSnapshot {
 }
 
 export interface SetupSnapshot {
+	host: "pi" | "omp";
 	config: SetupConfigSnapshot;
 	counts: {
 		observations: number;
@@ -96,9 +97,12 @@ export function buildSetupItems(view: SetupView, snapshot: SetupSnapshot): Setti
 	const { config, counts } = snapshot;
 	const reviewAvailable = snapshot.reviewState !== "Needs attention";
 	if (view === "home") {
+		const guidanceValue = snapshot.host === "omp"
+			? `OMP Advisor context ${active(config, config.advisor_enabled) ? "ON" : "OFF"} · habits ${active(config, config.selector_enabled) ? "ON" : "OFF"}`
+			: `Advisor ${active(config, config.advisor_enabled) ? "ON" : "OFF"} · habits ${active(config, config.selector_enabled) ? "ON" : "OFF"}`;
 		return [
 			actionItem("openLearning", "Learning from conversations", active(config, config.capture_enabled) ? "ON" : "OFF", "Save examples, choose the learning model, Analyze, and review suggestions."),
-			actionItem("openGuidance", "Guidance and Advisor", `Advisor ${active(config, config.advisor_enabled) ? "ON" : "OFF"} · habits ${active(config, config.selector_enabled) ? "ON" : "OFF"}`, "Configure independent runtime review and approved-habit guidance."),
+			actionItem("openGuidance", "Guidance and Advisor", guidanceValue, snapshot.host === "omp" ? "Connect approved Experiences to OMP's native Advisor or apply habits directly." : "Configure independent runtime review and approved-habit guidance."),
 			actionItem("openHabits", "Manage habits", reviewAvailable ? `${counts.approved} approved · ${counts.suggestions} waiting` : "Needs attention", "Review approved habits and resolve possible duplicates."),
 			actionItem("openAutomation", "Automation and privacy", `${config.timer_enabled ? "Scheduled" : "Manual"} · ${config.observation_retention_days}-day retention`, "Manage retention, review prompts, schedule, and shared local files."),
 			actionItem("openStatus", "Status and help", "", "See grouped status and concise explanations."),
@@ -116,10 +120,17 @@ export function buildSetupItems(view: SetupView, snapshot: SetupSnapshot): Setti
 		];
 	}
 	if (view === "guidance") {
+		const advisorItems = snapshot.host === "omp"
+			? [
+				actionItem("advisor", "Use Experiences in OMP Advisor", checkboxValue(active(config, config.advisor_enabled)), "Supply bounded approved context to OMP's native Advisor. This does not create a second Advisor or model call."),
+			]
+			: [
+				actionItem("advisor", "Runtime Advisor", checkboxValue(active(config, config.advisor_enabled)), "Review transcript updates and show visible guidance after explicit setup."),
+				actionItem("advisorModel", "Advisor model", config.advisor_model ? snapshot.effectiveAdvisorModel : "Same as habit assessment", "Inherit the habit-assessment model or choose a separate authenticated model."),
+			];
 		return [
-			actionItem("advisor", "Runtime Advisor", checkboxValue(active(config, config.advisor_enabled)), "Review transcript updates and show visible guidance after explicit setup."),
-			actionItem("advisorModel", "Advisor model", config.advisor_model ? snapshot.effectiveAdvisorModel : "Same as habit assessment", "Inherit the habit-assessment model or choose a separate authenticated model."),
-			actionItem("selector", "Use approved habits", checkboxValue(active(config, config.selector_enabled)), "Apply only human-approved habits; this switch is independent from Advisor."),
+			...advisorItems,
+			actionItem("selector", "Use approved habits", checkboxValue(active(config, config.selector_enabled)), "Apply only human-approved habits directly before replies; this is independent from Advisor context."),
 			actionItem("assessmentModel", "Habit-assessment model", config.selector_model || "choose model", "Choose the authenticated model that checks whether approved habits apply."),
 			actionItem("back", "Back"),
 		];
@@ -172,11 +183,19 @@ function statusLines(snapshot: SetupSnapshot): string[] {
 	const advisorModel = config.advisor_model ? snapshot.effectiveAdvisorModel : `${snapshot.effectiveAdvisorModel} (same as habit assessment)`;
 	const advisorLifecycle = snapshot.advisorRuntime ? ` · runtime ${snapshot.advisorRuntime}` : "";
 	const advisorQueue = typeof counts.advisorQueued === "number" ? ` · ${counts.advisorQueued} queued` : "";
+	const advisorLines = snapshot.host === "omp"
+		? [
+			`OMP Advisor context — ${active(config, config.advisor_enabled) ? "ON" : "OFF"} · native Advisor settings stay in OMP`,
+			"Agent Experience supplies bounded approved context to OMP's existing Advisor; it does not create another reviewer or model call.",
+		]
+		: [
+			`Advisor — ${active(config, config.advisor_enabled) ? "ON" : "OFF"} · ${advisorModel}${advisorLifecycle}${advisorQueue}`,
+			"Advisor reviews transcript updates with a separate authenticated model and shows any steering visibly.",
+		];
 	return [
 		`Learning — ${active(config, config.capture_enabled) ? "ON" : "OFF"} · ${config.consolidation_model} · ${counts.observations} waiting examples · ${reviewAvailable ? `${counts.suggestions} suggestions waiting` : "suggestions need attention"}`,
 		"Learning saves redacted completed examples locally; suggestions always wait for review.",
-		`Advisor — ${active(config, config.advisor_enabled) ? "ON" : "OFF"} · ${advisorModel}${advisorLifecycle}${advisorQueue}`,
-		"Advisor reviews transcript updates with a separate authenticated model and shows any steering visibly.",
+		...advisorLines,
 		`Approved-habit guidance — ${active(config, config.selector_enabled) ? "ON" : "OFF"} · ${config.selector_model}`,
 		"Approved-habit guidance uses only habits you approved and remains independent from Advisor.",
 		reviewAvailable ? `Habits — ${counts.approved} approved · ${counts.suggestions} waiting · ${counts.duplicates} possible duplicates` : "Habits — Needs attention",

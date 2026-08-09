@@ -35,8 +35,20 @@ const fakePi = {
 
 agentExperienceExtension(fakePi);
 assert.deepEqual([...commands.keys()], ['experience'], 'extension should register only /experience command');
-assert.deepEqual([...tools.keys()].sort(), ['agent_experience_apply_review', 'agent_experience_confirm_habit', 'agent_experience_draft_habit', 'agent_experience_list_review'], 'extension should register only the four conversational Agent Experience tools');
+assert.deepEqual([...tools.keys()].sort(), ['agent_experience_apply_experience_review', 'agent_experience_apply_review', 'agent_experience_confirm_habit', 'agent_experience_draft_habit', 'agent_experience_list_experiences', 'agent_experience_list_review'], 'extension should register the conversational Agent Experience tools');
 assert.deepEqual([...handlers.keys()].sort(), ['agent_end', 'agent_settled', 'before_agent_start', 'before_provider_request', 'context', 'input', 'message_end', 'message_start', 'model_select', 'session_before_compact', 'session_before_fork', 'session_before_switch', 'session_before_tree', 'session_compact', 'session_shutdown', 'session_start', 'session_tree', 'tool_execution_end', 'tool_execution_start', 'turn_end'], 'extension may register capture, Advisor, scheduled receipt, response steering, and fail-closed lifecycle hooks');
+
+const ompHandlers = new Map();
+agentExperienceExtension({
+  host: 'omp',
+  registerCommand() {},
+  registerTool() {},
+  on(event, handler) {
+    ompHandlers.set(event, handler);
+  },
+});
+assert.ok(ompHandlers.has('advisor_context'), 'OMP host must register the native Advisor context hook');
+assert.equal(handlers.has('advisor_context'), false, 'Pi host must not register the OMP-only Advisor context hook');
 
 const plainSetupLeakPattern = /capture=|learning=|guidance=|consolidation=|timer=|break_in=|selector=|selector_mode=|pre-injection/i;
 const paths = getAgentExperiencePaths();
