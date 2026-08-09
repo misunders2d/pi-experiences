@@ -6,6 +6,18 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 ## [Unreleased]
 
+## [0.1.53] - 2026-08-09
+
+### Fixed
+
+- Added a runtime-neutral SQLite adapter so Pi continues using Node's `node:sqlite` while OMP uses Bun's `bun:sqlite`. Existing ledgers, schemas, and backup behavior remain shared across both hosts.
+- Removed Pi-only visual-provenance steering from the OMP path; OMP now supplies approved Experience context exclusively through its native Advisor.
+
+### Validation
+
+- Added Node and Bun regression coverage for database creation, reopening, backup, integrity verification, host routing, and OMP-only native Advisor behavior.
+
+
 ## [0.1.52] - 2026-08-09
 
 
@@ -179,7 +191,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 - Added synchronous submission-hook checks, deferred embedding/model assertions, and a packed Pi TUI smoke requiring submitted-message rendering within 1.5 seconds.
 
-[Unreleased]: https://github.com/misunders2d/pi-experiences/compare/v0.1.52...HEAD
+[Unreleased]: https://github.com/misunders2d/pi-experiences/compare/v0.1.53...HEAD
+[0.1.53]: https://github.com/misunders2d/pi-experiences/compare/v0.1.52...v0.1.53
 [0.1.52]: https://github.com/misunders2d/pi-experiences/compare/v0.1.51...v0.1.52
 [0.1.51]: https://github.com/misunders2d/pi-experiences/compare/v0.1.50...v0.1.51
 [0.1.50]: https://github.com/misunders2d/pi-experiences/compare/v0.1.49...v0.1.50

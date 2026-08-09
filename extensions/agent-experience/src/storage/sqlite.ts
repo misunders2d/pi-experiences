@@ -5,6 +5,7 @@ import { redactJson } from "./redaction.ts";
 import { applyStorageMigrations, assertSupportedStorageVersion, readStorageSchemaVersion } from "./migrations.ts";
 import { recoverInterruptedRestore } from "./backup.ts";
 import { STORAGE_REQUIRED_INDEXES, STORAGE_REQUIRED_TABLES, STORAGE_SCHEMA_VERSION, STORAGE_STATUS_VALUES, STORAGE_TYPED_FIELDS, USER_SCOPED_TABLES, type StorageStatus } from "./schema.ts";
+import { openExperienceDatabaseWithRuntime } from "./runtime.ts";
 
 export interface InitExperienceStorageOptions {
 	allowInit: boolean;
@@ -33,15 +34,6 @@ export interface TypedStorageRowInput {
 const STATUS_SET = new Set<string>(STORAGE_STATUS_VALUES);
 const TYPED_FIELD_SET = new Set<string>(STORAGE_TYPED_FIELDS as readonly string[]);
 
-export async function loadSqlite() {
-	try {
-		const sqlite = await import("node:sqlite");
-		if (typeof sqlite.DatabaseSync !== "function") throw new Error("node:sqlite DatabaseSync unavailable");
-		return sqlite;
-	} catch (error: any) {
-		throw new Error(`Agent Experience SQLite unavailable: ${error?.message || error}`);
-	}
-}
 
 async function ledgerExists(dbPath: string): Promise<boolean> {
 	try {
@@ -77,8 +69,7 @@ export async function openExistingExperienceStorage(root: string, options: { use
 	await recoverInterruptedRestore(privateRoot);
 	const dbPath = resolvePrivatePath(privateRoot, "ledger.sqlite");
 	if (!(await ledgerExists(dbPath))) throw new Error(`Agent Experience ledger missing: ${dbPath}`);
-	const sqlite = await loadSqlite();
-	const db = new sqlite.DatabaseSync(dbPath, { open: true });
+	const db = await openExperienceDatabaseWithRuntime(dbPath, { timeout: 5_000 });
 	try {
 		assertSupportedStorageVersion(db);
 		ensureCurrentStorageSchema(db);
@@ -97,8 +88,7 @@ export async function initExperienceStorage(root: string, options: InitExperienc
 	await recoverInterruptedRestore(privateRoot);
 	const dbPath = resolvePrivatePath(privateRoot, "ledger.sqlite");
 	const existed = await ledgerExists(dbPath);
-	const sqlite = await loadSqlite();
-	const db = new sqlite.DatabaseSync(dbPath, { open: true });
+	const db = await openExperienceDatabaseWithRuntime(dbPath, { create: true, timeout: 5_000 });
 	try {
 		if (existed) assertSupportedStorageVersion(db);
 		ensureCurrentStorageSchema(db);

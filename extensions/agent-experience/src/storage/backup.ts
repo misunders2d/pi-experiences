@@ -5,6 +5,7 @@ import { canonicalJson, checksumJson, sha256Hex } from "./checksum.ts";
 import { containsUnredactedSensitiveText } from "./redaction.ts";
 import { STORAGE_SCHEMA_VERSION } from "./schema.ts";
 import { withOwnedLock } from "./locks.ts";
+import { backupExperienceDatabaseWithRuntime, openExperienceDatabaseWithRuntime } from "./runtime.ts";
 import {
 	assertPathInsidePrivateRoot,
 	chmodSensitiveFile,
@@ -139,15 +140,9 @@ async function fileArtifact(path: string, name: string): Promise<BackupArtifact>
 	return { name, checksum: sha256Hex(bytes), bytes: bytes.length };
 }
 
-async function loadSqliteRuntime() {
-	const sqlite = await import("node:sqlite");
-	if (typeof sqlite.DatabaseSync !== "function" || typeof sqlite.backup !== "function") throw new Error("Agent Experience SQLite backup API unavailable");
-	return sqlite;
-}
 
 async function verifySqliteFile(path: string, options: { requireCurrent?: boolean } = {}): Promise<{ userVersion: number }> {
-	const { DatabaseSync } = await loadSqliteRuntime();
-	const db = new DatabaseSync(path, { open: true, readOnly: true, timeout: 5_000 });
+	const db = await openExperienceDatabaseWithRuntime(path, { readOnly: true, timeout: 5_000 });
 	try {
 		const version = Number(db.prepare("PRAGMA user_version").get()?.user_version ?? 0);
 		if (!Number.isInteger(version) || version < 0 || version > STORAGE_SCHEMA_VERSION) throw new Error(`Unsupported backup storage schema version: ${version}`);
@@ -182,13 +177,12 @@ export async function createBackup(root: string, options: { backupId?: string; c
 		await ensurePrivateDirectory(privateRoot, stagingDir);
 		try {
 			const snapshotPath = resolvePrivatePath(privateRoot, "backups", `.staging-${token}`, "ledger.sqlite");
-			const { DatabaseSync, backup: sqliteBackup } = await loadSqliteRuntime();
-			const sourceDb = new DatabaseSync(dbPath, { open: true, timeout: 5_000 });
+			const sourceDb = await openExperienceDatabaseWithRuntime(dbPath, { timeout: 5_000 });
 			let sourceVersion: number;
 			try {
 				sourceVersion = Number(sourceDb.prepare("PRAGMA user_version").get()?.user_version ?? 0);
 				if (!Number.isInteger(sourceVersion) || sourceVersion < 0 || sourceVersion > STORAGE_SCHEMA_VERSION) throw new Error(`Unsupported Agent Experience storage schema version: ${sourceVersion}`);
-				await sqliteBackup(sourceDb, snapshotPath, { rate: 100 });
+				await backupExperienceDatabaseWithRuntime(sourceDb, snapshotPath);
 			} finally {
 				sourceDb.close();
 			}

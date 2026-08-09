@@ -2013,6 +2013,39 @@ import { copyFile as copyFile2, lstat as lstat4, mkdir as mkdir4, readFile as re
 init_checksum();
 init_redaction();
 init_locks();
+
+// extensions/agent-experience/src/storage/runtime.ts
+function resolveAgentExperienceHost(api, runtime = globalThis) {
+  if (api.host === "omp") return "omp";
+  if (api.host === "pi") return "pi";
+  return typeof runtime.Bun?.version === "string" ? "omp" : "pi";
+}
+async function loadExperienceSqliteRuntime() {
+  if (resolveAgentExperienceHost({}, globalThis) === "omp") {
+    const specifier = "bun:sqlite";
+    const sqlite2 = await import(specifier);
+    if (typeof sqlite2.Database !== "function") throw new Error("bun:sqlite Database unavailable");
+    return { kind: "bun", Database: sqlite2.Database };
+  }
+  const sqlite = await import("node:sqlite");
+  if (typeof sqlite.DatabaseSync !== "function" || typeof sqlite.backup !== "function") throw new Error("node:sqlite DatabaseSync unavailable");
+  return { kind: "node", DatabaseSync: sqlite.DatabaseSync, backup: sqlite.backup };
+}
+async function openExperienceDatabaseWithRuntime(path, options = {}, runtime) {
+  const sqlite = runtime ?? await loadExperienceSqliteRuntime();
+  if (sqlite.kind === "node") {
+    return new sqlite.DatabaseSync(path, {
+      open: true,
+      readOnly: options.readOnly,
+      timeout: options.timeout
+    });
+  }
+  const db = new sqlite.Database(path, options.readOnly ? { readonly: true } : { create: options.create === true, readwrite: true });
+  if (options.timeout !== void 0) db.exec(`PRAGMA busy_timeout = ${Math.max(0, Math.trunc(options.timeout))}`);
+  return db;
+}
+
+// extensions/agent-experience/src/storage/backup.ts
 init_private_root();
 var LIVE_RESET_ARTIFACTS = [
   "ledger.sqlite",
@@ -2059,14 +2092,8 @@ async function fileArtifact(path, name) {
   const bytes = await readFile3(path);
   return { name, checksum: sha256Hex(bytes), bytes: bytes.length };
 }
-async function loadSqliteRuntime() {
-  const sqlite = await import("node:sqlite");
-  if (typeof sqlite.DatabaseSync !== "function" || typeof sqlite.backup !== "function") throw new Error("Agent Experience SQLite backup API unavailable");
-  return sqlite;
-}
 async function verifySqliteFile(path, options = {}) {
-  const { DatabaseSync } = await loadSqliteRuntime();
-  const db = new DatabaseSync(path, { open: true, readOnly: true, timeout: 5e3 });
+  const db = await openExperienceDatabaseWithRuntime(path, { readOnly: true, timeout: 5e3 });
   try {
     const version = Number(db.prepare("PRAGMA user_version").get()?.user_version ?? 0);
     if (!Number.isInteger(version) || version < 0 || version > STORAGE_SCHEMA_VERSION) throw new Error(`Unsupported backup storage schema version: ${version}`);
@@ -2160,15 +2187,6 @@ async function recoverInterruptedRestore(root) {
 // extensions/agent-experience/src/storage/sqlite.ts
 var STATUS_SET3 = new Set(STORAGE_STATUS_VALUES);
 var TYPED_FIELD_SET2 = new Set(STORAGE_TYPED_FIELDS);
-async function loadSqlite() {
-  try {
-    const sqlite = await import("node:sqlite");
-    if (typeof sqlite.DatabaseSync !== "function") throw new Error("node:sqlite DatabaseSync unavailable");
-    return sqlite;
-  } catch (error) {
-    throw new Error(`Agent Experience SQLite unavailable: ${error?.message || error}`);
-  }
-}
 async function ledgerExists(dbPath) {
   try {
     const info = await lstat5(dbPath);
@@ -2201,8 +2219,7 @@ async function initExperienceStorage(root, options) {
   await recoverInterruptedRestore(privateRoot);
   const dbPath = resolvePrivatePath(privateRoot, "ledger.sqlite");
   const existed = await ledgerExists(dbPath);
-  const sqlite = await loadSqlite();
-  const db = new sqlite.DatabaseSync(dbPath, { open: true });
+  const db = await openExperienceDatabaseWithRuntime(dbPath, { create: true, timeout: 5e3 });
   try {
     if (existed) assertSupportedStorageVersion(db);
     ensureCurrentStorageSchema(db);

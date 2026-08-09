@@ -5,6 +5,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { completeSimple, type Model } from "@earendil-works/pi-ai/compat";
 import { getPackageDir, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Box, decodeKittyPrintable, fuzzyFilter, Input, Key, matchesKey, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component, type Focusable } from "@earendil-works/pi-tui";
+import { resolveAgentExperienceHost } from "./src/storage/runtime.ts";
 import {
 	getAgentExperiencePaths,
 	readAgentExperienceConfig,
@@ -3257,7 +3258,7 @@ function assistantTurnIsTerminal(message: unknown): boolean {
 }
 
 export default function agentExperienceExtension(pi: ExtensionAPI) {
-	const isOmpHost = (pi as ExtensionAPI & { host?: string }).host === "omp";
+	const isOmpHost = resolveAgentExperienceHost(pi) === "omp";
 	registerAgentExperienceConversationalTools(pi, {
 		afterExperienceChange: async (input) => {
 			await maintainSelectorVectorsAfterActiveChange(input, input.signal);

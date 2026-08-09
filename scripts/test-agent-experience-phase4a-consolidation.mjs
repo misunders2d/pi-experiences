@@ -8,7 +8,8 @@ import agentExperienceExtension from '../extensions/agent-experience/index.ts';
 import { getAgentExperiencePaths } from '../extensions/agent-experience/src/paths.ts';
 import { canonicalJson } from '../extensions/agent-experience/src/storage/checksum.ts';
 import { ensurePrivateRoot, resolvePrivatePath } from '../extensions/agent-experience/src/storage/private-root.ts';
-import { buildTypedStorageRow, initExperienceStorage, insertStorageRecord, selectStorageRecordsByUser, loadSqlite } from '../extensions/agent-experience/src/storage/sqlite.ts';
+import { buildTypedStorageRow, initExperienceStorage, insertStorageRecord, selectStorageRecordsByUser } from '../extensions/agent-experience/src/storage/sqlite.ts';
+import { openExperienceDatabaseWithRuntime } from '../extensions/agent-experience/src/storage/runtime.ts';
 import { observationChecksumForTest, observationPairRefForTest } from '../extensions/agent-experience/src/storage/observations.ts';
 import { validateObservationRecords, readValidatedObservationGeneration } from '../extensions/agent-experience/src/consolidate/observations.ts';
 import { validateProposalBatch } from '../extensions/agent-experience/src/consolidate/proposals.ts';
@@ -200,8 +201,7 @@ assert.equal(hasRepetitionEligibility(['2026-07-05T00:00:00.000Z', '2026-07-05T0
 assert.throws(() => hasRepetitionEligibility(['not-a-date', '2026-07-05T01:00:00.000Z', '2026-07-06T02:00:00.000Z']), /Invalid evidence date/i);
 
 const migrationRoot = await ensurePrivateRoot(join(temp, 'migration'));
-const sqlite = await loadSqlite();
-const oldDb = new sqlite.DatabaseSync(resolvePrivatePath(migrationRoot, 'ledger.sqlite'), { open: true });
+const oldDb = await openExperienceDatabaseWithRuntime(resolvePrivatePath(migrationRoot, 'ledger.sqlite'), { create: true });
 oldDb.exec(`
 CREATE TABLE migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
 CREATE TABLE habits (id TEXT PRIMARY KEY, user_id TEXT NOT NULL DEFAULT 'owner', data_json TEXT NOT NULL, checksum TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
