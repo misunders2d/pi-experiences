@@ -6,6 +6,17 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 ## [Unreleased]
 
+## [0.1.54] - 2026-08-09
+
+### Fixed
+
+- Kept internal legacy-migration quarantine records out of the suggested-habit review list, so the first actionable habit again renders its exact `When` and `Do` details. Quarantine records remain stored for integrity diagnostics.
+
+### Validation
+
+- Added a regression covering a legacy quarantine record ahead of a real habit candidate and verified the focused review panel renders the candidate details.
+
+
 ## [0.1.53] - 2026-08-09
 
 ### Fixed
@@ -191,7 +202,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 - Added synchronous submission-hook checks, deferred embedding/model assertions, and a packed Pi TUI smoke requiring submitted-message rendering within 1.5 seconds.
 
-[Unreleased]: https://github.com/misunders2d/pi-experiences/compare/v0.1.53...HEAD
+[Unreleased]: https://github.com/misunders2d/pi-experiences/compare/v0.1.54...HEAD
+[0.1.54]: https://github.com/misunders2d/pi-experiences/compare/v0.1.53...v0.1.54
 [0.1.53]: https://github.com/misunders2d/pi-experiences/compare/v0.1.52...v0.1.53
 [0.1.52]: https://github.com/misunders2d/pi-experiences/compare/v0.1.51...v0.1.52
 [0.1.51]: https://github.com/misunders2d/pi-experiences/compare/v0.1.50...v0.1.51

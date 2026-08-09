@@ -431,6 +431,17 @@ try {
   storage.db.close();
 }
 
+storage = await initExperienceStorage(paths.root, { allowInit: true, userId: 'owner' });
+try {
+  const payload = { legacyHabitId: 'legacy-quarantine', legacyChecksum: 'stale', reason: 'legacy_checksum_mismatch' };
+  storage.db.prepare(`INSERT INTO pending_review
+    (id, user_id, kind, status, payload_json, checksum, created_at, updated_at)
+    VALUES (?, ?, 'legacy_experience_migration', 'open', ?, ?, ?, ?)`)
+    .run('legacy-review-test', 'owner', canonicalJson(payload), 'legacy-review-checksum', '2020-01-01T00:00:00.000Z', '2020-01-01T00:00:00.000Z');
+} finally {
+  storage.db.close();
+}
+
 notes.length = 0;
 let reviewPanelSeen = false;
 let safetyActionPanelSeen = false;
