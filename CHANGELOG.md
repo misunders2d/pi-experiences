@@ -6,6 +6,18 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 ## [Unreleased]
 
+## [0.1.55] - 2026-08-10
+
+### Fixed
+
+- Aligned the setup suggestion counter with **Review suggested habits**. Approved-but-waiting habits remain under **Review approved habits** and no longer inflate the actionable suggestion count.
+
+### Validation
+
+- Added a regression proving approved-but-waiting habits do not affect the suggested-habit count.
+
+
+
 ## [0.1.54] - 2026-08-09
 
 ### Fixed
@@ -202,7 +214,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 - Added synchronous submission-hook checks, deferred embedding/model assertions, and a packed Pi TUI smoke requiring submitted-message rendering within 1.5 seconds.
 
-[Unreleased]: https://github.com/misunders2d/pi-experiences/compare/v0.1.54...HEAD
+[Unreleased]: https://github.com/misunders2d/pi-experiences/compare/v0.1.55...HEAD
+[0.1.55]: https://github.com/misunders2d/pi-experiences/compare/v0.1.54...v0.1.55
 [0.1.54]: https://github.com/misunders2d/pi-experiences/compare/v0.1.53...v0.1.54
 [0.1.53]: https://github.com/misunders2d/pi-experiences/compare/v0.1.52...v0.1.53
 [0.1.52]: https://github.com/misunders2d/pi-experiences/compare/v0.1.51...v0.1.52
