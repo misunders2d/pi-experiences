@@ -6,6 +6,16 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 ## [Unreleased]
 
+## [0.1.58] - 2026-08-10
+
+### Fixed
+
+- Added trusted visible provenance for OMP-native habit guidance: Pi Experiences now contributes current-review opaque aliases with exact approved `When:` / `Do:` text, and patched OMP renders a distinct **Experience** card only after validating the cited alias. The validated correction tells the primary agent to follow the exact approved behavior unless higher-priority instructions or safety conflict.
+
+### Validation
+
+- Added a dual-host adapter regression proving OMP policy metadata contains exact approved wording without durable habit IDs.
+
 ## [0.1.57] - 2026-08-10
 
 ### Fixed
@@ -239,7 +249,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 - Added synchronous submission-hook checks, deferred embedding/model assertions, and a packed Pi TUI smoke requiring submitted-message rendering within 1.5 seconds.
 
-[Unreleased]: https://github.com/misunders2d/pi-experiences/compare/v0.1.57...HEAD
+[Unreleased]: https://github.com/misunders2d/pi-experiences/compare/v0.1.58...HEAD
+[0.1.58]: https://github.com/misunders2d/pi-experiences/compare/v0.1.57...v0.1.58
 [0.1.57]: https://github.com/misunders2d/pi-experiences/compare/v0.1.56...v0.1.57
 [0.1.56]: https://github.com/misunders2d/pi-experiences/compare/v0.1.55...v0.1.56
 [0.1.55]: https://github.com/misunders2d/pi-experiences/compare/v0.1.54...v0.1.55

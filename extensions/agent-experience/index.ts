@@ -4007,7 +4007,7 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 					}
 					ompAdvisorAttributions.set(event.scopeKey, scoped);
 				}
-				return { context: contribution.context };
+				return { context: contribution.context, policies: contribution.policies };
 			} catch {
 				return undefined;
 			} finally {

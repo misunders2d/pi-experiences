@@ -257,12 +257,20 @@ export function boundedOmpAdvisorQuery(updates: readonly unknown[]): string {
 	}
 	return parts.join("\n").slice(0, MAX_OMP_ADVISOR_QUERY_CHARS);
 }
+export interface OmpAdvisorPolicyAttribution {
+	attribution: string;
+	source: "Experience";
+	condition: string;
+	behavior: string;
+}
+
 
 export interface OmpExperienceAdvisorContext {
 	context: string;
 	experienceCount: number;
 	assistantContextCount: number;
 	attributions: ReadonlyMap<string, ExperienceRetrievalCandidate>;
+	policies: readonly OmpAdvisorPolicyAttribution[];
 }
 
 export async function buildOmpExperienceAdvisorContext(db: DatabaseSync, input: HostExperienceContextInput): Promise<OmpExperienceAdvisorContext> {
@@ -270,8 +278,17 @@ export async function buildOmpExperienceAdvisorContext(db: DatabaseSync, input: 
 	const all = buildExperienceContextPack(retrieved.candidates, "all");
 	const nonce = randomUUID();
 	const attributions = new Map<string, ExperienceRetrievalCandidate>();
+	const policies: OmpAdvisorPolicyAttribution[] = [];
 	for (const candidate of retrieved.candidates) {
-		if (candidate.experience.kind === "habit") attributions.set(`${nonce}:${candidate.alias}`, candidate);
+		if (candidate.experience.kind !== "habit") continue;
+		const attribution = `${nonce}:${candidate.alias}`;
+		attributions.set(attribution, candidate);
+		policies.push({
+			attribution,
+			source: "Experience",
+			condition: candidate.experience.applicability,
+			behavior: candidate.experience.content,
+		});
 	}
 	const payload = {
 		schemaVersion: 1,
@@ -287,5 +304,6 @@ export async function buildOmpExperienceAdvisorContext(db: DatabaseSync, input: 
 		experienceCount: payload.experienceContext.length,
 		assistantContextCount: retrieved.assistantContext.modelPayload.length,
 		attributions,
+		policies,
 	};
 }

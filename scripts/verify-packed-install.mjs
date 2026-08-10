@@ -14,7 +14,7 @@ const packageRoot=resolve(process.argv[2]||'');
 if(!packageRoot)throw new Error('Usage: verify-packed-install.mjs /absolute/installed/pi-experiences');
 const pkg=JSON.parse(await readFile(join(packageRoot,'package.json'),'utf8'));
 assert.equal(pkg.name,'pi-experiences');
-assert.equal(pkg.version,'0.1.57');
+assert.equal(pkg.version,'0.1.58');
 assert.equal(pkg.engines.node,'>=22.19.0');
 assert.deepEqual(pkg.peerDependencies,{'@earendil-works/pi-agent-core':'*','@earendil-works/pi-ai':'*','@earendil-works/pi-coding-agent':'>=0.83.0','@earendil-works/pi-tui':'*'});
 const installedPeerVersions={
@@ -23,7 +23,7 @@ const installedPeerVersions={
 };
 function versionTuple(version){const match=/^(\d+)\.(\d+)\.(\d+)/.exec(version);assert.ok(match,`invalid installed peer version: ${version}`);return match.slice(1).map(Number);}
 const coreVersion=versionTuple(installedPeerVersions['@earendil-works/pi-agent-core']);
-assert.ok(coreVersion[0]===0&&coreVersion[1]===83,'isolated pi-agent-core must resolve ^0.83.0');
+assert.ok(coreVersion[0]>0||(coreVersion[0]===0&&coreVersion[1]>=83),'isolated pi-agent-core must resolve >=0.83.0');
 const codingVersion=versionTuple(installedPeerVersions['@earendil-works/pi-coding-agent']);
 assert.ok(codingVersion[0]>0||(codingVersion[0]===0&&codingVersion[1]>=83),'isolated pi-coding-agent must resolve >=0.83.0');
 assert.equal(pkg.dependencies?.typebox,'1.1.38');

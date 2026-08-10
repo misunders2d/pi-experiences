@@ -70,6 +70,15 @@ assert.deepEqual(new Set(ompPayload.experienceContext.map(item => item.kind)), n
 assert.equal('assistantContext' in ompPayload, false);
 assert.equal(/private-id|approval-|evidence/.test(omp.context), false);
 assert.equal(omp.attributions.size, 1);
+assert.deepEqual(omp.policies, [
+  {
+    attribution: [...omp.attributions.keys()][0],
+    source: 'Experience',
+    condition: 'When habit applies',
+    behavior: 'Use approved habit context',
+  },
+]);
+assert.equal(JSON.stringify(omp.policies).includes('private-id'), false);
 assert.equal((await buildOmpExperienceAdvisorContext(db, { ...input, currentScope: { runtime: 'pi' } })).experienceCount, 7);
 
 const boundedQuery = boundedOmpAdvisorQuery(Array.from({ length: 20 }, (_, index) => ({

@@ -21,7 +21,7 @@ The first screen groups every normal action before advanced compatibility contro
 Advisor integration is independently opt-in:
 
 - **Pi Runtime Advisor:** **Advisor model** is a separate choice that defaults to **Same as habit assessment**. This second model reviews bounded incremental primary-turn updates with read-only `read`, `grep`, and `glob`; every call remains workspace-confined.
-- **OMP native Advisor** receives bounded, relevant, approved Experience context for all supported kinds; only habits can define runtime policy. The package starts no second Advisor and makes no additional reviewer-model call; OMP settings own Advisor enablement and model choice.
+- **OMP native Advisor** receives bounded, relevant, approved Experience context for all supported kinds; only habits can define runtime policy. When an approved habit directly causes advice, OMP validates its current-review opaque alias and renders exact `When:` / `Do:` provenance as an **Experience** card. The package starts no second Advisor and makes no additional reviewer-model call; OMP settings own Advisor enablement and model choice.
 
 The approved Experience habits supplied for an update are the complete policy source. Reviewer reasoning, generic best practices, files, and tool output cannot create policy or standalone advice. On Pi, a validated `concern` or `blocker` may use Pi's public `steer` channel; canceled, terminal, plan mode, ambiguous, idle, unsupported, replacement, and shutdown states remain visible-only when steering is unsafe.
 
