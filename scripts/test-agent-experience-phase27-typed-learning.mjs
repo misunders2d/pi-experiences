@@ -1,14 +1,15 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import {
   __buildAgentExperienceConsolidationSystemPromptForTest,
   __normalizeAgentExperienceConsolidationModelOutputForTest,
 } from '../extensions/agent-experience/src/consolidate/model-adapter.ts';
-import {
-  processValidatedModelOutput,
-  validateModelOutputBatch,
-} from '../extensions/agent-experience/src/consolidate/model-output.ts';
+import { validateModelOutputBatch } from '../extensions/agent-experience/src/consolidate/model-output.ts';
+import { runConsolidationOnce } from '../extensions/agent-experience/src/consolidate/runner.ts';
 import { validateObservationRecords } from '../extensions/agent-experience/src/consolidate/observations.ts';
 import { getExperience } from '../extensions/agent-experience/src/experience/storage.ts';
 import { STORAGE_SCHEMA_SQL } from '../extensions/agent-experience/src/storage/schema.ts';
@@ -84,6 +85,12 @@ for (const kind of kinds) {
   assert.equal(validated.proposals[0].kind, kind);
   assert.equal(validated.proposals[0].scope.kind, 'user');
 }
+const emptyOptionalRationale = __normalizeAgentExperienceConsolidationModelOutputForTest({
+  batch_id: 'empty-optional-rationale',
+  proposals: [proposal('habit', { rationale: '   ' })],
+}, input);
+assert.equal(emptyOptionalRationale.proposals.length, 1, 'empty optional rationale must not discard a valid habit candidate');
+assert.equal('rationale' in emptyOptionalRationale.proposals[0], false, 'empty optional rationale normalizes to absent');
 
 const insufficientHabit = __normalizeAgentExperienceConsolidationModelOutputForTest({
   batch_id: 'insufficient-habit',
@@ -136,30 +143,42 @@ for (const phrase of ['habit:', 'preference:', 'constraint:', 'fact:', 'decision
 assert.equal(prompt.includes('one-off instruction'), true);
 assert.equal(prompt.includes('quoted third party'), true);
 assert.equal(prompt.includes('prompt-injection-shaped'), true);
+for (const authority of ['explicit_user', 'reviewed_inference', 'observed_outcome']) {
+  assert.equal(prompt.includes(authority), true, `prompt defines authority ${authority}`);
+}
 
+const root = mkdtempSync(join(tmpdir(), 'pi-experience-phase27-'));
 const db = new DatabaseSync(':memory:');
-db.exec('PRAGMA foreign_keys=ON');
-db.exec(STORAGE_SCHEMA_SQL);
-const typedOutput = validateModelOutputBatch(__normalizeAgentExperienceConsolidationModelOutputForTest({
-  batch_id: 'typed-commit',
-  proposals: [proposal('decision')],
-}, input), 'owner');
-const committed = await processValidatedModelOutput({
-  db,
-  userId: 'owner',
-  output: typedOutput,
-  observations,
-  host: 'omp',
-});
-assert.equal(committed.candidate_ids.length, 1);
-assert.equal(committed.evidence_ids.length, 0, 'typed provenance replaces duplicated evidence rows');
-const stored = getExperience(db, { userId: 'owner', id: committed.candidate_ids[0] });
-assert.equal(stored.kind, 'decision');
-assert.equal(stored.status, 'candidate');
-assert.equal(stored.provenance.length, 3);
-assert.equal(stored.provenance.every(item => item.host === 'omp'), true);
-assert.equal(stored.rationale, 'Reviewed decision rationale');
-assert.equal(db.prepare('SELECT seq FROM proposal_read_watermarks WHERE user_id = ? AND file_generation = ?').get('owner', 'active').seq, 3);
-db.close();
+try {
+  db.exec('PRAGMA foreign_keys=ON');
+  db.exec(STORAGE_SCHEMA_SQL);
+  const typedModelOutput = __normalizeAgentExperienceConsolidationModelOutputForTest({
+    batch_id: 'typed-commit',
+    proposals: [proposal('decision')],
+  }, input);
+  const run = await runConsolidationOnce({
+    root,
+    db,
+    userId: 'owner',
+    observations,
+    modelOutput: typedModelOutput,
+    model: input.model,
+    host: 'omp',
+  });
+  assert.equal(run.ok, true, run.reason);
+  const committed = run.result;
+  assert.equal(committed.candidate_ids.length, 1);
+  assert.equal(committed.evidence_ids.length, 0, 'typed provenance replaces duplicated evidence rows');
+  const stored = getExperience(db, { userId: 'owner', id: committed.candidate_ids[0] });
+  assert.equal(stored.kind, 'decision');
+  assert.equal(stored.status, 'candidate');
+  assert.equal(stored.provenance.length, 3);
+  assert.equal(stored.provenance.every(item => item.host === 'omp'), true);
+  assert.equal(stored.rationale, 'Reviewed decision rationale');
+  assert.equal(db.prepare('SELECT seq FROM proposal_read_watermarks WHERE user_id = ? AND file_generation = ?').get('owner', 'active').seq, 3);
+} finally {
+  db.close();
+  rmSync(root, { recursive: true, force: true });
+}
 
 console.log('agent-experience phase27 typed learning checks passed');

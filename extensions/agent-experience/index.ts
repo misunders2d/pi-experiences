@@ -1638,6 +1638,7 @@ async function runAnalyzeNowJob(ctx: ExtensionCommandContext, preflight: {
 	config: AgentExperienceConfig;
 	userId: string;
 	paths: ReturnType<typeof getAgentExperiencePaths>;
+	host: "pi" | "omp";
 }) {
 	const paths = preflight.paths;
 	const config = preflight.config;
@@ -1671,7 +1672,7 @@ async function runAnalyzeNowJob(ctx: ExtensionCommandContext, preflight: {
 			const output = await adapter.generate({ model, userId, observations: batch, habitContext, expected, signal });
 			throwIfAborted();
 			storage = await initExperienceStorage(paths.root, { allowInit: true, userId });
-			const result = await runConsolidationOnce({ root: paths.root, db: storage.db, userId: storage.userId, observations: batch, modelOutput: output, model, config, dryRun: false, now: new Date().toISOString() });
+			const result = await runConsolidationOnce({ root: paths.root, db: storage.db, userId: storage.userId, observations: batch, modelOutput: output, model, host: preflight.host, config, dryRun: false, now: new Date().toISOString() });
 			if (!result.ok) throw new Error(`habit_learning_model_output_invalid:${String(result.reason || "model output invalid")}`);
 			const watermark = getProposalReadWatermark(storage.db, userId, preflight.generation);
 			const last = batch.at(-1)!;
@@ -1801,7 +1802,7 @@ async function runAnalyzeNowJob(ctx: ExtensionCommandContext, preflight: {
 	return notify(ctx, finalMessage, finalLevel);
 }
 
-async function handleAnalyzeNow(ctx: ExtensionCommandContext) {
+async function handleAnalyzeNow(ctx: ExtensionCommandContext, host: "pi" | "omp" = "pi") {
 	const paths = getAgentExperiencePaths();
 	const { config } = await readAgentExperienceConfig(paths);
 	if (!config.enabled) return notify(ctx, "Turn on Save chat examples locally in /experience setup before analyzing examples.", "warn");
@@ -1865,7 +1866,7 @@ async function handleAnalyzeNow(ctx: ExtensionCommandContext) {
 	const totalUnread = targetSeq - startAfterSeq;
 	// Yield past the command handler so submitted text renders before any model work starts.
 	const job = new Promise<void>((resolve) => setImmediate(resolve))
-		.then(() => runAnalyzeNowJob(ctx, { lock, observations: range.records, habitContext, generation, targetSeq, targetChecksum: targetChecksum!, startAfterSeq, totalUnread, config, userId, paths }))
+		.then(() => runAnalyzeNowJob(ctx, { lock, observations: range.records, habitContext, generation, targetSeq, targetChecksum: targetChecksum!, startAfterSeq, totalUnread, config, userId, paths, host }))
 		.finally(() => analyzeJobs.delete(jobKey));
 	analyzeJobs.set(jobKey, job);
 	void job.catch((error) => notify(ctx, formatAnalyzeFailure(error), "warn"));
@@ -2440,7 +2441,7 @@ async function handleSetupUseHabitsToggle(ctx: ExtensionCommandContext, enable: 
 }
 
 
-async function handleSetupDirect(args: string[], ctx: ExtensionCommandContext): Promise<boolean> {
+async function handleSetupDirect(args: string[], ctx: ExtensionCommandContext, host: "pi" | "omp" = "pi"): Promise<boolean> {
 	const [action = "", value = ""] = args.map((arg) => arg.toLowerCase());
 	if (!action) return false;
 	switch (action) {
@@ -2489,7 +2490,7 @@ async function handleSetupDirect(args: string[], ctx: ExtensionCommandContext): 
 		case "analyze-now":
 		case "suggest-now":
 		case "learn-now":
-			await handleAnalyzeNow(ctx);
+			await handleAnalyzeNow(ctx, host);
 			return true;
 		case "browse-habits":
 		case "review-habits":
@@ -2501,7 +2502,7 @@ async function handleSetupDirect(args: string[], ctx: ExtensionCommandContext): 
 		case "consolidation":
 		case "consolidate":
 		case "learning":
-			if (value === "now" || value === "run") await handleAnalyzeNow(ctx);
+			if (value === "now" || value === "run") await handleAnalyzeNow(ctx, host);
 			else if (value === "on" || value === "enable") await handleConsolidation("on", ctx);
 			else if (value === "off" || value === "disable") await handleConsolidation("off", ctx);
 			else notify(ctx, "Open /experience setup and use the model, analyze, or review rows from the menu.", "warn");
@@ -2572,7 +2573,7 @@ async function handleSetup(
 			directSignature = advisorConfigSignature((await readAgentExperienceConfig(getAgentExperiencePaths())).config);
 		} catch {}
 	}
-	if (await handleSetupDirect(args, ctx)) {
+	if (await handleSetupDirect(args, ctx, host)) {
 		await refreshAdvisorIfChanged(directSignature, "advisor_setup_direct_change");
 		return;
 	}
@@ -2620,7 +2621,7 @@ async function handleSetup(
 			const { config: updated, path } = await setAgentExperienceCaptureActive(!(config.enabled && config.capture_enabled));
 			notify(ctx, [`Learn from conversations: ${updated.enabled && updated.capture_enabled ? "ON" : "OFF"}`, `Config file: ${path}`, "Suggested habits still require explicit review."].join("\n"), "info");
 		} else if (action === "learningModel") await handleSetupModel(ctx);
-		else if (action === "analyze") { await handleAnalyzeNow(ctx); return; }
+		else if (action === "analyze") { await handleAnalyzeNow(ctx, host); return; }
 		else if (action === "review") await handleReviewSetup(ctx);
 		else if (action === "advisor") await handleSetupAdvisorToggle(ctx, !(config.enabled && config.advisor_enabled), host);
 		else if (action === "advisorModel" && host === "pi") await handleSetupAdvisorModel(ctx);
@@ -4122,7 +4123,7 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 					return;
 				case "analyze":
 				case "analyze-now":
-					await handleAnalyzeNow(ctx);
+					await handleAnalyzeNow(ctx, isOmpHost ? "omp" : "pi");
 					return;
 				case "capture":
 					await handleCapture(subcommand, ctx);

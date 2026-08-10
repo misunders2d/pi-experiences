@@ -5,6 +5,7 @@ import type { AgentExperienceConfig } from "../config.ts";
 import { createEmbeddingAdapterFromConfig, semanticPolicyFromConfig } from "../semantic/config.ts";
 import { sanitizePolicy } from "../semantic/service.ts";
 import type { EmbeddingAdapter, SemanticDedupePolicy } from "../semantic/types.ts";
+import type { ExperienceHost } from "../experience/types.ts";
 import type { ValidatedObservationRecord } from "./observations.ts";
 import { validateModelOutputBatch, validateModelOutputSourceRefs, modelOutputToProposalBatch, insertModelOutputQuarantine, processValidatedModelOutput, type ValidatedModelOutputBatch } from "./model-output.ts";
 
@@ -52,6 +53,21 @@ export function validateModelOutputExpectedRange(output: ValidatedModelOutputBat
 }
 
 function summarizeProposalDiff(output: ValidatedModelOutputBatch) {
+	if (output.proposals.some((proposal) => "applicability" in proposal)) {
+		const proposals = output.proposals.map((proposal) => "applicability" in proposal
+			? { kind: proposal.kind, applicability: proposal.applicability, content: proposal.content, confidence_bp: proposal.confidence_bp, source_ref_count: proposal.source_refs.length }
+			: { kind: proposal.kind, candidate_key: proposal.candidate_key, confidence_bp: proposal.confidence_bp, source_ref_count: proposal.source_refs.length });
+		return {
+			user_id: output.user_id,
+			file_generation: output.file_generation,
+			seq_start: output.seq_start,
+			seq_end: output.seq_end,
+			model: output.model,
+			proposal_count: proposals.length,
+			proposals,
+			checksum: sha256Hex(canonicalJson(proposals)),
+		};
+	}
 	const batch = modelOutputToProposalBatch(output);
 	return {
 		user_id: output.user_id,
@@ -70,7 +86,7 @@ function tableCounts(db: any): Record<string, number> {
 	return Object.fromEntries(tables.map((table) => [table, Number(db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get().count)]));
 }
 
-export async function runConsolidationOnce(input: { root: string; db: any; userId: string; observations: ValidatedObservationRecord[]; modelOutput: unknown; model: string; config?: AgentExperienceConfig; semantic?: { policy?: Partial<SemanticDedupePolicy>; provider?: EmbeddingAdapter; signal?: AbortSignal }; dryRun?: boolean; now?: string }) {
+export async function runConsolidationOnce(input: { root: string; db: any; userId: string; observations: ValidatedObservationRecord[]; modelOutput: unknown; model: string; host?: ExperienceHost; config?: AgentExperienceConfig; semantic?: { policy?: Partial<SemanticDedupePolicy>; provider?: EmbeddingAdapter; signal?: AbortSignal }; dryRun?: boolean; now?: string }) {
 	const userId = normalizeUserId(input.userId);
 	const createdAt = input.now || new Date().toISOString();
 	const lock = await acquireConsolidationLock(input.root, { owner: "experience-consolidate", createdAt });
@@ -105,7 +121,7 @@ export async function runConsolidationOnce(input: { root: string; db: any; userI
 			if (!provider) return { ok: false, dry_run: false, reason: "semantic_embedding_provider_unavailable", expected, diff, before, after: tableCounts(input.db) };
 			semantic = { policy: semanticPolicy, provider, signal: input.semantic?.signal };
 		}
-		const result = await processValidatedModelOutput({ db: input.db, userId, output, observations: input.observations, expectedRange: expected, semantic });
+		const result = await processValidatedModelOutput({ db: input.db, userId, output, observations: input.observations, host: input.host, expectedRange: expected, semantic });
 		return { ok: true, dry_run: false, expected, diff, result, before, after: tableCounts(input.db) };
 	} finally {
 		await ownedEmbeddingProvider?.close?.().catch(() => undefined);
