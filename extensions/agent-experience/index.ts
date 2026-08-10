@@ -957,7 +957,7 @@ async function buildSetupSnapshot(runtimeStatus: SetupRuntimeStatus = {}, host: 
 		counts: {
 			observations: observations || 0,
 			approved: summary.active,
-			suggestions: summary.pending + summary.candidate + summary.approvedWaiting,
+			suggestions: summary.pending + summary.candidate,
 			duplicates: summary.duplicates,
 		},
 		semanticFiles,
