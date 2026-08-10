@@ -35,6 +35,22 @@ export function resolveLocalEmbeddingWorkerUrl(moduleUrl = import.meta.url): URL
 	return worker;
 }
 
+export function resolveLocalTokenizerModuleUrl(workerUrl = resolveLocalEmbeddingWorkerUrl()): string {
+	const candidates = [
+		new URL("../../node_modules/@huggingface/tokenizers/dist/tokenizers.mjs", workerUrl),
+		new URL("../../../@huggingface/tokenizers/dist/tokenizers.mjs", workerUrl),
+	];
+	const tokenizer = candidates.find((candidate) => existsSync(fileURLToPath(candidate)));
+	if (!tokenizer) throw new Error("Packaged local tokenizer module is missing");
+	return tokenizer.href;
+}
+
+export function resolveLocalOnnxRuntimeModuleUrl(workerUrl = resolveLocalEmbeddingWorkerUrl()): string {
+	const runtime = new URL("../vendor/onnxruntime-web/ort.bundle.min.mjs", workerUrl);
+	if (!existsSync(fileURLToPath(runtime))) throw new Error("Packaged local ONNX runtime module is missing");
+	return runtime.href;
+}
+
 export function createLocalEmbeddingAdapter(root: string, options: { idleMs?: number; timeoutMs?: number; workerFactory?: (url: URL, options: any) => Worker } = {}): LocalEmbeddingAdapter {
 	const idleMs = Math.max(100, Math.min(300_000, Math.trunc(options.idleMs ?? LOCAL_EMBEDDING_IDLE_MS)));
 	const timeoutMs = Math.max(1_000, Math.min(300_000, Math.trunc(options.timeoutMs ?? LOCAL_EMBEDDING_TIMEOUT_MS)));
@@ -86,7 +102,7 @@ export function createLocalEmbeddingAdapter(root: string, options: { idleMs?: nu
 			assetDir = status.assetDir;
 			verified = true;
 		}
-		const created = workerFactory(resolveLocalEmbeddingWorkerUrl(), { workerData: { assetDir } });
+		const created = workerFactory(resolveLocalEmbeddingWorkerUrl(), { workerData: { assetDir, onnxRuntimeUrl: resolveLocalOnnxRuntimeModuleUrl(), tokenizersUrl: resolveLocalTokenizerModuleUrl() } });
 		worker = created;
 		created.on("message", (message: any) => {
 			const request = pending.get(String(message?.id || ""));

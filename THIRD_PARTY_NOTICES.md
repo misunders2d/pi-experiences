@@ -22,7 +22,7 @@ Model/tokenizer assets are not bundled in the npm package. They are downloaded o
 
 The package vendors exact copies of:
 
-- `ort.node.min.mjs`
+- `ort.bundle.min.mjs`
 - `ort-wasm-simd-threaded.mjs`
 
 The matching `ort-wasm-simd-threaded.wasm` is downloaded only after explicit enablement and verified before use.

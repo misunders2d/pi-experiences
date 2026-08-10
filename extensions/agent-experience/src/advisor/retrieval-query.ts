@@ -1,6 +1,8 @@
 import { readFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { resolve } from "node:path";
-import { Tokenizer } from "@huggingface/tokenizers";
+import { fileURLToPath } from "node:url";
+
 import { containsUnredactedSensitiveText, redactText } from "../storage/redaction.ts";
 import { LOCAL_EMBEDDING_MAX_TOKENS } from "../semantic/local-model-manifest.ts";
 import type { AdvisorPrimaryDelta } from "./types.ts";
@@ -11,7 +13,14 @@ const MAX_TOOL_PAYLOAD_CHARS = 1_200;
 const MAX_ASSISTANT_EDGE_CHARS = 1_200;
 const TOOL_EVENT = /\[tool_(call|result|error):([^\]\r\n]{1,120})\]\s*([\s\S]*?)(?=\[tool_(?:call|result|error):|$)/gi;
 
-let cachedTokenizer: { assetDir: string; tokenizer: Tokenizer } | undefined;
+type AdvisorTokenizer = {
+	encode(text: string, options: { add_special_tokens: boolean }): { ids: number[] };
+	decode(ids: number[], options: { skip_special_tokens: boolean }): string;
+};
+
+type AdvisorTokenizerConstructor = new (tokenizer: unknown, config: unknown) => AdvisorTokenizer;
+
+let cachedTokenizer: { assetDir: string; tokenizer: AdvisorTokenizer } | undefined;
 
 function compact(value: string): string {
 	return value.trim().replace(/\s+/g, " ");
@@ -22,14 +31,28 @@ function boundedEdges(value: string, max: number): string {
 	const head = Math.floor(max / 2);
 	return `${value.slice(0, head)} ${value.slice(value.length - (max - head))}`;
 }
+function resolveTokenizerModuleUrl(): string {
+	const candidates = [
+		new URL("../../../../node_modules/@huggingface/tokenizers/dist/tokenizers.mjs", import.meta.url),
+		new URL("../../../../../@huggingface/tokenizers/dist/tokenizers.mjs", import.meta.url),
+	];
+	const tokenizer = candidates.find((candidate) => existsSync(fileURLToPath(candidate)));
+	if (!tokenizer) throw new Error("Packaged Advisor tokenizer module is missing");
+	return tokenizer.href;
+}
+const tokenizerConstructor = import(resolveTokenizerModuleUrl())
+	.then(({ Tokenizer }) => Tokenizer as AdvisorTokenizerConstructor);
 
-async function loadConfiguredTokenizer(assetDir: string): Promise<Tokenizer> {
+
+
+async function loadConfiguredTokenizer(assetDir: string): Promise<AdvisorTokenizer> {
 	const canonicalAssetDir = resolve(assetDir);
 	if (cachedTokenizer?.assetDir === canonicalAssetDir) return cachedTokenizer.tokenizer;
 	const [tokenizerSource, configSource] = await Promise.all([
 		readFile(resolve(canonicalAssetDir, "tokenizer.json"), "utf8"),
 		readFile(resolve(canonicalAssetDir, "tokenizer_config.json"), "utf8"),
 	]);
+	const Tokenizer = await tokenizerConstructor;
 	const tokenizer = new Tokenizer(JSON.parse(tokenizerSource), JSON.parse(configSource));
 	cachedTokenizer = { assetDir: canonicalAssetDir, tokenizer };
 	return tokenizer;

@@ -9,9 +9,11 @@ import { parseAgentExperienceConfig } from '../extensions/agent-experience/src/c
 import { buildContextualRetrievalPrompt, SELECTOR_CONTEXT_RETRIEVAL_MAX_UTF8_BYTES } from '../extensions/agent-experience/src/selector.ts';
 import { cosineBp, effectiveFieldSimilarityBp, habitBehaviorEmbeddingInputV1, habitConditionEmbeddingInputV1 } from '../extensions/agent-experience/src/semantic/core.ts';
 import { createEmbeddingAdapterFromConfig, semanticPolicyFromConfig } from '../extensions/agent-experience/src/semantic/config.ts';
-import { createLocalEmbeddingAdapter } from '../extensions/agent-experience/src/semantic/local-adapter.ts';
+import { createLocalEmbeddingAdapter, resolveLocalOnnxRuntimeModuleUrl, resolveLocalTokenizerModuleUrl } from '../extensions/agent-experience/src/semantic/local-adapter.ts';
 import { ensureLocalEmbeddingAssets, getLocalEmbeddingAssetStatus, removeLocalEmbeddingAssets } from '../extensions/agent-experience/src/semantic/local-model.ts';
 import { LOCAL_EMBEDDING_ASSETS, LOCAL_EMBEDDING_DOWNLOAD_BYTES, LOCAL_EMBEDDING_MAX_MANAGED_BYTES, LOCAL_EMBEDDING_REVIEW_THRESHOLD_BP, LOCAL_EMBEDDING_STRONG_THRESHOLD_BP } from '../extensions/agent-experience/src/semantic/local-model-manifest.ts';
+assert.equal(new URL(resolveLocalTokenizerModuleUrl()).pathname.endsWith('/node_modules/@huggingface/tokenizers/dist/tokenizers.mjs'), true, 'local tokenizer resolution must use an explicit file URL so compiled Bun hosts do not depend on bare worker imports');
+assert.equal(new URL(resolveLocalOnnxRuntimeModuleUrl()).pathname.endsWith('/runtime/vendor/onnxruntime-web/ort.bundle.min.mjs'), true, 'local ONNX resolution must use a self-contained bundle so compiled Bun hosts do not depend on bare runtime imports');
 
 assert.equal(LOCAL_EMBEDDING_DOWNLOAD_BYTES, 148_618_669, 'public about-150-MB wording must match the exact pinned asset manifest');
 assert.ok(LOCAL_EMBEDDING_DOWNLOAD_BYTES > 100_000_000 && LOCAL_EMBEDDING_DOWNLOAD_BYTES < LOCAL_EMBEDDING_MAX_MANAGED_BYTES, 'pinned local assets must stay within managed footprint cap');

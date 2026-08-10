@@ -1,8 +1,11 @@
 import { parentPort, workerData } from 'node:worker_threads';
 import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
-import ort from '../vendor/onnxruntime-web/ort.node.min.mjs';
-import { Tokenizer } from '@huggingface/tokenizers';
+const onnxRuntimeUrl = String(workerData?.onnxRuntimeUrl || '');
+const tokenizersUrl = String(workerData?.tokenizersUrl || '');
+if (!onnxRuntimeUrl) throw new Error('local_embedding_worker_requires_onnx_runtime_url');
+if (!tokenizersUrl) throw new Error('local_embedding_worker_requires_tokenizer_url');
+const [{ default: ort }, { Tokenizer }] = await Promise.all([import(onnxRuntimeUrl), import(tokenizersUrl)]);
 
 if (!parentPort) throw new Error('local_embedding_worker_requires_parent_port');
 

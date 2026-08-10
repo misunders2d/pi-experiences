@@ -313,7 +313,7 @@ assert.equal(galleryPng.readUInt32BE(16),1400,'Pi gallery preview width drifted'
 assert.equal(galleryPng.readUInt32BE(20),800,'Pi gallery preview height drifted');
 assert.ok(galleryPng.byteLength<=500_000,'Pi gallery preview should remain lightweight');
 const expectedGlue={
-  'ort.node.min.mjs':'e89f5e9feb40384ab2bd1f95ade074e3de8ce3b64485bd03fb79d2cde2a620f1',
+  'ort.bundle.min.mjs':'dcb75a16fae45a342ab526c6d529c02148941ebdc35419cdb41d7427453ca7db',
   'ort-wasm-simd-threaded.mjs':'0a1e718d99c41b22c21f2520ff4f9e883a6b5533856e398d21816ee8eb8185d3',
 };
 for(const [name,expected] of Object.entries(expectedGlue)){

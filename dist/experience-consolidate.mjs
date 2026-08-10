@@ -2520,6 +2520,20 @@ function resolveLocalEmbeddingWorkerUrl(moduleUrl = import.meta.url) {
   if (!worker) throw new Error("Packaged local embedding worker is missing");
   return worker;
 }
+function resolveLocalTokenizerModuleUrl(workerUrl = resolveLocalEmbeddingWorkerUrl()) {
+  const candidates = [
+    new URL("../../node_modules/@huggingface/tokenizers/dist/tokenizers.mjs", workerUrl),
+    new URL("../../../@huggingface/tokenizers/dist/tokenizers.mjs", workerUrl)
+  ];
+  const tokenizer = candidates.find((candidate) => existsSync(fileURLToPath(candidate)));
+  if (!tokenizer) throw new Error("Packaged local tokenizer module is missing");
+  return tokenizer.href;
+}
+function resolveLocalOnnxRuntimeModuleUrl(workerUrl = resolveLocalEmbeddingWorkerUrl()) {
+  const runtime = new URL("../vendor/onnxruntime-web/ort.bundle.min.mjs", workerUrl);
+  if (!existsSync(fileURLToPath(runtime))) throw new Error("Packaged local ONNX runtime module is missing");
+  return runtime.href;
+}
 function createLocalEmbeddingAdapter(root, options = {}) {
   const idleMs = Math.max(100, Math.min(3e5, Math.trunc(options.idleMs ?? LOCAL_EMBEDDING_IDLE_MS)));
   const timeoutMs = Math.max(1e3, Math.min(3e5, Math.trunc(options.timeoutMs ?? LOCAL_EMBEDDING_TIMEOUT_MS)));
@@ -2572,7 +2586,7 @@ function createLocalEmbeddingAdapter(root, options = {}) {
       assetDir = status.assetDir;
       verified = true;
     }
-    const created = workerFactory(resolveLocalEmbeddingWorkerUrl(), { workerData: { assetDir } });
+    const created = workerFactory(resolveLocalEmbeddingWorkerUrl(), { workerData: { assetDir, onnxRuntimeUrl: resolveLocalOnnxRuntimeModuleUrl(), tokenizersUrl: resolveLocalTokenizerModuleUrl() } });
     worker = created;
     created.on("message", (message) => {
       const request = pending.get(String(message?.id || ""));

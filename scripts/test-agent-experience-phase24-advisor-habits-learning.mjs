@@ -816,6 +816,7 @@ try {
       { provider: 'test', id: 'primary', name: 'Primary', api: 'test', contextWindow: 128000, input: ['text'] },
     ];
     const pi = {
+      host: 'pi',
       on(event, handler) { const list = handlers.get(event) || []; list.push(handler); handlers.set(event, list); },
       registerTool() {},
       registerCommand(name, options) { commands.set(name, options); },

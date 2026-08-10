@@ -6,6 +6,19 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 ## [Unreleased]
 
+## [0.1.56] - 2026-08-10
+
+### Fixed
+
+- Restored local semantic retrieval in Bun-compiled OMP builds by loading the tokenizer through an explicit installed-package URL and using the self-contained ONNX Runtime bundle. Pi's Node runtime is unchanged.
+- Prioritized the current user request and latest assistant action in OMP Advisor retrieval so large tool transcripts cannot displace the approved habit that should supervise the turn.
+- Clarified OMP Advisor precedence so a request matching an approved habit trigger activates that habit unless the user explicitly conflicts with or suspends its required behavior.
+
+### Validation
+
+- Added runtime-module resolution regressions and verified real multilingual embeddings in both Bun and the compiled OMP host.
+- Added a noisy-transcript regression proving retrieval input stays compact while retaining the current request and latest assistant action.
+
 ## [0.1.55] - 2026-08-10
 
 ### Fixed
@@ -214,7 +227,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 - Added synchronous submission-hook checks, deferred embedding/model assertions, and a packed Pi TUI smoke requiring submitted-message rendering within 1.5 seconds.
 
-[Unreleased]: https://github.com/misunders2d/pi-experiences/compare/v0.1.55...HEAD
+[Unreleased]: https://github.com/misunders2d/pi-experiences/compare/v0.1.56...HEAD
+[0.1.56]: https://github.com/misunders2d/pi-experiences/compare/v0.1.55...v0.1.56
 [0.1.55]: https://github.com/misunders2d/pi-experiences/compare/v0.1.54...v0.1.55
 [0.1.54]: https://github.com/misunders2d/pi-experiences/compare/v0.1.53...v0.1.54
 [0.1.53]: https://github.com/misunders2d/pi-experiences/compare/v0.1.52...v0.1.53

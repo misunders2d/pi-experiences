@@ -63,6 +63,7 @@ const omp = await buildOmpExperienceAdvisorContext(db, input);
 assert.equal(omp.experienceCount, 6);
 assert.equal(omp.assistantContextCount, 5);
 assert.match(omp.context, /Only kind=habit entries can define runtime habit policy/);
+assert.match(omp.context, /A request that matches a habit's approved trigger is not by itself an override/);
 const ompPayload = JSON.parse(omp.context.split('\n').at(-1));
 assert.deepEqual(new Set(ompPayload.experienceContext.map(item => item.kind)), new Set(kinds.filter(kind => kind !== 'goal')));
 assert.equal('assistantContext' in ompPayload, false);
@@ -87,6 +88,38 @@ assert.ok(pathologicalQuery.length <= 24_000);
 const hugeKeyQuery = boundedOmpAdvisorQuery([{ ['private-' + 'x'.repeat(1_000_000)]: 'value' }]);
 assert.ok(hugeKeyQuery.length <= 24_000);
 assert.ok(hugeKeyQuery.length < 1_000);
+const prioritizedQuery = boundedOmpAdvisorQuery([
+  { role: 'user', content: 'Plan my summer vacation' },
+  ...Array.from({ length: 14 }, (_, index) => ({
+    role: index % 2 === 0 ? 'assistant' : 'toolResult',
+    content: `${'x'.repeat(3000)}-noise-${index}`,
+  })),
+  { role: 'assistant', content: 'I will plan the trip now' },
+]);
+assert.ok(prioritizedQuery.startsWith('{"role":"user","content":"Plan my summer vacation"}'));
+assert.equal(prioritizedQuery.includes('I will plan the trip now'), true);
+assert.equal(prioritizedQuery.includes('-noise-'), false);
+const crowdedQuery = boundedOmpAdvisorQuery([
+  ...Array.from({ length: 10 }, (_, index) => ({
+    role: 'user',
+    content: `${'u'.repeat(2000)}-user-${index}`,
+  })),
+  { role: 'assistant', content: 'LATEST_ASSISTANT_ACTION' },
+]);
+assert.equal(crowdedQuery.includes('-user-9'), true);
+assert.equal(crowdedQuery.includes('LATEST_ASSISTANT_ACTION'), true);
+assert.equal(crowdedQuery.includes('-user-0'), false);
+const longGapQuery = boundedOmpAdvisorQuery([
+  { role: 'user', content: 'CURRENT_USER_REQUEST' },
+  ...Array.from({ length: 20 }, (_, index) => ({
+    role: 'toolResult',
+    content: `${'t'.repeat(2000)}-tool-${index}`,
+  })),
+  { role: 'assistant', content: 'LATEST_ASSISTANT_AFTER_TOOLS' },
+]);
+assert.equal(longGapQuery.includes('CURRENT_USER_REQUEST'), true);
+assert.equal(longGapQuery.includes('LATEST_ASSISTANT_AFTER_TOOLS'), true);
+assert.equal(longGapQuery.includes('-tool-'), false);
 
 const pi = await buildPiExperienceContext(db, { ...input, currentScope: { runtime: 'pi' } });
 assert.deepEqual(pi.selectorGuidance, [{ condition: 'When habit applies', behavior: 'Use approved habit context' }]);
