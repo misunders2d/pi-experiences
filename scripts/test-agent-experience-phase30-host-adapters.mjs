@@ -64,6 +64,7 @@ assert.equal(omp.experienceCount, 6);
 assert.equal(omp.assistantContextCount, 5);
 assert.match(omp.context, /Only kind=habit entries can define runtime habit policy/);
 assert.match(omp.context, /A request that matches a habit's approved trigger is not by itself an override/);
+assert.match(omp.context, /report the habit violation first/);
 const ompPayload = JSON.parse(omp.context.split('\n').at(-1));
 assert.deepEqual(new Set(ompPayload.experienceContext.map(item => item.kind)), new Set(kinds.filter(kind => kind !== 'goal')));
 assert.equal('assistantContext' in ompPayload, false);
@@ -96,9 +97,25 @@ const prioritizedQuery = boundedOmpAdvisorQuery([
   })),
   { role: 'assistant', content: 'I will plan the trip now' },
 ]);
-assert.ok(prioritizedQuery.startsWith('{"role":"user","content":"Plan my summer vacation"}'));
+assert.ok(prioritizedQuery.startsWith('user: Plan my summer vacation'));
 assert.equal(prioritizedQuery.includes('I will plan the trip now'), true);
 assert.equal(prioritizedQuery.includes('-noise-'), false);
+const realisticQuery = boundedOmpAdvisorQuery([
+  { role: 'user', content: [{ type: 'text', text: 'Plan my summer vacation' }], attribution: 'user', timestamp: 1 },
+  {
+    role: 'assistant',
+    content: [{ type: 'text', text: 'I started generic planning', textSignature: 'private-signature' }],
+    provider: 'provider-name',
+    usage: { input: 999999, output: 1 },
+    providerPayload: { private: 'payload' },
+  },
+]);
+assert.equal(realisticQuery.includes('Plan my summer vacation'), true);
+assert.equal(realisticQuery.includes('I started generic planning'), true);
+assert.equal(realisticQuery.includes('private-signature'), false);
+assert.equal(realisticQuery.includes('provider-name'), false);
+assert.equal(realisticQuery.includes('999999'), false);
+assert.equal(realisticQuery.includes('payload'), false);
 const crowdedQuery = boundedOmpAdvisorQuery([
   ...Array.from({ length: 10 }, (_, index) => ({
     role: 'user',

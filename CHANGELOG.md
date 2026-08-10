@@ -6,6 +6,18 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 ## [Unreleased]
 
+## [0.1.57] - 2026-08-10
+
+### Fixed
+
+- Restricted OMP Advisor semantic retrieval to the latest user and assistant text so provider metadata cannot displace an applicable approved habit.
+- Prioritized an applicable approved-habit violation over unrelated native Advisor findings so OMP's one-note gate delivers the Experience correction first.
+
+### Validation
+
+- Added regressions requiring text-only retrieval input and habit-first Advisor precedence.
+
+
 ## [0.1.56] - 2026-08-10
 
 ### Fixed
@@ -227,7 +239,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 - Added synchronous submission-hook checks, deferred embedding/model assertions, and a packed Pi TUI smoke requiring submitted-message rendering within 1.5 seconds.
 
-[Unreleased]: https://github.com/misunders2d/pi-experiences/compare/v0.1.56...HEAD
+[Unreleased]: https://github.com/misunders2d/pi-experiences/compare/v0.1.57...HEAD
+[0.1.57]: https://github.com/misunders2d/pi-experiences/compare/v0.1.56...v0.1.57
 [0.1.56]: https://github.com/misunders2d/pi-experiences/compare/v0.1.55...v0.1.56
 [0.1.55]: https://github.com/misunders2d/pi-experiences/compare/v0.1.54...v0.1.55
 [0.1.54]: https://github.com/misunders2d/pi-experiences/compare/v0.1.53...v0.1.54

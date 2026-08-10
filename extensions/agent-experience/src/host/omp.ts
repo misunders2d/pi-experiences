@@ -228,27 +228,32 @@ export function boundedOmpAdvisorQuery(updates: readonly unknown[]): string {
 		const role = Object.getOwnPropertyDescriptor(value, "role");
 		return role && "value" in role ? role.value : undefined;
 	};
-	const selected: unknown[] = [];
-	for (const role of ["user", "assistant"]) {
+	const selected: Array<{ role: "user" | "assistant"; message: Record<string, unknown> }> = [];
+	for (const role of ["user", "assistant"] as const) {
 		for (let index = updates.length - 1; index >= 0; index--) {
-			if (roleAt(index) !== role) continue;
-			selected.push(updates[index]);
+			if (roleAt(index) !== role || !isRecord(updates[index])) continue;
+			selected.push({ role, message: updates[index] });
 			break;
 		}
 	}
-	if (selected.length === 0 && updates.length > 0) selected.push(updates.at(-1));
 	const parts: string[] = [];
-	for (const update of selected) {
+	for (const { role, message } of selected) {
+		const text = redactText(messageText(message)).trim();
+		if (!text) continue;
+		const limit = MAX_OMP_ADVISOR_PRIORITY_QUERY_CHARS - role.length - 2;
+		const half = Math.floor((limit - 3) / 2);
+		const bounded = text.length <= limit ? text : `${text.slice(0, half)}...${text.slice(-half)}`;
+		parts.push(`${role}: ${bounded}`);
+	}
+	if (parts.length === 0 && updates.length > 0) {
 		const serialized = JSON.stringify(
-			boundedOmpAdvisorValue(update, {
-				nodes: Math.floor(MAX_OMP_ADVISOR_QUERY_NODES / 2),
-				chars: Math.floor(MAX_OMP_ADVISOR_QUERY_VALUE_CHARS / 2),
+			boundedOmpAdvisorValue(updates.at(-1), {
+				nodes: MAX_OMP_ADVISOR_QUERY_NODES,
+				chars: MAX_OMP_ADVISOR_QUERY_VALUE_CHARS,
 				seen: new Set(),
 			}),
 		);
-		if (typeof serialized === "string") {
-			parts.push(redactText(serialized).slice(0, MAX_OMP_ADVISOR_PRIORITY_QUERY_CHARS));
-		}
+		if (typeof serialized === "string") parts.push(redactText(serialized));
 	}
 	return parts.join("\n").slice(0, MAX_OMP_ADVISOR_QUERY_CHARS);
 }
@@ -275,7 +280,7 @@ export async function buildOmpExperienceAdvisorContext(db: DatabaseSync, input: 
 	return {
 		context: [
 			`[${OMP_EXPERIENCE_CONTEXT_MARKER} nonce=${nonce}]`,
-			"Approved Experiences context for OMP's native Advisor. Only kind=habit entries can define runtime habit policy. Other kinds are bounded support context only. Decide current applicability from the live conversation. Direct user instructions and configured law still override all entries. A request that matches a habit's approved trigger is not by itself an override; treat it as an override only when the user explicitly conflicts with or suspends the habit's required behavior.",
+			"Approved Experiences context for OMP's native Advisor. Only kind=habit entries can define runtime habit policy. Other kinds are bounded support context only. Decide current applicability from the live conversation. Direct user instructions and configured law still override all entries. A request that matches a habit's approved trigger is not by itself an override; treat it as an override only when the user explicitly conflicts with or suspends the habit's required behavior. When an applicable habit violation and an unrelated concern both exist in one review, report the habit violation first.",
 			`When and only when an approved habit directly causes advice, set advise.attribution to \"${nonce}:<habit alias>\" using its exact alias below. Never put this attribution in the visible note and never set it for generic advice.`,
 			JSON.stringify(payload),
 		].join("\n"),
