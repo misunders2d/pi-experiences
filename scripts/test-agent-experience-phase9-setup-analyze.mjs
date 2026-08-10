@@ -4,7 +4,7 @@ import { existsSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import agentExperienceExtension, { __buildAgentExperienceConsolidationSystemPromptForTest, __formatAgentExperienceAnalyzeFailureForTest, __getAgentExperienceDetailPanelOptionsForTest, __normalizeAgentExperienceConsolidationModelOutputForTest, __setAgentExperienceConsolidationAdapterForTest, __setAgentExperienceSelectorAdapterForTest, __setAgentExperienceSelectorEmbeddingAdapterForTest } from '../extensions/agent-experience/index.ts';
+import agentExperienceExtension, { __buildAgentExperienceConsolidationSystemPromptForTest, __countAgentExperienceSuggestedHabitsForTest, __formatAgentExperienceAnalyzeFailureForTest, __getAgentExperienceDetailPanelOptionsForTest, __normalizeAgentExperienceConsolidationModelOutputForTest, __setAgentExperienceConsolidationAdapterForTest, __setAgentExperienceSelectorAdapterForTest, __setAgentExperienceSelectorEmbeddingAdapterForTest } from '../extensions/agent-experience/index.ts';
 import { getAgentExperiencePaths, readAgentExperienceConfig, setAgentExperienceCaptureActive, setAgentExperienceConsolidationEnabled, setAgentExperienceConsolidationModel, setAgentExperienceSelectorModel, writeAgentExperienceConfig } from '../extensions/agent-experience/src/paths.ts';
 import { canonicalJson } from '../extensions/agent-experience/src/storage/checksum.ts';
 import { ensurePrivateRoot, resolvePrivatePath } from '../extensions/agent-experience/src/storage/private-root.ts';
@@ -12,6 +12,12 @@ import { appendObservation, observationChecksumForTest, observationPairRefForTes
 import { initExperienceStorage, insertStorageRecord } from '../extensions/agent-experience/src/storage/sqlite.ts';
 import { listHabitDuplicates, upsertHabitDuplicate } from '../extensions/agent-experience/src/semantic/storage.ts';
 import { LOCAL_EMBEDDING_DIMENSIONS, LOCAL_EMBEDDING_MODEL, LOCAL_EMBEDDING_PROVIDER } from '../extensions/agent-experience/src/semantic/local-model-manifest.ts';
+assert.equal(
+  __countAgentExperienceSuggestedHabitsForTest({ pending: 1, candidate: 1, approvedWaiting: 6 }),
+  2,
+  'approved-but-waiting habits must not inflate the actionable suggested-habit count',
+);
+
 
 function makeObservation({ seq, previous = null, createdAt, user, assistant }) {
   const base = {

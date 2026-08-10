@@ -911,6 +911,10 @@ async function configuredModelAuthenticated(ctx: Pick<ExtensionContext, "modelRe
 }
 
 
+export function __countAgentExperienceSuggestedHabitsForTest(summary: { pending: number; candidate: number; approvedWaiting: number }): number {
+	return summary.pending + summary.candidate;
+}
+
 async function reviewSummary(root: string, userId: string): Promise<{ ledger: boolean; pending: number; active: number; candidate: number; approvedWaiting: number; duplicates: number; error?: string }> {
 	const dbPath = resolvePrivatePath(root, "ledger.sqlite");
 	if (!(await fileExists(dbPath))) return { ledger: false, pending: 0, active: 0, candidate: 0, approvedWaiting: 0, duplicates: 0 };
@@ -957,7 +961,7 @@ async function buildSetupSnapshot(runtimeStatus: SetupRuntimeStatus = {}, host: 
 		counts: {
 			observations: observations || 0,
 			approved: summary.active,
-			suggestions: summary.pending + summary.candidate,
+			suggestions: __countAgentExperienceSuggestedHabitsForTest(summary),
 			duplicates: summary.duplicates,
 		},
 		semanticFiles,
