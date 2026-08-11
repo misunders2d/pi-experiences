@@ -6,6 +6,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 ## [Unreleased]
 
+## [0.1.59] - 2026-08-11
+
 ### Fixed
 
 - Unified **Review suggested habits** across Pi and OMP so typed Experience candidates appear beside legacy habit candidates and can be approved or rejected through the same setup flow.
@@ -257,7 +259,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 - Added synchronous submission-hook checks, deferred embedding/model assertions, and a packed Pi TUI smoke requiring submitted-message rendering within 1.5 seconds.
 
-[Unreleased]: https://github.com/misunders2d/pi-experiences/compare/v0.1.58...HEAD
+[Unreleased]: https://github.com/misunders2d/pi-experiences/compare/v0.1.59...HEAD
+[0.1.59]: https://github.com/misunders2d/pi-experiences/compare/v0.1.58...v0.1.59
 [0.1.58]: https://github.com/misunders2d/pi-experiences/compare/v0.1.57...v0.1.58
 [0.1.57]: https://github.com/misunders2d/pi-experiences/compare/v0.1.56...v0.1.57
 [0.1.56]: https://github.com/misunders2d/pi-experiences/compare/v0.1.55...v0.1.56
