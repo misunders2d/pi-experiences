@@ -85,6 +85,15 @@ for (const kind of kinds) {
   assert.equal(validated.proposals[0].kind, kind);
   assert.equal(validated.proposals[0].scope.kind, 'user');
 }
+const safeTokenLookalike = __normalizeAgentExperienceConsolidationModelOutputForTest({
+  batch_id: 'safe-token-lookalike',
+  proposals: [proposal('preference', { content: 'Use risk-sensitive review before deployment' })],
+}, input);
+assert.equal(
+  validateModelOutputBatch(safeTokenLookalike, 'owner').proposals[0].content,
+  'Use risk-sensitive review before deployment',
+  'ordinary prose containing internal sk must pass model-output validation',
+);
 const emptyOptionalRationale = __normalizeAgentExperienceConsolidationModelOutputForTest({
   batch_id: 'empty-optional-rationale',
   proposals: [proposal('habit', { rationale: '   ' })],

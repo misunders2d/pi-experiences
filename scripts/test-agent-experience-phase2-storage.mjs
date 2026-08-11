@@ -101,6 +101,31 @@ assert.equal(containsUnredactedSensitiveText('api_key=abcdefghijklmnopqrstuvwxyz
 assert.equal(containsUnredactedSensitiveText('api_key="abcdefghijklmnopqrstuvwxyz"'), true);
 assert.equal(containsUnredactedSensitiveText(redactText('api_key="abcdefghijklmnopqrstuvwxyz"')), false);
 assert.equal(containsUnredactedSensitiveText(redactText('api_key=abcdefghijklmnopqrstuvwxyz')), false);
+const safeTokenLookalikes = [
+  'taskkeepingworkflow',
+  'Use risk-sensitive review before deployment',
+  'skilledcommunication improves handoffs',
+  'pkmanagementworkflow',
+];
+for (const text of safeTokenLookalikes) {
+  assert.equal(containsUnredactedSensitiveText(text), false, `ordinary prose must not be treated as a secret: ${text}`);
+  assert.equal(redactText(text), text, `ordinary prose must not be redacted: ${text}`);
+}
+const fakeSecretTokens = [
+  'sk-proj-0000000000000000',
+  'sk_live_0000000000000000',
+  'pk_test_0000000000000000',
+  'ghp_00000000000000000000',
+  'github_pat_00000000000000000000',
+  'xoxb-00000000-00000000',
+  'ya29.0000000000000000',
+  'AKIA0000000000000000',
+  'ASIA0000000000000000',
+];
+for (const token of fakeSecretTokens) {
+  assert.equal(containsUnredactedSensitiveText(token), true, 'recognized token format must be detected');
+  assert.equal(containsUnredactedSensitiveText(redactText(token)), false, 'recognized token format must be fully redacted');
+}
 assert.equal(containsUnredactedSensitiveText('aaaabbbbccccddddeeeeffff.gggghhhhiiiijjjjkkkkllll.mmmmnnnnooooppppqqqqrrrr'), true);
 assert.equal(containsUnredactedSensitiveText(redactText('-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----')), false);
 assert.equal(containsUnredactedSensitiveText('/tmp/pi-secret-file'), true);

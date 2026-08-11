@@ -6,6 +6,17 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 ## [Unreleased]
 
+## [0.1.61] - 2026-08-11
+
+### Fixed
+
+- Replaced broad `sk`/`pk` substring matching with one shared format-specific secret-token detector used by both redaction and validation. Ordinary words and hyphenated prose no longer fail habit learning as false credentials, while recognized OpenAI-style, Stripe, GitHub, Slack, Google OAuth, and AWS key formats remain protected.
+- Corrected the packed-install verifier's stale expected package version and stopped treating non-semantic directory timestamp changes from an active Pi session as live-state mutations; file metadata, hashes, directory identity/mode, and final tree contents remain checked.
+
+### Validation
+
+- Added redaction and typed-learning regressions for safe token lookalikes, recognized fake token formats, and the model-output content path that previously failed.
+
 ## [0.1.60] - 2026-08-11
 
 ### Fixed
@@ -270,7 +281,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 - Added synchronous submission-hook checks, deferred embedding/model assertions, and a packed Pi TUI smoke requiring submitted-message rendering within 1.5 seconds.
 
-[Unreleased]: https://github.com/misunders2d/pi-experiences/compare/v0.1.60...HEAD
+[Unreleased]: https://github.com/misunders2d/pi-experiences/compare/v0.1.61...HEAD
+[0.1.61]: https://github.com/misunders2d/pi-experiences/compare/v0.1.60...v0.1.61
 [0.1.60]: https://github.com/misunders2d/pi-experiences/compare/v0.1.59...v0.1.60
 [0.1.59]: https://github.com/misunders2d/pi-experiences/compare/v0.1.58...v0.1.59
 [0.1.58]: https://github.com/misunders2d/pi-experiences/compare/v0.1.57...v0.1.58

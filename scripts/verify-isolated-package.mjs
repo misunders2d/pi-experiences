@@ -201,8 +201,7 @@ async function recursiveManifest(root, { skipTopLevel = new Set() } = {}) {
       ino: String(info.ino),
       mode: String(info.mode),
       size: String(info.size),
-      mtimeNs: String(info.mtimeNs),
-      ctimeNs: String(info.ctimeNs),
+      ...(info.isDirectory() ? {} : { mtimeNs: String(info.mtimeNs), ctimeNs: String(info.ctimeNs) }),
     };
     if (info.isSymbolicLink()) {
       output.push({ ...common, type: 'symlink', target: await readlink(path) });
