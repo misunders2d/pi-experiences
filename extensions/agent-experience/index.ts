@@ -33,6 +33,7 @@ import {
 	archiveHideHabit,
 	diffPendingReviewItems,
 	disableHabit,
+	disableReviewedExperience,
 	enableHabit,
 	explainHabit,
 	formatExperienceReviewItem,
@@ -131,7 +132,7 @@ const breakInShutdown = new Set<string>();
 const breakInToolCalls = new Map<string, Set<string>>();
 
 type SetupReviewAction = "Approve" | "Reject" | "Back to review list";
-type SetupHabitAction = "Disable habit" | "Re-enable habit" | "Archive/hide habit" | "Back to habit list";
+type SetupHabitAction = "Disable habit" | "Re-enable habit" | "Archive/hide habit" | "Disable Experience" | "Back to habit list";
 
 const DETAIL_PANEL_CUSTOM_OPTIONS = { overlay: false } as const;
 
@@ -360,15 +361,15 @@ class LiveModelSearchComponent implements Component, Focusable {
 class ApprovedHabitSearchComponent implements Component, Focusable {
 	private input = new Input();
 	private selectedIndex = 0;
-	private matches: any[];
+	private matches: SetupApprovedItem[];
 	private focusedValue = false;
-	private readonly habits: any[];
-	private readonly done: (result: any | undefined) => void;
+	private readonly items: SetupApprovedItem[];
+	private readonly done: (result: SetupApprovedItem | undefined) => void;
 
-	constructor(habits: any[], done: (result: any | undefined) => void) {
-		this.habits = habits;
+	constructor(items: SetupApprovedItem[], done: (result: SetupApprovedItem | undefined) => void) {
+		this.items = items;
 		this.done = done;
-		this.matches = approvedHabitSearchMatches(habits, "");
+		this.matches = approvedHabitSearchMatches(items, "");
 	}
 
 	get focused(): boolean { return this.focusedValue; }
@@ -378,7 +379,7 @@ class ApprovedHabitSearchComponent implements Component, Focusable {
 	}
 
 	private refresh() {
-		this.matches = approvedHabitSearchMatches(this.habits, this.input.getValue());
+		this.matches = approvedHabitSearchMatches(this.items, this.input.getValue());
 		this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.matches.length - 1));
 	}
 
@@ -924,12 +925,49 @@ type SetupReviewItem =
 	| { source: "experience"; item: ExperienceReviewItem }
 	| { source: "habit"; item: any };
 
+type SetupApprovedItem =
+	| { source: "experience"; item: ExperienceReviewItem }
+	| { source: "habit"; item: any };
+
 function listSetupReviewItems(db: DatabaseSync, userId: string): SetupReviewItem[] {
 	const experiences = listExperienceReviewItems(db, { userId, statuses: ["candidate"] })
 		.map((item) => ({ source: "experience" as const, item }));
 	const habits = listPendingReviewItems(db, { userId }).items
 		.map((item: any) => ({ source: "habit" as const, item }));
 	return [...experiences, ...habits];
+}
+
+function migratedLegacyExperienceIds(db: DatabaseSync, userId: string): Set<string> {
+	const rows = db.prepare("SELECT id, data_json FROM experiences WHERE user_id = ? AND status = 'active'").all(userId) as Array<{ id: string; data_json: string }>;
+	const ids = new Set<string>();
+	for (const row of rows) {
+		try {
+			const data = JSON.parse(row.data_json || "{}");
+			const migratedByMetadata = data?.migration?.legacyTable === "habits";
+			const migratedByProvenance = Array.isArray(data?.provenance) && data.provenance.some((source: any) =>
+				source?.source === "migration" && String(source?.evidenceId || "").startsWith("legacy-habit:"));
+			if (migratedByMetadata || migratedByProvenance) ids.add(row.id);
+		} catch {}
+	}
+	return ids;
+}
+
+function listSetupApprovedItems(db: DatabaseSync, userId: string): SetupApprovedItem[] {
+	const migratedIds = migratedLegacyExperienceIds(db, userId);
+	const experiences = listExperienceReviewItems(db, { userId, statuses: ["active"] })
+		.filter((item) => !migratedIds.has(item.recordId))
+		.map((item) => ({ source: "experience" as const, item }));
+	const habits = listApprovedHabitsForSetup(db, { userId })
+		.map((item: any) => ({ source: "habit" as const, item }));
+	return [...experiences, ...habits];
+}
+
+function setupApprovedItemId(entry: SetupApprovedItem): string {
+	return entry.source === "experience" ? entry.item.recordId : String(entry.item.id);
+}
+
+function sameSetupApprovedItem(left: SetupApprovedItem, right: SetupApprovedItem): boolean {
+	return left.source === right.source && setupApprovedItemId(left) === setupApprovedItemId(right);
 }
 
 function setupReviewItemLabel(entry: SetupReviewItem, index: number): string {
@@ -950,7 +988,8 @@ async function reviewSummary(root: string, userId: string): Promise<{ ledger: bo
 		const pending = legacy.items.filter((item: any) => item.type === "pending_review").length;
 		const legacyCandidates = legacy.items.filter((item: any) => item.type === "candidate").length;
 		const candidate = legacyCandidates + listExperienceReviewItems(db, { userId: normalizedUserId, statuses: ["candidate"] }).length;
-		const active = Number(db.prepare("SELECT COUNT(*) AS count FROM habits WHERE user_id = ? AND status = 'active'").get(normalizedUserId).count);
+		const active = listSetupApprovedItems(db, normalizedUserId)
+			.filter((entry) => entry.source === "experience" || entry.item?.status === "active").length;
 		const approvedWaiting = listApprovedPendingHabitsForSetup(db, { userId: normalizedUserId }).length;
 		const duplicates = listHabitDuplicates(db, { userId: normalizedUserId, decision: "pending" }).length;
 		return { ledger: true, pending, active, candidate, approvedWaiting, duplicates };
@@ -1959,17 +1998,23 @@ function formatReviewDiffForHuman(diff: any): string {
 	return ["Possible duplicate suggestions:", "", ...groups.map(([group, ids]) => `${group}: ${(ids as any[]).join(", ")}`), "", "Open /experience setup and review these suggestions before approving."].join("\n");
 }
 
-function approvedHabitSearchText(habit: any): string {
+function approvedHabitSearchText(entry: SetupApprovedItem): string {
+	if (entry.source === "experience") {
+		return [entry.item.status, entry.item.kind, entry.item.authority, entry.item.applicability, entry.item.content]
+			.map((part) => String(part || "").toLowerCase())
+			.join(" ");
+	}
+	const habit = entry.item;
 	return [habit?.status, habit?.condition, habit?.behavior].map((part) => String(part || "").toLowerCase()).join(" ");
 }
 
-function approvedHabitSearchMatches(habits: any[], query: string): any[] {
+function approvedHabitSearchMatches(items: SetupApprovedItem[], query: string): SetupApprovedItem[] {
 	const clean = query.trim().toLowerCase();
-	if (!clean) return habits.slice(0, 50);
+	if (!clean) return items.slice(0, 50);
 	const terms = clean.split(/\s+/).filter(Boolean);
-	const direct = habits.filter((habit) => terms.every((term) => approvedHabitSearchText(habit).includes(term)));
+	const direct = items.filter((item) => terms.every((term) => approvedHabitSearchText(item).includes(term)));
 	const seen = new Set(direct);
-	const fuzzy = fuzzyFilter(habits.filter((habit) => !seen.has(habit)), clean, (habit) => approvedHabitSearchText(habit));
+	const fuzzy = fuzzyFilter(items.filter((item) => !seen.has(item)), clean, (item) => approvedHabitSearchText(item));
 	return [...direct, ...fuzzy].slice(0, 50);
 }
 
@@ -1979,7 +2024,13 @@ function withHabitLead(text: string, lead: "When" | "Do"): string {
 	return alreadyPrefixed.test(clean) ? clean : `${lead} ${clean}`;
 }
 
-function approvedHabitListLabel(habit: any, index: number): string {
+function approvedHabitListLabel(entry: SetupApprovedItem, index: number): string {
+	if (entry.source === "experience") {
+		const applicability = redactText(entry.item.applicability).slice(0, 80);
+		const content = redactText(entry.item.content).slice(0, 90);
+		return `Experience #${index + 1} [active] ${entry.item.kind} · ${withHabitLead(applicability, "When")} → ${withHabitLead(content, "Do")}`;
+	}
+	const habit = entry.item;
 	const status = habit?.status === "disabled" ? "disabled" : "active";
 	const condition = redactText(String(habit?.condition || "Whenever this habit applies")).slice(0, 80);
 	const behavior = redactText(String(habit?.behavior || "Apply the approved behavior")).slice(0, 90);
@@ -1987,11 +2038,12 @@ function approvedHabitListLabel(habit: any, index: number): string {
 }
 
 export function __formatApprovedHabitListLabelForTest(habit: any, index = 0): string {
-	return approvedHabitListLabel(habit, index);
+	return approvedHabitListLabel({ source: "habit", item: habit }, index);
 }
 
-function approvedHabitTitle(habit: any, index: number): string {
-	return `Approved habit #${index + 1} — ${habit?.status === "disabled" ? "disabled" : "active"}`;
+function approvedHabitTitle(entry: SetupApprovedItem, index: number): string {
+	if (entry.source === "experience") return `Approved ${entry.item.kind} Experience #${index + 1} — active`;
+	return `Approved habit #${index + 1} — ${entry.item?.status === "disabled" ? "disabled" : "active"}`;
 }
 
 function approvedHabitEvidenceCount(habit: any): number | undefined {
@@ -2017,11 +2069,26 @@ function formatApprovedHabitForHuman(habit: any): string {
 	return lines.join("\n");
 }
 
-function setupHabitActions(habit: any): SetupHabitAction[] {
-	return [habit?.status === "disabled" ? "Re-enable habit" : "Disable habit", "Archive/hide habit", "Back to habit list"];
+function formatSetupApprovedItemForHuman(entry: SetupApprovedItem): string {
+	if (entry.source === "experience") {
+		return [
+			"Approved Experience",
+			"",
+			formatExperienceReviewItem(entry.item),
+			"",
+			"Choose Disable Experience to stop using this approved Experience. Disabled Experiences remain in audit history and require a new reviewed proposal before they can become active again.",
+		].join("\n");
+	}
+	return formatApprovedHabitForHuman(entry.item);
+}
+
+function setupHabitActions(entry: SetupApprovedItem): SetupHabitAction[] {
+	if (entry.source === "experience") return ["Disable Experience", "Back to habit list"];
+	return [entry.item?.status === "disabled" ? "Re-enable habit" : "Disable habit", "Archive/hide habit", "Back to habit list"];
 }
 
 function formatSetupHabitActionForHuman(action: SetupHabitAction, result?: any): string {
+	if (action === "Disable Experience") return "Experience disabled. It stays in audit history but will not be used for retrieval or guidance.";
 	if (action === "Disable habit") return "Habit disabled. It stays in history but will not be used before replies.";
 	if (action === "Re-enable habit" && result?.enabled === false && result?.semantic?.reason === "semantic_duplicate") return "Habit was not re-enabled because it looks like another approved habit. Open /experience setup → Resolve duplicate habits to decide what to keep.";
 	if (action === "Re-enable habit" && result?.enabled === false && result?.semantic?.reason === "semantic_unavailable") return "Habit was not re-enabled because local duplicate checking is not ready. Re-prepare duplicate prevention or turn it off in /experience setup.";
@@ -2030,18 +2097,18 @@ function formatSetupHabitActionForHuman(action: SetupHabitAction, result?: any):
 	return "Back to approved habits.";
 }
 
-async function chooseApprovedHabitInPanel(ctx: ExtensionCommandContext, habits: any[]): Promise<any | undefined> {
+async function chooseApprovedHabitInPanel(ctx: ExtensionCommandContext, items: SetupApprovedItem[]): Promise<SetupApprovedItem | undefined> {
 	const ui = (ctx as { hasUI?: boolean; ui?: { custom?: ExtensionCommandContext["ui"]["custom"] } })?.ui;
 	if ((ctx as { hasUI?: boolean }).hasUI !== false && typeof ui?.custom === "function") {
-		return ui.custom<any | undefined>((_tui, _theme, _keybindings, done) => new ApprovedHabitSearchComponent(habits, done), {
+		return ui.custom<SetupApprovedItem | undefined>((_tui, _theme, _keybindings, done) => new ApprovedHabitSearchComponent(items, done), {
 			overlay: true,
 			overlayOptions: { width: "80%", minWidth: 70, maxHeight: "80%", anchor: "center", margin: 1 },
 		});
 	}
-	const labels = habits.map((habit, index) => approvedHabitListLabel(habit, index));
-	const choice = await chooseSetup(ctx, `Review approved habits — ${plural(habits.length, "habit")}`, [...labels, "Back to setup"], false);
+	const labels = items.map((item, index) => approvedHabitListLabel(item, index));
+	const choice = await chooseSetup(ctx, `Review approved habits — ${plural(items.length, "record")}`, [...labels, "Back to setup"], false);
 	if (!choice || choice === "Back to setup") return undefined;
-	return habits[labels.indexOf(choice)];
+	return items[labels.indexOf(choice)];
 }
 
 async function chooseApprovedHabitActionInPanel(ctx: ExtensionCommandContext, title: string, details: string, actions: SetupHabitAction[]): Promise<SetupHabitAction | undefined> {
@@ -2252,45 +2319,67 @@ async function handleApprovedHabitsSetup(ctx: ExtensionCommandContext) {
 	const paths = getAgentExperiencePaths();
 	if (!(await fileExists(resolvePrivatePath(paths.root, "ledger.sqlite")))) return notify(ctx, "No approved habits yet. Choose Analyze all waiting examples now, then Review suggested habits and approve one first.", "info");
 	while (true) {
-		let habits: any[];
+		let items: SetupApprovedItem[];
 		let waiting: any[];
 		try {
-			({ habits, waiting } = await withExistingReviewStorage(async (storage) => ({ habits: listApprovedHabitsForSetup(storage.db, { userId: storage.userId }), waiting: listApprovedPendingHabitsForSetup(storage.db, { userId: storage.userId }) })));
+			({ items, waiting } = await withExistingReviewStorage(async (storage) => ({
+				items: listSetupApprovedItems(storage.db, storage.userId),
+				waiting: listApprovedPendingHabitsForSetup(storage.db, { userId: storage.userId }),
+			})));
 		} catch (error) {
 			return notify(ctx, formatReviewReadError(error), "warn");
 		}
 		if (waiting.length) {
-			const choice = await chooseSetup(ctx, "Approved habits", [...(habits.length ? ["Browse active and disabled habits"] : []), `Recheck ${plural(waiting.length, "approved habit")} that is waiting`, "Back to setup"], false);
+			const choice = await chooseSetup(ctx, "Approved habits", [...(items.length ? ["Browse active and disabled habits"] : []), `Recheck ${plural(waiting.length, "approved habit")} that is waiting`, "Back to setup"], false);
 			if (!choice || choice === "Back to setup") return;
 			if (choice.startsWith("Recheck ")) { await recheckApprovedWaitingHabits(ctx); continue; }
 		}
-		if (!habits.length) return notify(ctx, "No active or disabled approved habits yet. Waiting approvals remain visible here until their requirements are met.", "info");
-		const selected = await chooseApprovedHabitInPanel(ctx, habits);
+		if (!items.length) return notify(ctx, "No active or disabled approved habits yet. Waiting approvals remain visible here until their requirements are met.", "info");
+		const selected = await chooseApprovedHabitInPanel(ctx, items);
 		if (!selected) return;
-		const refreshed = await withExistingReviewStorage(async (storage) => listApprovedHabitsForSetup(storage.db, { userId: storage.userId }))
-			.then((rows) => rows.find((row: any) => row.id === selected.id));
+		const refreshed = await withExistingReviewStorage(async (storage) => listSetupApprovedItems(storage.db, storage.userId))
+			.then((rows) => rows.find((row) => sameSetupApprovedItem(row, selected)));
 		if (!refreshed) {
-			notify(ctx, "That habit changed or is no longer approved. Reopening the approved-habit list.", "warn");
+			notify(ctx, "That approved record changed or is no longer active. Reopening the approved-habit list.", "warn");
 			continue;
 		}
-		const index = habits.findIndex((habit) => habit.id === refreshed.id);
-		const action = await chooseApprovedHabitActionInPanel(ctx, approvedHabitTitle(refreshed, Math.max(0, index)), formatApprovedHabitForHuman(refreshed), setupHabitActions(refreshed));
+		const index = items.findIndex((item) => sameSetupApprovedItem(item, refreshed));
+		const action = await chooseApprovedHabitActionInPanel(ctx, approvedHabitTitle(refreshed, Math.max(0, index)), formatSetupApprovedItemForHuman(refreshed), setupHabitActions(refreshed));
 		if (!action || action === "Back to habit list") continue;
 		try {
 			const now = new Date().toISOString();
 			if (action === "Re-enable habit" && !(await ensureLawFileForSetup(ctx))) continue;
-			const result = await withReviewStorage(async (storage) => {
-				const current = listApprovedHabitsForSetup(storage.db, { userId: storage.userId }).find((row: any) => row.id === refreshed.id);
+			const result: any = await withReviewStorage(async (storage) => {
+				if (refreshed.source === "experience") {
+					const current = listSetupApprovedItems(storage.db, storage.userId)
+						.find((row) => row.source === "experience" && row.item.recordId === refreshed.item.recordId);
+					if (!current || current.source !== "experience" || current.item.checksum !== refreshed.item.checksum) throw new Error("Approved Experience changed; refresh required");
+					if (action !== "Disable Experience") throw new Error("Unsupported approved Experience action");
+					const experience = disableReviewedExperience(storage.db, {
+						userId: storage.userId,
+						recordId: current.item.recordId,
+						reviewedChecksum: current.item.checksum,
+						now,
+					});
+					const vectors = await maintainSelectorVectorsAfterActiveChange(storage, (ctx as any).signal);
+					return { experience, experience_ready: vectors.experienceReady };
+				}
+				const current = listApprovedHabitsForSetup(storage.db, { userId: storage.userId }).find((row: any) => row.id === refreshed.item.id);
 				if (!current) throw new Error("Approved habit changed or disappeared");
-				if (current.checksum !== refreshed.checksum || current.status !== refreshed.status) throw new Error("Approved habit changed; refresh required");
-				if (action === "Disable habit") return disableHabit(storage.db, { userId: storage.userId, habitId: refreshed.id, checksum: refreshed.checksum, now });
-				if (action === "Archive/hide habit") return archiveHideHabit(storage.db, { userId: storage.userId, habitId: refreshed.id, checksum: refreshed.checksum, now });
-				const enabled = await enableHabit(storage.db, { userId: storage.userId, habitId: refreshed.id, checksum: refreshed.checksum, law: await readConfiguredLawForRoot(storage.root), now, semantic: await semanticRuntimeForConfig() });
+				if (current.checksum !== refreshed.item.checksum || current.status !== refreshed.item.status) throw new Error("Approved habit changed; refresh required");
+				if (action === "Disable habit") return disableHabit(storage.db, { userId: storage.userId, habitId: refreshed.item.id, checksum: refreshed.item.checksum, now });
+				if (action === "Archive/hide habit") return archiveHideHabit(storage.db, { userId: storage.userId, habitId: refreshed.item.id, checksum: refreshed.item.checksum, now });
+				const enabled = await enableHabit(storage.db, { userId: storage.userId, habitId: refreshed.item.id, checksum: refreshed.item.checksum, law: await readConfiguredLawForRoot(storage.root), now, semantic: await semanticRuntimeForConfig() });
 				const selector = enabled?.enabled ? await maintainSelectorVectorsAfterActiveChange(storage, (ctx as any).signal) : { ready: true };
 				return { ...enabled, selector_ready: selector.ready };
 			});
-			const selectorNote = result?.selector_ready === false ? "\nApproved-habit reminders will fail closed until local vectors are repaired from /experience setup." : "";
-			notify(ctx, `${formatSetupHabitActionForHuman(action, result)}${selectorNote}`, result?.enabled === false || result?.selector_ready === false ? "warn" : "info");
+			const vectorReady = refreshed.source === "experience" ? result?.experience_ready : result?.selector_ready;
+			const vectorNote = vectorReady === false
+				? refreshed.source === "experience"
+					? "\nExperience retrieval will fail closed until local vectors are repaired from /experience setup."
+					: "\nApproved-habit reminders will fail closed until local vectors are repaired from /experience setup."
+				: "";
+			notify(ctx, `${formatSetupHabitActionForHuman(action, result)}${vectorNote}`, result?.enabled === false || vectorReady === false ? "warn" : "info");
 		} catch (error: any) {
 			const raw = String(error?.message || error);
 			notify(ctx, `Approved-habit action failed safely: ${redactText(raw).slice(0, 500)}`, "warn");

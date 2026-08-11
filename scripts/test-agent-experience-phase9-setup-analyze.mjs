@@ -10,7 +10,7 @@ import { canonicalJson } from '../extensions/agent-experience/src/storage/checks
 import { ensurePrivateRoot, resolvePrivatePath } from '../extensions/agent-experience/src/storage/private-root.ts';
 import { appendObservation, observationChecksumForTest, observationPairRefForTest } from '../extensions/agent-experience/src/storage/observations.ts';
 import { initExperienceStorage, insertStorageRecord } from '../extensions/agent-experience/src/storage/sqlite.ts';
-import { getExperience, insertExperienceCandidate } from '../extensions/agent-experience/src/experience/storage.ts';
+import { activateExperience, getExperience, insertExperienceCandidate } from '../extensions/agent-experience/src/experience/storage.ts';
 import { listHabitDuplicates, upsertHabitDuplicate } from '../extensions/agent-experience/src/semantic/storage.ts';
 import { LOCAL_EMBEDDING_DIMENSIONS, LOCAL_EMBEDDING_MODEL, LOCAL_EMBEDDING_PROVIDER } from '../extensions/agent-experience/src/semantic/local-model-manifest.ts';
 assert.equal(
@@ -544,6 +544,104 @@ try {
   storage.db.close();
 }
 assert.ok(notes.some((note) => /Experience approved and active/.test(note.message || '')), 'setup must report typed Experience approval');
+
+let activeLegacyHabitCount = 0;
+storage = await initExperienceStorage(paths.root, { allowInit: true, userId: 'owner' });
+try {
+  const legacyRows = storage.db.prepare("SELECT id, condition, behavior, confidence_bp, created_at, updated_at FROM habits WHERE user_id = 'owner' AND status = 'active' ORDER BY id").all();
+  activeLegacyHabitCount = legacyRows.length;
+  assert.ok(activeLegacyHabitCount > 0, 'approved-view regression needs one active legacy habit');
+  const legacy = legacyRows[0];
+  if (!getExperience(storage.db, { userId: 'owner', id: legacy.id })) {
+    const migrated = insertExperienceCandidate(storage.db, {
+      id: legacy.id,
+      userId: 'owner',
+      kind: 'habit',
+      scope: { kind: 'user' },
+      authority: 'reviewed_inference',
+      applicability: legacy.condition,
+      content: legacy.behavior,
+      exceptions: [],
+      confidenceBp: legacy.confidence_bp,
+      validFrom: legacy.created_at,
+      lastConfirmedAt: legacy.updated_at,
+      supersedes: [],
+      conflictsWith: [],
+      provenance: [{
+        source: 'migration',
+        host: 'migration',
+        evidenceId: `legacy-habit:${legacy.id}:fixture`,
+        observedAt: legacy.updated_at,
+      }],
+    }, { now: legacy.updated_at });
+    activateExperience(storage.db, {
+      userId: 'owner',
+      id: migrated.id,
+      reviewedChecksum: migrated.checksum,
+      approvalId: `migration:${legacy.id}`,
+      now: legacy.updated_at,
+    });
+  }
+} finally {
+  storage.db.close();
+}
+
+notes.length = 0;
+let approvedTypedExperienceVisible = false;
+let approvedPanelStep = 0;
+setupChoices = ['Browse active and disabled habits', 'Browse active and disabled habits'];
+ctx.ui.custom = async (factory) => {
+  let value;
+  const component = await factory({ requestRender() {} }, {}, {}, (result) => { value = result; });
+  const rendered = component.render(140).join('\n');
+  const expectedApproved = activeLegacyHabitCount + 1;
+  if (approvedPanelStep === 0) {
+    assert.match(rendered, new RegExp(`Manage habits\\s+${expectedApproved} approved`), 'setup count must include distinct active typed Experiences without double-counting migrated habits');
+    approvedPanelStep += 1;
+    return 'openHabits';
+  }
+  if (approvedPanelStep === 1) {
+    assert.match(rendered, new RegExp(`Review approved habits[^\\n]*${expectedApproved}`), 'manage view count must include distinct typed Experiences');
+    approvedPanelStep += 1;
+    return 'habits';
+  }
+  if (approvedPanelStep === 2) {
+    assert.match(rendered, /Experience #\d+ \[active\][^\n]*typed setup suggestions/, 'approved typed Experience must appear in the approved list');
+    assert.equal((rendered.match(/legacy-habit:/g) || []).length, 0, 'migrated legacy provenance must not leak into the approved list');
+    approvedTypedExperienceVisible = true;
+    approvedPanelStep += 1;
+    component.handleInput('\r');
+    return value;
+  }
+  if (approvedPanelStep === 3) {
+    assert.match(rendered, /Approved preference Experience/, 'approved typed Experience details must open');
+    assert.match(rendered, /Disable Experience/, 'approved typed Experience must expose a valid disable action');
+    approvedPanelStep += 1;
+    return 'Disable Experience';
+  }
+  if (approvedPanelStep === 4) {
+    assert.doesNotMatch(rendered, /typed setup suggestions/, 'disabled typed Experience must leave the active approved list');
+    approvedPanelStep += 1;
+    component.handleInput('\x1b');
+    return value;
+  }
+  if (approvedPanelStep === 5) {
+    approvedPanelStep += 1;
+    return 'back';
+  }
+  assert.match(rendered, new RegExp(`Manage habits\\s+${activeLegacyHabitCount} approved`), 'setup count must drop after disabling a typed Experience');
+  return 'done';
+};
+await commands.get('experience').handler('setup', ctx);
+delete ctx.ui.custom;
+assert.ok(approvedPanelStep >= 6, `approved Experience management flow must complete; reached step ${approvedPanelStep}`);
+assert.equal(approvedTypedExperienceVisible, true, 'approved typed Experience must be manageable after approval');
+storage = await initExperienceStorage(paths.root, { allowInit: true, userId: 'owner' });
+try {
+  assert.equal(getExperience(storage.db, { userId: 'owner', id: 'typed-setup-review' })?.status, 'disabled', 'approved view must disable a reviewed typed Experience');
+} finally {
+  storage.db.close();
+}
 
 configResult = await readAgentExperienceConfig(paths);
 await writeAgentExperienceConfig({ ...configResult.config, selector_model: 'openai-codex/gpt-5.5' }, paths);

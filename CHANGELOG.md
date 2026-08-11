@@ -6,6 +6,17 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 ## [Unreleased]
 
+## [0.1.60] - 2026-08-11
+
+### Fixed
+
+- Included approved typed Experiences in **Manage habits** counts and **Review approved habits**, while excluding migrated copies of legacy habits so upgraded installations do not double-count or double-list them.
+- Added a reviewed disable action for active typed Experiences in the approved-record panel.
+
+### Validation
+
+- Added setup regression coverage for distinct typed Experience counts, migrated-habit deduplication, approved-record visibility, and reviewed disabling.
+
 ## [0.1.59] - 2026-08-11
 
 ### Fixed
@@ -259,7 +270,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 - Added synchronous submission-hook checks, deferred embedding/model assertions, and a packed Pi TUI smoke requiring submitted-message rendering within 1.5 seconds.
 
-[Unreleased]: https://github.com/misunders2d/pi-experiences/compare/v0.1.59...HEAD
+[Unreleased]: https://github.com/misunders2d/pi-experiences/compare/v0.1.60...HEAD
+[0.1.60]: https://github.com/misunders2d/pi-experiences/compare/v0.1.59...v0.1.60
 [0.1.59]: https://github.com/misunders2d/pi-experiences/compare/v0.1.58...v0.1.59
 [0.1.58]: https://github.com/misunders2d/pi-experiences/compare/v0.1.57...v0.1.58
 [0.1.57]: https://github.com/misunders2d/pi-experiences/compare/v0.1.56...v0.1.57
