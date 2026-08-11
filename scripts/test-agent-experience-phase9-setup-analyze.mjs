@@ -10,6 +10,7 @@ import { canonicalJson } from '../extensions/agent-experience/src/storage/checks
 import { ensurePrivateRoot, resolvePrivatePath } from '../extensions/agent-experience/src/storage/private-root.ts';
 import { appendObservation, observationChecksumForTest, observationPairRefForTest } from '../extensions/agent-experience/src/storage/observations.ts';
 import { initExperienceStorage, insertStorageRecord } from '../extensions/agent-experience/src/storage/sqlite.ts';
+import { getExperience, insertExperienceCandidate } from '../extensions/agent-experience/src/experience/storage.ts';
 import { listHabitDuplicates, upsertHabitDuplicate } from '../extensions/agent-experience/src/semantic/storage.ts';
 import { LOCAL_EMBEDDING_DIMENSIONS, LOCAL_EMBEDDING_MODEL, LOCAL_EMBEDDING_PROVIDER } from '../extensions/agent-experience/src/semantic/local-model-manifest.ts';
 assert.equal(
@@ -486,6 +487,63 @@ assert.equal(safetyActionPanelSeen, true, 'missing safety file prompt must use S
 assert.ok(notes.some((note) => /Approved suggestion/.test(note.message || '')), 'setup review must approve suggestion from setup flow');
 assert.ok(!notes.some((note) => /Suggested habit\n|Suggested habits waiting for review|When:/.test(note.message || '')), 'review details must not be dumped into chat history notifications');
 assert.equal(existsSync(resolvePrivatePath(paths.root, 'law.md')), true, 'first-run approval must create missing safety file inside setup');
+const typedReviewNow = '2026-07-09T10:00:00.000Z';
+storage = await initExperienceStorage(paths.root, { allowInit: true, userId: 'owner' });
+try {
+  insertExperienceCandidate(storage.db, {
+    id: 'typed-setup-review',
+    userId: 'owner',
+    kind: 'preference',
+    scope: { kind: 'user' },
+    authority: 'reviewed_inference',
+    applicability: 'When reviewing typed setup suggestions',
+    content: 'Show typed Experience candidates in setup review',
+    rationale: 'A typed candidate must remain reachable from the setup review flow.',
+    exceptions: [],
+    confidenceBp: 9300,
+    validFrom: typedReviewNow,
+    lastConfirmedAt: typedReviewNow,
+    supersedes: [],
+    conflictsWith: [],
+    provenance: [{
+      source: 'conversation',
+      host: 'omp',
+      evidenceId: 'typed-setup-review-evidence',
+      observedAt: typedReviewNow,
+    }],
+  }, { now: typedReviewNow });
+} finally {
+  storage.db.close();
+}
+
+notes.length = 0;
+let typedReviewPanelSeen = false;
+ctx.ui.custom = async (factory) => {
+  let value;
+  const component = await factory({ requestRender() {} }, {}, {}, (result) => { value = result; });
+  const rendered = component.render(100).join('\n');
+  if (/Agent Experience setup/.test(rendered)) {
+    const next = setupChoices.shift();
+    return next === 'Review suggested habits' ? 'review' : next === 'Done' ? 'done' : undefined;
+  }
+  assert.match(rendered, /preference · candidate · user · reviewed_inference/, 'typed review panel must identify the Experience kind and authority');
+  assert.match(rendered, /When: When reviewing typed setup suggestions/, 'typed review panel must show applicability');
+  assert.match(rendered, /Content: Show typed Experience candidates in setup review/, 'typed review panel must show content');
+  typedReviewPanelSeen = true;
+  component.handleInput('a');
+  return value;
+};
+setupChoices = ['Review suggested habits', undefined, 'Done'];
+await commands.get('experience').handler('setup', ctx);
+delete ctx.ui.custom;
+assert.equal(typedReviewPanelSeen, true, 'setup review must surface typed Experience candidates');
+storage = await initExperienceStorage(paths.root, { allowInit: true, userId: 'owner' });
+try {
+  assert.equal(getExperience(storage.db, { userId: 'owner', id: 'typed-setup-review' })?.status, 'active', 'setup approval must activate the reviewed typed Experience');
+} finally {
+  storage.db.close();
+}
+assert.ok(notes.some((note) => /Experience approved and active/.test(note.message || '')), 'setup must report typed Experience approval');
 
 configResult = await readAgentExperienceConfig(paths);
 await writeAgentExperienceConfig({ ...configResult.config, selector_model: 'openai-codex/gpt-5.5' }, paths);

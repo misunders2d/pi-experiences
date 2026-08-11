@@ -29,22 +29,27 @@ import { initExperienceStorage, openExistingExperienceStorage } from "./src/stor
 import {
 	acceptCandidateHabit,
 	acceptPendingReview,
+	approveReviewedExperience,
 	archiveHideHabit,
 	diffPendingReviewItems,
 	disableHabit,
 	enableHabit,
 	explainHabit,
+	formatExperienceReviewItem,
 	generateHabitsReport,
 	listApprovedHabitsForSetup,
 	listApprovedPendingHabitsForSetup,
+	listExperienceReviewItems,
 	listPendingReviewItems,
 	readConfiguredLawSnapshot,
 	rejectCandidateHabit,
+	rejectReviewedExperience,
 	rejectPendingReview,
 	resolveHabitDuplicate,
 	planHabitDuplicateResolution,
 	showPendingReviewItem,
 	type HabitDuplicateResolutionAction,
+	type ExperienceReviewItem,
 } from "./src/review.ts";
 import { semanticPolicyFromConfig, createEmbeddingAdapterFromConfig } from "./src/semantic/config.ts";
 import { ensureLocalEmbeddingAssets, getLocalEmbeddingAssetStatus, removeLocalEmbeddingAssets } from "./src/semantic/local-model.ts";
@@ -741,7 +746,7 @@ function scheduleBreakInPrompt(ctx: ExtensionContext, trigger: "manual-job-compl
 async function pendingBreakInReviewCount(): Promise<number> {
 	if (breakInPendingReviewCountOverride !== undefined) return breakInPendingReviewCountOverride;
 	try {
-		return await withExistingReviewStorage((storage) => listPendingReviewItems(storage.db, { userId: storage.userId }).items.length);
+		return await withExistingReviewStorage((storage) => listSetupReviewItems(storage.db, storage.userId).length);
 	} catch {
 		return 0;
 	}
@@ -915,6 +920,24 @@ export function __countAgentExperienceSuggestedHabitsForTest(summary: { pending:
 	return summary.pending + summary.candidate;
 }
 
+type SetupReviewItem =
+	| { source: "experience"; item: ExperienceReviewItem }
+	| { source: "habit"; item: any };
+
+function listSetupReviewItems(db: DatabaseSync, userId: string): SetupReviewItem[] {
+	const experiences = listExperienceReviewItems(db, { userId, statuses: ["candidate"] })
+		.map((item) => ({ source: "experience" as const, item }));
+	const habits = listPendingReviewItems(db, { userId }).items
+		.map((item: any) => ({ source: "habit" as const, item }));
+	return [...experiences, ...habits];
+}
+
+function setupReviewItemLabel(entry: SetupReviewItem, index: number): string {
+	if (entry.source === "habit") return reviewItemLabel(entry.item, index);
+	const applicability = truncateForModel(redactText(entry.item.applicability), 34);
+	return `Review #${index + 1} ${entry.item.kind} Experience — ${applicability}`;
+}
+
 async function reviewSummary(root: string, userId: string): Promise<{ ledger: boolean; pending: number; active: number; candidate: number; approvedWaiting: number; duplicates: number; error?: string }> {
 	const dbPath = resolvePrivatePath(root, "ledger.sqlite");
 	if (!(await fileExists(dbPath))) return { ledger: false, pending: 0, active: 0, candidate: 0, approvedWaiting: 0, duplicates: 0 };
@@ -923,9 +946,10 @@ async function reviewSummary(root: string, userId: string): Promise<{ ledger: bo
 		storage = await openExistingExperienceStorage(root, { userId });
 		const db = storage.db;
 		const normalizedUserId = normalizeUserId(userId);
-		const visible = listPendingReviewItems(db, { userId: normalizedUserId });
-		const pending = visible.items.filter((item: any) => item.type === "pending_review").length;
-		const candidate = visible.items.filter((item: any) => item.type === "candidate").length;
+		const legacy = listPendingReviewItems(db, { userId: normalizedUserId });
+		const pending = legacy.items.filter((item: any) => item.type === "pending_review").length;
+		const legacyCandidates = legacy.items.filter((item: any) => item.type === "candidate").length;
+		const candidate = legacyCandidates + listExperienceReviewItems(db, { userId: normalizedUserId, statuses: ["candidate"] }).length;
 		const active = Number(db.prepare("SELECT COUNT(*) AS count FROM habits WHERE user_id = ? AND status = 'active'").get(normalizedUserId).count);
 		const approvedWaiting = listApprovedPendingHabitsForSetup(db, { userId: normalizedUserId }).length;
 		const duplicates = listHabitDuplicates(db, { userId: normalizedUserId, decision: "pending" }).length;
@@ -2278,37 +2302,66 @@ async function handleReviewSetup(ctx: ExtensionContext) {
 	const paths = getAgentExperiencePaths();
 	if (!(await fileExists(resolvePrivatePath(paths.root, "ledger.sqlite")))) return notify(ctx, "No review list yet. Choose Analyze all waiting examples now first.", "info");
 	while (true) {
-		let list: any;
+		let entries: SetupReviewItem[];
 		try {
-			list = await withExistingReviewStorage(async (storage) => listPendingReviewItems(storage.db, { userId: storage.userId }));
+			entries = await withExistingReviewStorage(async (storage) => listSetupReviewItems(storage.db, storage.userId));
 		} catch (error) {
 			return notify(ctx, formatReviewReadError(error), "warn");
 		}
-		if (!list.items.length) return notify(ctx, "No suggested habits are waiting for review.", "info");
-		const labels = list.items.map((item: any, index: number) => reviewItemLabel(item, index));
-		const choice = await chooseSetup(ctx, `Review suggested habits — ${plural(list.items.length, "suggestion")} waiting`, [...labels, "Back to setup"], false);
+		if (!entries.length) return notify(ctx, "No suggestions are waiting for review.", "info");
+		const labels = entries.map((entry, index) => setupReviewItemLabel(entry, index));
+		const choice = await chooseSetup(ctx, `Review suggested habits — ${plural(entries.length, "suggestion")} waiting`, [...labels, "Back to setup"], false);
 		if (!choice || choice === "Back to setup") return;
 		const index = labels.indexOf(choice);
-		const item = list.items[index];
-		if (!item) continue;
-		const details = await withExistingReviewStorage(async (storage) => showPendingReviewItem(storage.db, { userId: storage.userId, id: item.id }));
-		const action = await chooseReviewActionInPanel(ctx, reviewItemLabel(item, index), formatReviewItemForHuman(details));
+		const selected = entries[index];
+		if (!selected) continue;
+		const details = selected.source === "experience"
+			? formatExperienceReviewItem(selected.item)
+			: formatReviewItemForHuman(await withExistingReviewStorage(async (storage) => showPendingReviewItem(storage.db, { userId: storage.userId, id: selected.item.id })));
+		const action = await chooseReviewActionInPanel(ctx, setupReviewItemLabel(selected, index), details);
 		if (!action || action === "Back to review list") continue;
 		try {
 			const now = new Date().toISOString();
-			if (action === "Approve" && item.type === "candidate" && !(await ensureLawFileForSetup(ctx))) continue;
+			if (selected.source === "habit" && action === "Approve" && selected.item.type === "candidate" && !(await ensureLawFileForSetup(ctx))) continue;
 			const result = await withReviewStorage(async (storage) => {
-				const shown = showPendingReviewItem(storage.db, { userId: storage.userId, id: item.id });
+				if (selected.source === "experience") {
+					if (action === "Reject") {
+						return {
+							source: "experience" as const,
+							experience: rejectReviewedExperience(storage.db, {
+								userId: storage.userId,
+								recordId: selected.item.recordId,
+								reviewedChecksum: selected.item.checksum,
+								now,
+							}),
+						};
+					}
+					const experience = approveReviewedExperience(storage.db, {
+						userId: storage.userId,
+						recordId: selected.item.recordId,
+						reviewedChecksum: selected.item.checksum,
+						approvalId: `review-${selected.item.checksum.slice(0, 20)}-${Date.now()}`,
+						now,
+					});
+					const vectors = await maintainSelectorVectorsAfterActiveChange(storage, (ctx as any).signal);
+					return { source: "experience" as const, experience, experience_ready: vectors.experienceReady };
+				}
+				const shown = showPendingReviewItem(storage.db, { userId: storage.userId, id: selected.item.id });
 				if (shown.item.type === "candidate") {
-					if (action !== "Approve") return rejectCandidateHabit(storage.db, { userId: storage.userId, habitId: item.id, checksum: item.checksum, now });
-					const accepted = await acceptCandidateHabit(storage.db, { userId: storage.userId, habitId: item.id, checksum: item.checksum, law: await readConfiguredLawForRoot(storage.root), now, semantic: await semanticRuntimeForConfig() });
+					if (action !== "Approve") return rejectCandidateHabit(storage.db, { userId: storage.userId, habitId: selected.item.id, checksum: selected.item.checksum, now });
+					const accepted = await acceptCandidateHabit(storage.db, { userId: storage.userId, habitId: selected.item.id, checksum: selected.item.checksum, law: await readConfiguredLawForRoot(storage.root), now, semantic: await semanticRuntimeForConfig() });
 					const selector = accepted?.activated ? await maintainSelectorVectorsAfterActiveChange(storage, (ctx as any).signal) : { ready: true };
 					return { ...accepted, selector_ready: selector.ready };
 				}
 				return action === "Approve"
-					? acceptPendingReview(storage.db, { userId: storage.userId, id: item.id, checksum: item.checksum, now })
-					: rejectPendingReview(storage.db, { userId: storage.userId, id: item.id, checksum: item.checksum, now });
+					? acceptPendingReview(storage.db, { userId: storage.userId, id: selected.item.id, checksum: selected.item.checksum, now })
+					: rejectPendingReview(storage.db, { userId: storage.userId, id: selected.item.id, checksum: selected.item.checksum, now });
 			});
+			if (selected.source === "experience") {
+				const vectorNote = result.experience_ready === false ? "\nExperience retrieval will fail closed until local vectors are repaired from /experience setup." : "";
+				notify(ctx, `${action === "Approve" ? "Experience approved and active." : "Experience rejected."}${vectorNote}`, result.experience_ready === false ? "warn" : "info");
+				continue;
+			}
 			const selectorNote = result?.selector_ready === false ? "\nApproved-habit reminders will fail closed until local vectors are repaired from /experience setup." : "";
 			notify(ctx, `${formatReviewActionForHuman(action, result)}${selectorNote}`, result?.selector_ready === false ? "warn" : "info");
 		} catch (error: any) {

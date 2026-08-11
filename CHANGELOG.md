@@ -6,6 +6,14 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 ## [Unreleased]
 
+### Fixed
+
+- Unified **Review suggested habits** across Pi and OMP so typed Experience candidates appear beside legacy habit candidates and can be approved or rejected through the same setup flow.
+
+### Validation
+
+- Added dual-host setup regression coverage for typed candidate visibility and approval.
+
 ## [0.1.58] - 2026-08-10
 
 ### Fixed
