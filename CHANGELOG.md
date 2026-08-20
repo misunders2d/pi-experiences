@@ -6,6 +6,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 ## [Unreleased]
 
+## [0.1.62] - 2026-08-20
+
 ### Fixed
 
 - Preserved automatic Analyze receipt polling when unrelated non-TUI sessions shut down, so deferred overnight results remain visible in the active Pi TUI.
@@ -15,7 +17,6 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 ### Validation
 
 - Added scheduler lifecycle, repeated typed-identity, and habit-only prompt/output regressions; the full package check and installed Pi TUI receipt smoke pass.
-
 
 ## [0.1.61] - 2026-08-11
 
@@ -292,7 +293,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 - Added synchronous submission-hook checks, deferred embedding/model assertions, and a packed Pi TUI smoke requiring submitted-message rendering within 1.5 seconds.
 
-[Unreleased]: https://github.com/misunders2d/pi-experiences/compare/v0.1.61...HEAD
+[Unreleased]: https://github.com/misunders2d/pi-experiences/compare/v0.1.62...HEAD
+[0.1.62]: https://github.com/misunders2d/pi-experiences/compare/v0.1.61...v0.1.62
 [0.1.61]: https://github.com/misunders2d/pi-experiences/compare/v0.1.60...v0.1.61
 [0.1.60]: https://github.com/misunders2d/pi-experiences/compare/v0.1.59...v0.1.60
 [0.1.59]: https://github.com/misunders2d/pi-experiences/compare/v0.1.58...v0.1.59
