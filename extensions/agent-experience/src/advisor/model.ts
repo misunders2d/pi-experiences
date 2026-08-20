@@ -1,6 +1,5 @@
 import {
 	Agent,
-	estimateTokens as estimateAgentMessageTokens,
 	type AgentMessage,
 	type AgentOptions,
 	type AgentTool,
@@ -21,6 +20,37 @@ import { createAdvisorWorkspaceBudget, createAdvisorWorkspaceTools } from "./wor
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 const MAX_RETIRED_AGENTS = 4;
+const ESTIMATED_IMAGE_CHARACTERS = 4_800;
+
+function estimateMessageContentCharacters(content: unknown): number {
+	if (typeof content === "string") return content.length;
+	if (!Array.isArray(content)) return 0;
+	let characters = 0;
+	for (const block of content) {
+		if (!block || typeof block !== "object" || !("type" in block)) continue;
+		if ((block.type === "text" || block.type === "thinking") && "text" in block && typeof block.text === "string") {
+			characters += block.text.length;
+		} else if (block.type === "thinking" && "thinking" in block && typeof block.thinking === "string") {
+			characters += block.thinking.length;
+		} else if (block.type === "image") {
+			characters += ESTIMATED_IMAGE_CHARACTERS;
+		} else if (block.type === "toolCall" && "name" in block && typeof block.name === "string") {
+			let serializedArguments = "";
+			try {
+				serializedArguments = "arguments" in block ? JSON.stringify(block.arguments) ?? "" : "";
+			} catch {}
+			characters += block.name.length + serializedArguments.length;
+		}
+	}
+	return characters;
+}
+
+function estimateAgentMessageTokens(message: AgentMessage): number {
+	if ("content" in message) return Math.ceil(estimateMessageContentCharacters(message.content) / 4);
+	if (message.role === "bashExecution") return Math.ceil((message.command.length + message.output.length) / 4);
+	if (message.role === "branchSummary" || message.role === "compactionSummary") return Math.ceil(message.summary.length / 4);
+	return 0;
+}
 const REVIEW_FAILURE_REASONS = new Set<AdvisorDiagnosticReason>([
 	"advisor_auth_unavailable",
 	"advisor_context_overflow",

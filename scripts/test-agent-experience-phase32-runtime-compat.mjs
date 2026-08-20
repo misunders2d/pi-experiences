@@ -12,6 +12,9 @@ import {
   resolveAgentExperienceHost,
 } from '../extensions/agent-experience/src/storage/runtime.ts';
 
+const advisorModelSource = await readFile(new URL('../extensions/agent-experience/src/advisor/model.ts', import.meta.url), 'utf8');
+assert.doesNotMatch(advisorModelSource, /estimateTokens\s+as\s+estimateAgentMessageTokens/, 'OMP compatibility must not require a named estimateTokens export from the aliased agent core');
+
 assert.equal(resolveAgentExperienceHost({ host: 'omp' }, {}), 'omp');
 assert.equal(resolveAgentExperienceHost({ host: 'pi' }, { Bun: { version: '1.3.14' } }), 'pi');
 assert.equal(resolveAgentExperienceHost({}, { Bun: { version: '1.3.14' } }), 'omp');

@@ -6,6 +6,16 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 ## [Unreleased]
 
+## [0.1.63] - 2026-08-20
+
+### Fixed
+
+- Restored OMP 17.4 plugin loading and `/experience` command registration by removing reliance on the missing aliased `estimateTokens` agent-core export.
+
+### Validation
+
+- Added an OMP runtime-compatibility regression that forbids the incompatible named export dependency.
+
 ## [0.1.62] - 2026-08-20
 
 ### Fixed
@@ -293,7 +303,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 - Added synchronous submission-hook checks, deferred embedding/model assertions, and a packed Pi TUI smoke requiring submitted-message rendering within 1.5 seconds.
 
-[Unreleased]: https://github.com/misunders2d/pi-experiences/compare/v0.1.62...HEAD
+[Unreleased]: https://github.com/misunders2d/pi-experiences/compare/v0.1.63...HEAD
+[0.1.63]: https://github.com/misunders2d/pi-experiences/compare/v0.1.62...v0.1.63
 [0.1.62]: https://github.com/misunders2d/pi-experiences/compare/v0.1.61...v0.1.62
 [0.1.61]: https://github.com/misunders2d/pi-experiences/compare/v0.1.60...v0.1.61
 [0.1.60]: https://github.com/misunders2d/pi-experiences/compare/v0.1.59...v0.1.60
