@@ -200,6 +200,29 @@ export function getExperience(db: DatabaseSync, input: { userId: string; id: str
 	return row ? recordFromRow(db, row) : undefined;
 }
 
+function mergeExperienceCandidateSupport(existing: ExperienceRecordV1, incoming: ExperienceRecordV1): ExperienceRecordV1 {
+	if (experienceApprovalIdentity(existing) !== experienceApprovalIdentity(incoming)) {
+		throw new Error(`Conflicting experience candidate id: ${incoming.id}`);
+	}
+	const provenance = [...existing.provenance];
+	const seen = new Set(provenance.map(entry => `${entry.host}\0${entry.evidenceId}`));
+	for (const entry of incoming.provenance) {
+		const key = `${entry.host}\0${entry.evidenceId}`;
+		if (seen.has(key) || provenance.length >= 64) continue;
+		seen.add(key);
+		provenance.push(entry);
+	}
+	const record = {
+		...existing,
+		confidenceBp: Math.max(existing.confidenceBp, incoming.confidenceBp),
+		lastConfirmedAt: Date.parse(existing.lastConfirmedAt) >= Date.parse(incoming.lastConfirmedAt)
+			? existing.lastConfirmedAt
+			: incoming.lastConfirmedAt,
+		provenance,
+	};
+	return validateExperienceRecord({ ...record, checksum: computeExperienceChecksum(record) });
+}
+
 export function insertExperienceCandidateInTransaction(
 	db: DatabaseSync,
 	input: ExperienceCandidateInput,
@@ -207,10 +230,13 @@ export function insertExperienceCandidateInTransaction(
 ): ExperienceRecordV1 {
 	const now = options.now ?? new Date().toISOString();
 	const record = buildExperienceCandidate({ ...input, userId: normalizeUserId(input.userId) });
-	const existing = getExperience(db, { userId: record.userId, id: record.id });
-	if (existing) {
-		if (existing.checksum !== record.checksum) throw new Error(`Conflicting experience candidate id: ${record.id}`);
-		return existing;
+	const existingRow = db.prepare("SELECT * FROM experiences WHERE user_id = ? AND id = ?").get(record.userId, record.id) as ExperienceRow | undefined;
+	if (existingRow) {
+		const existing = recordFromRow(db, existingRow);
+		if (existing.checksum === record.checksum) return existing;
+		const merged = mergeExperienceCandidateSupport(existing, record);
+		replaceRecord(db, merged, { ...parseRowData(existingRow), exceptions: merged.exceptions, provenance: merged.provenance }, now);
+		return merged;
 	}
 	insertRow(db, record, { exceptions: record.exceptions, provenance: record.provenance }, now);
 	return record;

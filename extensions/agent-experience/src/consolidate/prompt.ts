@@ -5,6 +5,22 @@ export const GENERALIZED_HABIT_INSTRUCTIONS = [
 	"If examples share only a project-specific fact and no broader reusable behavior, return no proposal for that pattern.",
 ];
 
+export const HABIT_CLASSIFICATION_RUBRIC = [
+	"Classify each pattern before proposing. Only a HABIT is proposable:",
+	"- HABIT: a durable, reusable way to behave across similar future work. Propose these.",
+	"- FACT: durable knowledge or project context. A fact belongs in memory. Never propose it as a habit.",
+	"- SKILL: a deliberately authored procedure or playbook. A procedure is a skill. Never propose it as a habit.",
+	"- ONE-OFF INSTRUCTION: a single-task directive. A single-task instruction has no reusable behavior. Never propose it as a habit.",
+];
+
+export const HABIT_FEWSHOT_EXAMPLES = [
+	"Propose (habit): condition 'When reporting whether work is finished', behavior 'State done or blocked, cite concrete evidence, then give the next action.'",
+	"Propose (habit): condition 'When a request is ambiguous enough to change correctness', behavior 'Ask one focused question before proceeding.'",
+	"Do NOT propose (fact): 'The release ships from the main branch.' A fact belongs in memory, not a habit.",
+	"Do NOT propose (skill): 'Follow the deployment checklist.' A procedure is a skill, not a habit.",
+	"Do NOT propose (one-off): 'Rename this flag in this file now.' A single-task instruction has no reusable behavior.",
+];
+
 export const FRICTION_EXTRACTION_INSTRUCTIONS = [
 	"Identify candidates by causal reasoning over the batch, not by clustering superficially similar messages. Shared words are not a habit.",
 	"For each habit candidate, work in three steps: (1) LOCATE FRICTION — a moment where the user corrected the assistant, repeated a request, expressed dissatisfaction, or had to clarify something the assistant should have anticipated; (2) INFER THE IMPROVEMENT DIRECTION — the behavioral change that would have prevented that friction; (3) FORMULATE — express it as a generalized applicability/content experience following the generalization rules.",

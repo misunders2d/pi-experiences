@@ -4799,7 +4799,7 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 			advisorStates.delete(advisorState.scopeKey);
 			await disposeAdvisorState(advisorState);
 		}
-		stopScheduledReceiptPolling();
+		if (ctx.mode === "tui" && ctx.hasUI !== false) stopScheduledReceiptPolling();
 		const steeringScope = steeringScopeFromContext(ctx);
 		if (steeringScope) pendingSteeringRuns.delete(steeringScope);
 		await closeSelectorLocalEmbeddingAdapter().catch(() => undefined);

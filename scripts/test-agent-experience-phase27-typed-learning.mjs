@@ -146,15 +146,18 @@ assert.throws(
 );
 
 const prompt = __buildAgentExperienceConsolidationSystemPromptForTest();
-for (const phrase of ['habit:', 'preference:', 'constraint:', 'fact:', 'decision:', 'episode:', 'goal:']) {
-  assert.equal(prompt.includes(phrase), true, `prompt classifies ${phrase}`);
+assert.equal(prompt.includes('"kind":"habit_candidate"'), true, 'automatic Analyze requests only behavioral habit candidates');
+for (const phrase of ['A fact belongs in memory', 'A procedure is a skill', 'A single-task instruction has no reusable behavior']) {
+  assert.equal(prompt.includes(phrase), true, `habit-only prompt rejects non-habit output: ${phrase}`);
 }
-assert.equal(prompt.includes('one-off instruction'), true);
-assert.equal(prompt.includes('quoted third party'), true);
-assert.equal(prompt.includes('prompt-injection-shaped'), true);
-for (const authority of ['explicit_user', 'reviewed_inference', 'observed_outcome']) {
-  assert.equal(prompt.includes(authority), true, `prompt defines authority ${authority}`);
+for (const typedKind of ['"kind":"preference"', '"kind":"constraint"', '"kind":"fact"', '"kind":"decision"', '"kind":"episode"', '"kind":"goal"']) {
+  assert.equal(prompt.includes(typedKind), false, `automatic Analyze schema excludes ${typedKind}`);
 }
+const automaticTypedOutput = __normalizeAgentExperienceConsolidationModelOutputForTest({
+  batch_id: 'automatic-typed-output',
+  proposals: [proposal('constraint')],
+}, input, { habitsOnly: true });
+assert.deepEqual(automaticTypedOutput.proposals, [], 'automatic Analyze drops typed one-off records instead of surfacing false habits');
 
 const root = mkdtempSync(join(tmpdir(), 'pi-experience-phase27-'));
 const db = new DatabaseSync(':memory:');
@@ -185,6 +188,25 @@ try {
   assert.equal(stored.provenance.every(item => item.host === 'omp'), true);
   assert.equal(stored.rationale, 'Reviewed decision rationale');
   assert.equal(db.prepare('SELECT seq FROM proposal_read_watermarks WHERE user_id = ? AND file_generation = ?').get('owner', 'active').seq, 3);
+  const repeatedTypedOutput = {
+    ...typedModelOutput,
+    created_at: new Date(Date.parse(typedModelOutput.created_at) + 1_000).toISOString(),
+  };
+  const repeatedRun = await runConsolidationOnce({
+    root,
+    db,
+    userId: 'owner',
+    observations,
+    modelOutput: repeatedTypedOutput,
+    model: input.model,
+    host: 'omp',
+  });
+  assert.equal(repeatedRun.ok, true, repeatedRun.reason);
+  assert.deepEqual(repeatedRun.result.candidate_ids, committed.candidate_ids, 'same typed identity updates support without forking');
+  const repeatedStored = getExperience(db, { userId: 'owner', id: committed.candidate_ids[0] });
+  assert.equal(repeatedStored.status, 'candidate');
+  assert.equal(repeatedStored.lastConfirmedAt, repeatedTypedOutput.created_at);
+  assert.equal(repeatedStored.provenance.length, 3, 'repeated support is de-duplicated');
 } finally {
   db.close();
   rmSync(root, { recursive: true, force: true });

@@ -346,9 +346,9 @@ const liveSystemPrompt = __buildAgentExperienceConsolidationSystemPromptForTest(
 assert.match(liveSystemPrompt, /reusable behavioral essence/, 'live setup analyzer prompt must require generalized habits');
 assert.match(liveSystemPrompt, /one-off names such as Agent Experience/, 'live setup analyzer prompt must reject one-project habit labels');
 assert.match(liveSystemPrompt, /return no proposal/, 'live setup analyzer prompt must suppress project-specific-only patterns');
-assert.match(liveSystemPrompt, /Choose exactly one experience kind/, 'consolidation prompt must wire in the typed experience taxonomy');
-assert.match(liveSystemPrompt, /decision: applicability/, 'consolidation prompt must include positive typed few-shot examples');
-assert.match(liveSystemPrompt, /reuse existing exact canonical wording/, 'consolidation prompt must instruct reuse of existing canonical experience wording');
+assert.match(liveSystemPrompt, /Only a HABIT is proposable/, 'automatic Analyze must request behavioral habits rather than typed one-off records');
+assert.match(liveSystemPrompt, /A fact belongs in memory/, 'automatic Analyze must reject facts masquerading as habits');
+assert.match(liveSystemPrompt, /reuse its exact canonical condition/, 'consolidation prompt must instruct reuse of existing canonical habit wording');
 assert.match(liveSystemPrompt, /LOCATE FRICTION/, 'consolidation prompt must wire in causal friction extraction');
 assert.match(liveSystemPrompt, /Weight friction over preference/, 'consolidation prompt must friction-weight over stable positive preferences');
 assert.match(liveSystemPrompt, /Adjacent observations MAY be related conversation turns, but adjacency is NOT guaranteed/, 'consolidation prompt must treat adjacency as a bounded heuristic (interleaving/gaps), not guaranteed sequence');

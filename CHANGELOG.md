@@ -6,6 +6,17 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 ## [Unreleased]
 
+### Fixed
+
+- Preserved automatic Analyze receipt polling when unrelated non-TUI sessions shut down, so deferred overnight results remain visible in the active Pi TUI.
+- Merged new support into an unchanged typed Experience identity without reactivating disabled records or aborting Analyze on a checksum-only conflict.
+- Restored automatic Analyze to behavioral habits only; facts, skills, procedures, goals, episodes, and one-off task instructions no longer surface as suggested habits.
+
+### Validation
+
+- Added scheduler lifecycle, repeated typed-identity, and habit-only prompt/output regressions; the full package check and installed Pi TUI receipt smoke pass.
+
+
 ## [0.1.61] - 2026-08-11
 
 ### Fixed

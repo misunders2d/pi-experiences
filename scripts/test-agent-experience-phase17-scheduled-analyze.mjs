@@ -308,6 +308,7 @@ try {
   await handlers.get('agent_settled')({}, lifecycleCtx);
   assert.equal(transcriptEntries.length, 1, 'a retained receipt with an already-appended delivery key is deleted without a duplicate entry');
   assert.equal((await readScheduledAnalyzeReceipts(receiptRoot)).receipts.length, 0, 'idempotent retry cleans the retained receipt');
+  await handlers.get('session_shutdown')({}, { ...lifecycleCtx, mode: 'json', hasUI: false });
   await writeScheduledAnalyzeReceipt(receiptRoot, { user_id: 'owner', status: 'failed', severity: 'warn', safe_code: 'runtime_incompatible' });
   await handlers.get('agent_settled')({}, lifecycleCtx);
   assert.equal(transcriptEntries.length, 2, 'a receipt created after session start is appended after the next settled turn');
