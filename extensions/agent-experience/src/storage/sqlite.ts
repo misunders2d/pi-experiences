@@ -199,6 +199,14 @@ export function buildTypedStorageRow(table: "habits" | "evidence" | "contexts", 
 	return { ...withoutChecksum, checksum: storageChecksum(table, withoutChecksum) };
 }
 
+export function assertHabitTypedIdentityPreserved(before: any, after: TypedStorageRowInput): void {
+	const fields = ["record_kind", "schema_version", "habit_id", "condition", "behavior", "polarity", "confidence_bp"] as const;
+	for (const field of fields) {
+		if (before?.[field] !== after[field]) throw new Error(`Habit typed identity changed during state-only update: ${field}`);
+	}
+}
+
+
 export function insertStorageRecord(db: any, table: "habits" | "evidence" | "contexts", input: { id: string; userId?: string; data: unknown; now?: string }) {
 	const row = buildTypedStorageRow(table, input);
 	db.prepare(`INSERT INTO ${table} (id, user_id, record_kind, schema_version, status, habit_id, condition, behavior, polarity, confidence_bp, activation, staleness, data_json, checksum, created_at, updated_at)

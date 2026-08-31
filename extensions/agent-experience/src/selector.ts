@@ -1,7 +1,7 @@
 import { canonicalJson, checksumJson, sha256Hex } from "./storage/checksum.ts";
 import { normalizeUserId } from "./storage/private-root.ts";
 import { containsUnredactedSensitiveText, redactJson, redactText } from "./storage/redaction.ts";
-import { buildTypedStorageRow } from "./storage/sqlite.ts";
+import { assertHabitTypedIdentityPreserved, buildTypedStorageRow } from "./storage/sqlite.ts";
 import { activationEligibilityFromHabit, checkHabitConflict, checkHabitLaw, revalidateLawSnapshotSync, type LawSnapshot } from "./review.ts";
 import { runAtomicSemanticActivation } from "./semantic/service.ts";
 import type { EmbeddingAdapter, SemanticDedupePolicy } from "./semantic/types.ts";
@@ -612,7 +612,28 @@ function insertPromotionAudit(db: any, input: { userId: string; rowId: string; a
 }
 
 function updatePromotedHabit(db: any, input: { userId: string; before: any; data: any; status: string; now: string }) {
-	const updated = buildTypedStorageRow("habits", { id: input.before.id, userId: input.userId, data: { ...input.data, status: input.status }, createdAt: input.before.created_at, updatedAt: input.now });
+	const priorData = parseJson(input.before.data_json);
+	const updated = buildTypedStorageRow("habits", {
+		id: input.before.id,
+		userId: input.userId,
+		data: {
+			...priorData,
+			...input.data,
+			record_kind: input.before.record_kind,
+			schema_version: input.before.schema_version,
+			habit_id: input.before.habit_id,
+			condition: input.before.condition,
+			behavior: input.before.behavior,
+			polarity: input.before.polarity,
+			confidence_bp: input.before.confidence_bp,
+			activation: input.before.activation,
+			staleness: input.before.staleness,
+			status: input.status,
+		},
+		createdAt: input.before.created_at,
+		updatedAt: input.now,
+	});
+	assertHabitTypedIdentityPreserved(input.before, updated);
 	const changes = db.prepare("UPDATE habits SET record_kind=?, schema_version=?, status=?, habit_id=?, condition=?, behavior=?, polarity=?, confidence_bp=?, activation=?, staleness=?, data_json=?, checksum=?, updated_at=? WHERE user_id=? AND id=? AND status=? AND checksum=?")
 		.run(updated.record_kind, updated.schema_version, updated.status, updated.habit_id, updated.condition, updated.behavior, updated.polarity, updated.confidence_bp, updated.activation, updated.staleness, updated.data_json, updated.checksum, updated.updated_at, input.userId, input.before.id, input.before.status, input.before.checksum).changes;
 	if (changes !== 1) throw new Error("Approved habit recheck raced; retry");

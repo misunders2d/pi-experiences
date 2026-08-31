@@ -5,7 +5,7 @@ import { isAbsolute, join } from "node:path";
 import { canonicalJson, checksumJson, sha256Hex } from "./storage/checksum.ts";
 import { normalizeUserId, resolvePrivatePath, ensurePrivateRoot } from "./storage/private-root.ts";
 import { redactJson, redactText, containsUnredactedSensitiveText } from "./storage/redaction.ts";
-import { buildTypedStorageRow, insertStorageRecord } from "./storage/sqlite.ts";
+import { assertHabitTypedIdentityPreserved, buildTypedStorageRow, insertStorageRecord } from "./storage/sqlite.ts";
 import { runAtomicSemanticActivation, runAtomicSemanticDeclaration } from "./semantic/service.ts";
 import { insertHabitDuplicateAudit, listHabitDuplicates, restoreCandidateDuplicateResolution, updateHabitDuplicateDecision } from "./semantic/storage.ts";
 import type { EmbeddingAdapter, SemanticDedupePolicy } from "./semantic/types.ts";
@@ -80,6 +80,7 @@ function updateHabitRow(db: any, input: { userId: string; id: string; expectedSt
 	const existing = getHabit(db, input.userId, input.id);
 	if (existing.status !== input.expectedStatus || existing.checksum !== input.expectedChecksum) throw new Error("Stale habit state");
 	const row = buildTypedStorageRow("habits", { id: input.id, userId: input.userId, data: { ...input.data, status: input.status }, createdAt: existing.created_at, updatedAt: input.now });
+	assertHabitTypedIdentityPreserved(existing, row);
 	const result = db.prepare("UPDATE habits SET record_kind=?, schema_version=?, status=?, habit_id=?, condition=?, behavior=?, polarity=?, confidence_bp=?, activation=?, staleness=?, data_json=?, checksum=?, updated_at=? WHERE user_id=? AND id=? AND status=? AND checksum=?")
 		.run(row.record_kind, row.schema_version, row.status, row.habit_id, row.condition, row.behavior, row.polarity, row.confidence_bp, row.activation, row.staleness, row.data_json, row.checksum, row.updated_at, row.user_id, row.id, input.expectedStatus, input.expectedChecksum);
 	if (result.changes !== 1) throw new Error("Habit update failed");
@@ -630,6 +631,12 @@ export function planHabitDuplicateResolution(relation: any, habits: any[], actio
 	};
 }
 
+function hasCompleteHabitWording(habit: any): boolean {
+	return typeof habit?.condition === "string" && habit.condition.trim().length > 0
+		&& typeof habit?.behavior === "string" && habit.behavior.trim().length > 0;
+}
+
+
 export function resolveHabitDuplicate(db: any, input: { userId: string; duplicateId: string; checksum: string; action: HabitDuplicateResolutionAction; reason?: string; law?: LawSnapshot; expectedHabitChecksums?: Record<string, string>; now: string }) {
 	const userId = normalizeUserId(input.userId);
 	let result: any;
@@ -650,6 +657,9 @@ export function resolveHabitDuplicate(db: any, input: { userId: string; duplicat
 			}
 		}
 		const plan = planHabitDuplicateResolution(before, relationHabits, input.action);
+		if (input.action !== "keep_separate" && relationHabits.some((habit) => !hasCompleteHabitWording(habit))) {
+			throw new Error("Duplicate habit wording is unavailable; repair is required before a destructive resolution");
+		}
 		let canonicalId = plan.survivor.id;
 		let duplicateId = plan.other.id;
 		let canonicalHabit = plan.survivor;

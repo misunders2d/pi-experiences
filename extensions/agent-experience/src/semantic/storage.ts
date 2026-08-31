@@ -2,7 +2,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { canonicalJson, checksumJson, sha256Hex } from "../storage/checksum.ts";
 import { normalizeUserId } from "../storage/private-root.ts";
 import { containsUnredactedSensitiveText, redactJson } from "../storage/redaction.ts";
-import { buildTypedStorageRow } from "../storage/sqlite.ts";
+import { assertHabitTypedIdentityPreserved, buildTypedStorageRow } from "../storage/sqlite.ts";
 import { blobToVector, embeddingInputChecksum, habitEmbeddingInputV1, habitFieldEmbeddingInputsV1, SEMANTIC_BEHAVIOR_EMBEDDING_INPUT_VERSION, SEMANTIC_CONDITION_EMBEDDING_INPUT_VERSION, SEMANTIC_DUPLICATE_METHOD_VERSION, SEMANTIC_EMBEDDING_INPUT_VERSION, semanticPairKey, semanticWordingIdentityChecksum, vectorChecksum, vectorToBlob } from "./core.ts";
 import type { CachedHabitEmbedding, SemanticHabitRow } from "./types.ts";
 
@@ -294,6 +294,7 @@ function updateCandidateReviewStatus(db: any, input: { userId: string; habitId: 
 	if (existingData.review_status === input.nextReviewStatus) return { updated: false, before, after: before };
 	const data = { ...existingData, record_kind: before.record_kind, schema_version: before.schema_version, status: before.status, habit_id: before.habit_id, condition: before.condition, behavior: before.behavior, polarity: before.polarity, confidence_bp: before.confidence_bp, activation: before.activation, staleness: before.staleness, active: false, injectable: false, review_status: input.nextReviewStatus, ...(typeof input.data === "object" && input.data && !Array.isArray(input.data) ? input.data as Record<string, unknown> : {}) };
 	const row = buildTypedStorageRow("habits", { id: before.id, userId, data, createdAt: before.created_at, updatedAt: input.now });
+	assertHabitTypedIdentityPreserved(before, row);
 	const result = db.prepare("UPDATE habits SET record_kind=?, schema_version=?, status=?, habit_id=?, condition=?, behavior=?, polarity=?, confidence_bp=?, activation=?, staleness=?, data_json=?, checksum=?, updated_at=? WHERE user_id=? AND id=? AND status='candidate' AND checksum=?")
 		.run(row.record_kind, row.schema_version, row.status, row.habit_id, row.condition, row.behavior, row.polarity, row.confidence_bp, row.activation, row.staleness, row.data_json, row.checksum, row.updated_at, userId, before.id, before.checksum);
 	if (result.changes !== 1) throw new Error("Candidate duplicate-route update failed");

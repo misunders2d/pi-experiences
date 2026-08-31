@@ -68,7 +68,7 @@ const temp = await mkdtemp(join(tmpdir(), 'agent-experience-phase5-'));
 const root = await ensurePrivateRoot(join(temp, 'state'));
 const storage = await initExperienceStorage(root, { allowInit: true, userId: 'owner' });
 try {
-  assert.equal(storage.db.prepare('PRAGMA user_version').get().user_version, 7);
+  assert.equal(storage.db.prepare('PRAGMA user_version').get().user_version, 8);
   assert.ok(storage.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='experience_review_audit'").get());
   assert.ok(storage.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='selector_hit_log'").get());
 

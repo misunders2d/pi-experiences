@@ -976,9 +976,9 @@ function setupReviewItemLabel(entry: SetupReviewItem, index: number): string {
 	return `Review #${index + 1} ${entry.item.kind} Experience — ${applicability}`;
 }
 
-async function reviewSummary(root: string, userId: string): Promise<{ ledger: boolean; pending: number; active: number; candidate: number; approvedWaiting: number; duplicates: number; error?: string }> {
+async function reviewSummary(root: string, userId: string): Promise<{ ledger: boolean; pending: number; active: number; candidate: number; approvedWaiting: number; duplicates: number; recoveryIssues: number; error?: string }> {
 	const dbPath = resolvePrivatePath(root, "ledger.sqlite");
-	if (!(await fileExists(dbPath))) return { ledger: false, pending: 0, active: 0, candidate: 0, approvedWaiting: 0, duplicates: 0 };
+	if (!(await fileExists(dbPath))) return { ledger: false, pending: 0, active: 0, candidate: 0, approvedWaiting: 0, duplicates: 0, recoveryIssues: 0 };
 	let storage: Awaited<ReturnType<typeof openExistingExperienceStorage>> | undefined;
 	try {
 		storage = await openExistingExperienceStorage(root, { userId });
@@ -992,10 +992,11 @@ async function reviewSummary(root: string, userId: string): Promise<{ ledger: bo
 			.filter((entry) => entry.source === "experience" || entry.item?.status === "active").length;
 		const approvedWaiting = listApprovedPendingHabitsForSetup(db, { userId: normalizedUserId }).length;
 		const duplicates = listHabitDuplicates(db, { userId: normalizedUserId, decision: "pending" }).length;
-		return { ledger: true, pending, active, candidate, approvedWaiting, duplicates };
+		const recoveryIssues = Number(db.prepare("SELECT COUNT(*) AS count FROM pending_review WHERE user_id = ? AND status = 'open' AND kind IN ('legacy_experience_migration','damaged_habit_recovery')").get(normalizedUserId)?.count || 0);
+		return { ledger: true, pending, active, candidate, approvedWaiting, duplicates, recoveryIssues };
 	} catch (error) {
 		const raw = error instanceof Error ? error.message : String(error);
-		return { ledger: true, pending: 0, active: 0, candidate: 0, approvedWaiting: 0, duplicates: 0, error: redactText(raw).slice(0, 300) };
+		return { ledger: true, pending: 0, active: 0, candidate: 0, approvedWaiting: 0, duplicates: 0, recoveryIssues: 0, error: redactText(raw).slice(0, 300) };
 	} finally {
 		storage?.db.close();
 	}
@@ -1052,13 +1053,15 @@ async function buildStatusText(): Promise<{ text: string; enabled: boolean }> {
 		const assets = await getLocalEmbeddingAssetStatus(paths.root, { deep: false });
 		duplicateStatus = config.embedding_enabled ? (assets.ready ? "ON (private local files ready)" : "ON but local files need repair") : (assets.ready ? "OFF (private local files preserved)" : "OFF");
 	}
-	const nextStep = !config.enabled
-		? "Choose Save chat examples locally in /experience setup."
-		: summary.approvedWaiting > 0
-			? "Choose Review approved habits in /experience setup to recheck habits that are waiting."
-		: reviewCount > 0
-			? "Choose Review suggested habits in /experience setup."
-			: "Choose Analyze all waiting examples now in /experience setup to create suggestions.";
+	const nextStep = summary.recoveryIssues > 0
+		? "Storage recovery quarantined a record. Update Agent Experience or report it to the package maintainer; do not resolve related duplicates destructively."
+		: !config.enabled
+			? "Choose Save chat examples locally in /experience setup."
+			: summary.approvedWaiting > 0
+				? "Choose Review approved habits in /experience setup to recheck habits that are waiting."
+				: reviewCount > 0
+					? "Choose Review suggested habits in /experience setup."
+					: "Choose Analyze all waiting examples now in /experience setup to create suggestions.";
 	return { enabled: config.enabled, text: [
 		`Experience: ${config.enabled ? "ON" : "OFF"}`,
 		`Config file: ${path}${exists ? "" : " (not created; using defaults)"}`,
@@ -1067,6 +1070,7 @@ async function buildStatusText(): Promise<{ text: string; enabled: boolean }> {
 		`Habit-assessment model: ${config.selector_model}`,
 		`Analyze all waiting examples now: ${config.consolidation_enabled ? "available from setup" : "available when you choose it in setup"}`,
 		`Review suggested habits: ${summary.error ? `ledger unreadable (${summary.error})` : summary.ledger ? `${plural(reviewCount, "suggestion")} waiting, ${plural(summary.active, "approved habit")}${summary.approvedWaiting ? `, ${plural(summary.approvedWaiting, "approved habit")} waiting for activation` : ""}` : "no review list yet"}`,
+		`Storage recovery issues: ${summary.recoveryIssues ? `${plural(summary.recoveryIssues, "quarantined record")} — maintainer attention required` : "none"}`,
 		`Prevent duplicate habits: ${duplicateStatus}`,
 		`Use approved habits before replies: ${selectorActive ? `ON (private local vectors + bounded current/follow-up context to ${config.selector_model})` : config.selector_enabled ? "configured ON, inactive because Experience is OFF" : "OFF"}`,
 		`Automatic schedule: ${scheduleStatus}`,
@@ -2190,17 +2194,30 @@ function formatDuplicateHabit(label: string, habit: any): string[] {
 	];
 }
 
+function duplicateHabitsHaveCompleteWording(item: any, habits: any[]): boolean {
+	const { habitA, habitB } = duplicateHabits(item, habits);
+	return [habitA, habitB].every((habit) =>
+		typeof habit.condition === "string" && habit.condition.trim().length > 0
+		&& typeof habit.behavior === "string" && habit.behavior.trim().length > 0);
+}
+
+
 function formatDuplicateForHuman(item: any, habits: any[]): string {
 	const { habitA, habitB } = duplicateHabits(item, habits);
+	const complete = duplicateHabitsHaveCompleteWording(item, habits);
 	return [
 		"Possible duplicate habits",
-		"Read both full wordings. Each action below states exactly what will remain.",
+		complete
+			? "Read both full wordings. Each action below states exactly what will remain."
+			: "One habit is missing its saved wording. Destructive resolution is blocked until storage recovery restores it.",
 		"",
 		...formatDuplicateHabit("Habit A", habitA),
 		"",
 		...formatDuplicateHabit("Habit B", habitB),
 		"",
-		"No similarity score or automatic decision is used here. Destructive choices ask again for confirmation.",
+		complete
+			? "No similarity score or automatic decision is used here. Destructive choices ask again for confirmation."
+			: "You may keep both unchanged or go back. Restart after installing the repaired extension to run storage recovery.",
 	].join("\n");
 }
 
@@ -2214,7 +2231,9 @@ function duplicateResolutionChoices(item: any, habits: any[]): DuplicateResoluti
 		if (action === "archive_duplicate") return { action, plan, requiresConfirmation: true, label: `Hide ${other} — keep ${survivor} without combining evidence`, resultMessage: `Kept ${survivor} and archived ${other} without combining evidence.` };
 		return { action, plan, requiresConfirmation: false, label: "Different habits — keep both", resultMessage: "Kept both habits separate." };
 	};
-	return [make("merge"), make("supersede"), make("keep_separate"), make("archive_duplicate")];
+	const keepSeparate = make("keep_separate");
+	if (!duplicateHabitsHaveCompleteWording(item, habits)) return [keepSeparate];
+	return [make("merge"), make("supersede"), keepSeparate, make("archive_duplicate")];
 }
 
 function formatDuplicateConfirmation(choice: DuplicateResolutionChoice, item: any): string {

@@ -145,7 +145,7 @@ await writeFile(join(root, 'law.md'), 'phase6 configured law\n');
 const liveCwd = await mkdtemp(join(temp, 'live-cwd-no-docs-'));
 const storage = await initExperienceStorage(root, { allowInit: true, userId: 'owner' });
 try {
-  assert.equal(storage.db.prepare('PRAGMA user_version').get().user_version, 7);
+  assert.equal(storage.db.prepare('PRAGMA user_version').get().user_version, 8);
   assert.ok(storage.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='selector_hit_log'").get());
 
   const law = lawSnapshotForTest('phase6 law');

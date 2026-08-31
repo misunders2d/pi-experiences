@@ -279,6 +279,128 @@ function migrateApprovedHabitsToExperiences(db: any, now: string): void {
 	}
 }
 
+function validApprovedHabitSnapshot(row: any, snapshot: any, approval: any): boolean {
+	if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) return false;
+	if (String(snapshot.id || "") !== String(row.id) || String(snapshot.user_id || "") !== String(row.user_id)) return false;
+	if (typeof snapshot.condition !== "string" || !snapshot.condition.trim() || typeof snapshot.behavior !== "string" || !snapshot.behavior.trim()) return false;
+	if (snapshot.checksum !== storageChecksum("habits", snapshot)) return false;
+	return approval.candidate_id === row.id
+		&& approval.condition === normalizeSemanticText(snapshot.condition)
+		&& approval.behavior === normalizeSemanticText(snapshot.behavior)
+		&& Number(approval.polarity) === Number(snapshot.polarity);
+}
+
+function validHabitAudit(row: any, audit: any): boolean {
+	const base = {
+		user_id: row.user_id,
+		target_kind: "habit",
+		target_id: row.id,
+		action: audit.action,
+		before_json: audit.before_json,
+		after_json: audit.after_json,
+		data_json: audit.data_json,
+		created_at: audit.created_at,
+	};
+	return checksumJson({ table: "experience_review_audit", row: base }) === audit.checksum;
+}
+
+function quarantineDamagedHabitRecovery(db: any, row: any, reason: string, now: string): void {
+	const payload = { habitId: String(row.id), priorChecksum: String(row.checksum ?? ""), reason };
+	const checksum = checksumJson(payload);
+	db.prepare(`INSERT OR IGNORE INTO pending_review
+		(id, user_id, kind, status, payload_json, checksum, created_at, updated_at)
+		VALUES (?, ?, 'damaged_habit_recovery', 'open', ?, ?, ?, ?)`).run(
+		`damaged-habit-recovery:${row.user_id}:${row.id}`,
+		row.user_id,
+		canonicalJson(payload),
+		checksum,
+		now,
+		now,
+	);
+}
+
+function recoverDamagedApprovedHabits(db: any, now: string): void {
+	if (!tableExists(db, "habits") || !tableExists(db, "experience_review_audit")) return;
+	const rows = db.prepare("SELECT * FROM habits WHERE condition IS NULL OR behavior IS NULL ORDER BY user_id, id").all() as any[];
+	for (const row of rows) {
+		try {
+			const data = parseOldData(row);
+			const requiresRecovery = data.approved_identity !== undefined
+				|| data.approval_invalidated !== undefined
+				|| data.review_status === "candidate_reapproval_required";
+			if (!requiresRecovery) continue;
+			if (row.checksum !== storageChecksum("habits", row)) {
+				quarantineDamagedHabitRecovery(db, row, "damaged_habit_checksum_mismatch", now);
+				continue;
+			}
+			const audits = db.prepare("SELECT action, before_json, after_json, data_json, checksum, created_at FROM experience_review_audit WHERE user_id = ? AND target_kind = 'habit' AND target_id = ? ORDER BY created_at DESC, id DESC").all(row.user_id, row.id) as any[];
+			const validAudits = audits.filter((audit) => validHabitAudit(row, audit));
+			let approval = data.approved_identity;
+			if (!approval || typeof approval !== "object" || Array.isArray(approval)) {
+				for (const audit of validAudits) {
+					if (audit.action !== "promotion_requires_reapproval") continue;
+					try {
+						const auditData = JSON.parse(String(audit.data_json || "{}"));
+						if (auditData?.approved_identity && typeof auditData.approved_identity === "object" && !Array.isArray(auditData.approved_identity)) {
+							approval = auditData.approved_identity;
+							break;
+						}
+					} catch {}
+				}
+			}
+			if (!approval || typeof approval !== "object" || Array.isArray(approval)) {
+				quarantineDamagedHabitRecovery(db, row, "damaged_habit_missing_approved_identity", now);
+				continue;
+			}
+			let snapshot: any;
+			for (const audit of validAudits) {
+				for (const encoded of [audit.before_json, audit.after_json]) {
+					try {
+						const candidate = JSON.parse(String(encoded || ""));
+						if (validApprovedHabitSnapshot(row, candidate, approval)) {
+							snapshot = candidate;
+							break;
+						}
+					} catch {}
+				}
+				if (snapshot) break;
+			}
+			if (!snapshot) {
+				quarantineDamagedHabitRecovery(db, row, "damaged_habit_wording_not_recoverable", now);
+				continue;
+			}
+			const repaired = {
+				...row,
+				record_kind: safeRecordKind(snapshot.record_kind),
+				schema_version: safeSchemaVersion(snapshot.schema_version),
+				habit_id: stringOrNull(snapshot.habit_id, 200),
+				condition: stringOrNull(snapshot.condition, 2000),
+				behavior: stringOrNull(snapshot.behavior, 2000),
+				polarity: safePolarity(snapshot.polarity),
+				confidence_bp: safeConfidenceBp(snapshot.confidence_bp),
+				activation: safeFiniteNumber(snapshot.activation, "activation"),
+				staleness: safeFiniteNumber(snapshot.staleness, "staleness"),
+				updated_at: now,
+			};
+			repaired.checksum = storageChecksum("habits", repaired);
+			const changed = db.prepare("UPDATE habits SET record_kind=?, schema_version=?, habit_id=?, condition=?, behavior=?, polarity=?, confidence_bp=?, activation=?, staleness=?, checksum=?, updated_at=? WHERE user_id=? AND id=? AND checksum=?")
+				.run(repaired.record_kind, repaired.schema_version, repaired.habit_id, repaired.condition, repaired.behavior, repaired.polarity, repaired.confidence_bp, repaired.activation, repaired.staleness, repaired.checksum, repaired.updated_at, row.user_id, row.id, row.checksum).changes;
+			if (changed !== 1) throw new Error("Damaged habit recovery raced");
+			const beforeJson = canonicalJson(row);
+			const afterJson = canonicalJson(repaired);
+			const dataJson = canonicalJson({ reason: "restore_typed_fields_from_verified_audit_snapshot", prior_checksum: row.checksum });
+			const auditBase = { user_id: row.user_id, target_kind: "habit", target_id: row.id, action: "repair_damaged_habit_typed_fields", before_json: beforeJson, after_json: afterJson, data_json: dataJson, created_at: now };
+			const auditChecksum = checksumJson({ table: "experience_review_audit", row: auditBase });
+			const auditId = `habit-storage-repair:${row.user_id}:${row.id}:${auditChecksum.slice(0, 16)}`;
+			db.prepare("INSERT INTO experience_review_audit (id, user_id, target_kind, target_id, action, before_json, after_json, data_json, checksum, created_at) VALUES (?, ?, 'habit', ?, 'repair_damaged_habit_typed_fields', ?, ?, ?, ?, ?)")
+				.run(auditId, row.user_id, row.id, beforeJson, afterJson, dataJson, auditChecksum, now);
+		} catch (error: any) {
+			quarantineDamagedHabitRecovery(db, row, `damaged_habit_recovery_failed:${String(error?.message || error).slice(0, 200)}`, now);
+		}
+	}
+}
+
+
 export function readStorageSchemaVersion(db: any): number {
 	const version = Number(db.prepare("PRAGMA user_version").get()?.user_version ?? 0);
 	if (!Number.isInteger(version) || version < 0) throw new Error("Invalid Agent Experience storage schema version");
@@ -300,6 +422,7 @@ export function applyStorageMigrations(db: any, now = new Date().toISOString()):
 		for (const table of USER_TABLES) migrateUserTable(db, table, now);
 		db.exec(STORAGE_SCHEMA_SQL);
 		if (beforeVersion < 7) migrateApprovedHabitsToExperiences(db, now);
+		if (beforeVersion < 8) recoverDamagedApprovedHabits(db, now);
 		const existing = db.prepare("SELECT version FROM migrations WHERE version = ?").get(STORAGE_SCHEMA_VERSION);
 		if (!existing) db.prepare("INSERT INTO migrations (version, applied_at) VALUES (?, ?)").run(STORAGE_SCHEMA_VERSION, now);
 		db.exec(`PRAGMA user_version = ${STORAGE_SCHEMA_VERSION}`);

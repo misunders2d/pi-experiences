@@ -6,6 +6,16 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 ## [Unreleased]
 
+### Fixed
+
+- Preserved every typed habit field when approved-habit promotion is blocked or requires reapproval, preventing duplicate review from showing an approved habit with unavailable wording.
+- Blocked destructive duplicate resolutions when either habit lacks complete wording.
+- Added a schema-v8 recovery that restores damaged approved habits only from checksum-valid audit snapshots matching the approved identity, and surfaces unrecoverable quarantined records in status output.
+
+### Validation
+
+- Added regressions for duplicate-blocked, provider-unavailable, and reapproval promotion paths; destructive resolver safety; and exact audited storage recovery.
+
 ## [0.1.63] - 2026-08-20
 
 ### Fixed

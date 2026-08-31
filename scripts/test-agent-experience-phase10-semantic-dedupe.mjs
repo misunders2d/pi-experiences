@@ -114,7 +114,7 @@ const temp = await mkdtemp(join(tmpdir(), 'agent-experience-semantic-'));
 const root = await ensurePrivateRoot(join(temp, 'state'));
 const storage = await initExperienceStorage(root, { allowInit: true, userId: 'owner' });
 try {
-  assert.equal(storage.db.prepare('PRAGMA user_version').get().user_version, 7);
+  assert.equal(storage.db.prepare('PRAGMA user_version').get().user_version, 8);
   assert.ok(storage.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='habit_embeddings'").get());
   assert.ok(storage.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='habit_duplicates'").get());
 
@@ -378,8 +378,54 @@ try {
     assert.equal(promotion.promoted.length, 0);
     assert.equal(promotion.blocked[0].reason, 'semantic_duplicate', 'background promotion must block semantic duplicate without stale checksum failure');
     assert.equal(listPendingReviewItems(storage12.db, { userId: 'owner' }).items.some((item) => item.id === 'promote-candidate-3'), false, 'promotion-blocked duplicate candidate must leave normal review until resolved');
+    const blockedPromotionHabit = storage12.db.prepare("SELECT * FROM habits WHERE id = 'promote-candidate-3'").get();
+    assert.equal(blockedPromotionHabit.condition, habit3.condition, 'semantic duplicate promotion must preserve the approved condition');
+    assert.equal(blockedPromotionHabit.behavior, habit3.behavior, 'semantic duplicate promotion must preserve the approved behavior');
+    assert.equal(blockedPromotionHabit.polarity, 1, 'semantic duplicate promotion must preserve polarity');
+    assert.equal(blockedPromotionHabit.confidence_bp, 9000, 'semantic duplicate promotion must preserve confidence');
+    const damagedPromotionHabit = buildTypedStorageRow('habits', {
+      id: blockedPromotionHabit.id,
+      userId: blockedPromotionHabit.user_id,
+      data: { ...JSON.parse(blockedPromotionHabit.data_json), status: blockedPromotionHabit.status },
+      createdAt: blockedPromotionHabit.created_at,
+      updatedAt: '2026-07-09T04:48:00.000Z',
+    });
+    storage12.db.prepare("UPDATE habits SET record_kind=?,schema_version=?,status=?,habit_id=?,condition=?,behavior=?,polarity=?,confidence_bp=?,activation=?,staleness=?,data_json=?,checksum=?,updated_at=? WHERE id=?")
+      .run(damagedPromotionHabit.record_kind, damagedPromotionHabit.schema_version, damagedPromotionHabit.status, damagedPromotionHabit.habit_id, damagedPromotionHabit.condition, damagedPromotionHabit.behavior, damagedPromotionHabit.polarity, damagedPromotionHabit.confidence_bp, damagedPromotionHabit.activation, damagedPromotionHabit.staleness, damagedPromotionHabit.data_json, damagedPromotionHabit.checksum, damagedPromotionHabit.updated_at, damagedPromotionHabit.id);
+    const damagedRelation = listHabitDuplicates(storage12.db, { userId: 'owner', decision: 'pending' })[0];
+    assert.throws(
+      () => resolveHabitDuplicate(storage12.db, { userId: 'owner', duplicateId: damagedRelation.id, checksum: damagedRelation.checksum, action: 'archive_duplicate', now: '2026-07-09T04:49:00.000Z' }),
+      /wording is unavailable/,
+      'destructive duplicate resolution must fail closed when either habit lost its wording',
+    );
   } finally {
     storage12.db.close();
+  }
+
+  const promotionBranches = await initExperienceStorage(await ensurePrivateRoot(join(temp, 'state-promotion-branches')), { allowInit: true, userId: 'owner' });
+  try {
+    insertStorageRecord(promotionBranches.db, 'habits', { id: 'promotion-unavailable', userId: 'owner', data: habitData({ ...habit3, review_status: 'approved_pending_eligibility' }), now: '2026-07-09T04:49:01.000Z' });
+    const unavailable = await promoteApprovedPendingCandidates(promotionBranches.db, { userId: 'owner', law: lawSnapshotForTest('promotion unavailable law'), now: '2026-07-09T04:49:02.000Z', semantic: { policy, provider: unavailableProvider }, candidateIdsForTest: ['promotion-unavailable'] });
+    assert.equal(unavailable.blocked[0].reason, 'semantic_unavailable');
+    const unavailableRow = promotionBranches.db.prepare("SELECT * FROM habits WHERE id='promotion-unavailable'").get();
+    assert.deepEqual(
+      { condition: unavailableRow.condition, behavior: unavailableRow.behavior, polarity: unavailableRow.polarity, confidence_bp: unavailableRow.confidence_bp, record_kind: unavailableRow.record_kind },
+      { condition: habit3.condition, behavior: habit3.behavior, polarity: 1, confidence_bp: 9000, record_kind: 'candidate_habit_v1' },
+      'semantic-unavailable promotion must preserve every typed identity field',
+    );
+
+    insertStorageRecord(promotionBranches.db, 'habits', { id: 'promotion-reapproval', userId: 'owner', data: habitData({ ...habit3, review_status: 'approved_pending_eligibility', approved_identity: { candidate_id: 'promotion-reapproval', condition: 'wrong condition', behavior: 'wrong behavior', polarity: 1 } }), now: '2026-07-09T04:49:03.000Z' });
+    const reapproval = await promoteApprovedPendingCandidates(promotionBranches.db, { userId: 'owner', law: lawSnapshotForTest('promotion reapproval law'), now: '2026-07-09T04:49:04.000Z', semantic: { policy: { ...policy, enabled: false } }, candidateIdsForTest: ['promotion-reapproval'] });
+    assert.equal(reapproval.blocked[0].reason, 'identity_changed');
+    const reapprovalRow = promotionBranches.db.prepare("SELECT * FROM habits WHERE id='promotion-reapproval'").get();
+    assert.deepEqual(
+      { condition: reapprovalRow.condition, behavior: reapprovalRow.behavior, polarity: reapprovalRow.polarity, confidence_bp: reapprovalRow.confidence_bp, record_kind: reapprovalRow.record_kind },
+      { condition: habit3.condition, behavior: habit3.behavior, polarity: 1, confidence_bp: 9000, record_kind: 'candidate_habit_v1' },
+      'reapproval routing must preserve every typed identity field',
+    );
+    assert.equal(JSON.parse(reapprovalRow.data_json).review_status, 'candidate_reapproval_required');
+  } finally {
+    promotionBranches.db.close();
   }
 
   const storage10 = await initExperienceStorage(await ensurePrivateRoot(join(temp, 'state10')), { allowInit: true, userId: 'owner' });

@@ -110,7 +110,7 @@ assert.throws(() => validateProposalBatch({ ...batch, proposals: [{ ...batch.pro
 
 const storage = await initExperienceStorage(root, { allowInit: true, userId: 'owner' });
 try {
-  assert.equal(storage.db.prepare('PRAGMA user_version').get().user_version, 7);
+  assert.equal(storage.db.prepare('PRAGMA user_version').get().user_version, 8);
   const result = await consolidateProposalBatch({ db: storage.db, userId: 'owner', proposalBatch: batch, observations });
   assert.equal(result.watermark_after.file_generation, 'active');
   assert.equal(result.watermark_after.seq, 3);
@@ -215,7 +215,7 @@ const migrated = await initExperienceStorage(migrationRoot, { allowInit: true, u
 try {
   insertStorageRecord(migrated.db, 'habits', { id: 'legacy-compatible', userId: 'owner', data: { safe: true }, now: '2026-07-07T00:00:00.000Z' });
   assert.equal(selectStorageRecordsByUser(migrated.db, 'habits', 'owner').map((row) => row.id).includes('legacy-compatible'), true);
-  assert.equal(migrated.db.prepare('PRAGMA user_version').get().user_version, 7);
+  assert.equal(migrated.db.prepare('PRAGMA user_version').get().user_version, 8);
   assert.ok(migrated.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='consolidation_watermarks'").get());
 } finally {
   migrated.db.close();

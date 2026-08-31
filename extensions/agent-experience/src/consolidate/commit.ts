@@ -1,6 +1,6 @@
 import { normalizeUserId } from "../storage/private-root.ts";
 import { canonicalJson, checksumJson, sha256Hex } from "../storage/checksum.ts";
-import { buildTypedStorageRow } from "../storage/sqlite.ts";
+import { assertHabitTypedIdentityPreserved, buildTypedStorageRow } from "../storage/sqlite.ts";
 import { chooseCanonicalHabit, SEMANTIC_DUPLICATE_METHOD_VERSION } from "../semantic/core.ts";
 import { findSemanticDuplicateMatches, sanitizePolicy } from "../semantic/service.ts";
 import { getSemanticHabitRow, insertHabitDuplicateAudit, upsertHabitDuplicate } from "../semantic/storage.ts";
@@ -387,6 +387,7 @@ function suppressContradictedHabit(db: any, input: { userId: string; before: any
 		contradiction,
 	};
 	const updated = buildTypedStorageRow("habits", { id: input.before.id, userId: input.userId, data, createdAt: input.before.created_at, updatedAt: input.now });
+	assertHabitTypedIdentityPreserved(input.before, updated);
 	const changes = db.prepare("UPDATE habits SET record_kind=?, schema_version=?, status=?, habit_id=?, condition=?, behavior=?, polarity=?, confidence_bp=?, activation=?, staleness=?, data_json=?, checksum=?, updated_at=? WHERE user_id=? AND id=? AND status='active' AND checksum=?")
 		.run(updated.record_kind, updated.schema_version, updated.status, updated.habit_id, updated.condition, updated.behavior, updated.polarity, updated.confidence_bp, updated.activation, updated.staleness, updated.data_json, updated.checksum, updated.updated_at, input.userId, input.before.id, input.before.checksum).changes;
 	if (changes !== 1) throw new Error("Contradicted habit suppression raced; retry Analyze");

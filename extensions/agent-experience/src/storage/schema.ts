@@ -1,4 +1,4 @@
-export const STORAGE_SCHEMA_VERSION = 7;
+export const STORAGE_SCHEMA_VERSION = 8;
 
 export const STORAGE_REQUIRED_TABLES = [
 	"migrations",
