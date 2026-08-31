@@ -6,6 +6,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 ## [Unreleased]
 
+## [0.1.64] - 2026-08-31
+
 ### Fixed
 
 - Preserved every typed habit field when approved-habit promotion is blocked or requires reapproval, preventing duplicate review from showing an approved habit with unavailable wording.
@@ -313,7 +315,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 - Added synchronous submission-hook checks, deferred embedding/model assertions, and a packed Pi TUI smoke requiring submitted-message rendering within 1.5 seconds.
 
-[Unreleased]: https://github.com/misunders2d/pi-experiences/compare/v0.1.63...HEAD
+[Unreleased]: https://github.com/misunders2d/pi-experiences/compare/v0.1.64...HEAD
+[0.1.64]: https://github.com/misunders2d/pi-experiences/compare/v0.1.63...v0.1.64
 [0.1.63]: https://github.com/misunders2d/pi-experiences/compare/v0.1.62...v0.1.63
 [0.1.62]: https://github.com/misunders2d/pi-experiences/compare/v0.1.61...v0.1.62
 [0.1.61]: https://github.com/misunders2d/pi-experiences/compare/v0.1.60...v0.1.61
