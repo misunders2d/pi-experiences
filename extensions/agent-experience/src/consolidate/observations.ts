@@ -17,6 +17,7 @@ const ALLOWED_ORIGINS = new Set(["test", "manual", "local_interactive", "advisor
 const SUPPORTED_PAYLOAD_KINDS = new Set(["conversation_pair_v1", "advisor_finding_v1"]);
 const OBSERVATION_KEYS = new Set(["id", "seq", "user_id", "origin", "prev_pair_ref", "payload_redacted", "created_at", "checksum"]);
 const ORIGIN_KEYS = new Set(["source", "command"]);
+const CAUSAL_CONTEXT_KEYS = new Set(["lineage_ref", "turn_ref", "parent_turn_ref", "independence_known"]);
 const ADVISOR_PAYLOAD_KEYS = new Set([
 	"kind",
 	"finding_kind",
@@ -66,7 +67,18 @@ function validateOriginAndPayload(record: ObservationRecord): void {
 	const kind = payload?.kind;
 	if (typeof kind !== "string" || !SUPPORTED_PAYLOAD_KINDS.has(kind)) throw new Error("Unsupported observation payload kind");
 	if ((origin.source === "advisor_finding") !== (kind === "advisor_finding_v1")) throw new Error("Observation origin and payload kind mismatch");
-	if (kind !== "advisor_finding_v1") return;
+	if (kind === "conversation_pair_v1") {
+		if (payload.causal_context === undefined) return; // Legacy records remain readable.
+		if (!payload.causal_context || typeof payload.causal_context !== "object" || Array.isArray(payload.causal_context)) throw new Error("Invalid conversation causal context");
+		const causal = payload.causal_context as Record<string, unknown>;
+		for (const key of Object.keys(causal)) if (!CAUSAL_CONTEXT_KEYS.has(key)) throw new Error("Unsupported conversation causal context field");
+		if (Object.keys(causal).length !== CAUSAL_CONTEXT_KEYS.size) throw new Error("Incomplete conversation causal context");
+		if (typeof causal.lineage_ref !== "string" || !/^[a-f0-9]{64}$/.test(causal.lineage_ref)) throw new Error("Invalid conversation lineage_ref");
+		if (typeof causal.turn_ref !== "string" || !/^[a-f0-9]{64}$/.test(causal.turn_ref)) throw new Error("Invalid conversation turn_ref");
+		if (causal.parent_turn_ref !== null && (typeof causal.parent_turn_ref !== "string" || !/^[a-f0-9]{64}$/.test(causal.parent_turn_ref))) throw new Error("Invalid conversation parent_turn_ref");
+		if (typeof causal.independence_known !== "boolean") throw new Error("Invalid conversation independence_known");
+		return;
+	}
 	for (const key of Object.keys(payload)) {
 		if (!ADVISOR_PAYLOAD_KEYS.has(key)) throw new Error("Unsupported Advisor finding payload field");
 	}

@@ -7,6 +7,8 @@ export interface ProposalSourceRef {
 	checksum: string;
 }
 
+export type ProposalEvidenceBasis = "inferred_pattern" | "explicit_durable_preference";
+
 export interface HabitCandidateProposal {
 	proposal_id: string;
 	kind: "habit_candidate";
@@ -18,6 +20,9 @@ export interface HabitCandidateProposal {
 	source_refs: ProposalSourceRef[];
 	evidence_summary?: string;
 	evidence_stage?: "collecting" | "reviewable";
+	evidence_unit_refs?: string[];
+	evidence_basis?: ProposalEvidenceBasis;
+	exact_user_quote?: string;
 	correction_role?: "old_negative" | "replacement";
 	correction_group_id?: string;
 	ambiguous?: false;
@@ -48,6 +53,9 @@ const PROPOSAL_KEYS = new Set([
 	"source_refs",
 	"evidence_summary",
 	"evidence_stage",
+	"evidence_unit_refs",
+	"evidence_basis",
+	"exact_user_quote",
 	"correction_role",
 	"correction_group_id",
 	"ambiguous",
@@ -108,6 +116,22 @@ function validateProposal(value: unknown, seenIds: Set<string>): HabitCandidateP
 	const evidenceSummary = proposal.evidence_summary === undefined ? undefined : assertSafeToken(proposal.evidence_summary, "evidence_summary", 1000);
 	const evidenceStage = proposal.evidence_stage === undefined ? undefined : assertSafeToken(proposal.evidence_stage, "evidence_stage", 32);
 	if (evidenceStage !== undefined && evidenceStage !== "collecting" && evidenceStage !== "reviewable") throw new Error("Invalid evidence_stage");
+	const evidenceUnitRefs = proposal.evidence_unit_refs === undefined ? undefined : (() => {
+		if (!Array.isArray(proposal.evidence_unit_refs) || proposal.evidence_unit_refs.length < 1 || proposal.evidence_unit_refs.length > 20) throw new Error("Invalid evidence_unit_refs");
+		const refs = proposal.evidence_unit_refs.map((value) => {
+			const ref = assertSafeToken(value, "evidence_unit_ref", 64);
+			if (!/^[a-f0-9]{64}$/.test(ref)) throw new Error("Invalid evidence_unit_ref");
+			return ref;
+		});
+		if (new Set(refs).size !== refs.length) throw new Error("Duplicate evidence_unit_ref");
+		return refs;
+	})();
+	const evidenceBasis = proposal.evidence_basis === undefined ? undefined : assertSafeToken(proposal.evidence_basis, "evidence_basis", 40);
+	if (evidenceBasis !== undefined && evidenceBasis !== "inferred_pattern" && evidenceBasis !== "explicit_durable_preference") throw new Error("Invalid evidence_basis");
+	const exactUserQuote = proposal.exact_user_quote === undefined ? undefined : assertSafeToken(proposal.exact_user_quote, "exact_user_quote", 400);
+	if ((evidenceUnitRefs === undefined) !== (evidenceBasis === undefined)) throw new Error("Incomplete situation evidence metadata");
+	if (evidenceBasis === "explicit_durable_preference" && exactUserQuote === undefined) throw new Error("Explicit preference quote missing");
+	if (evidenceBasis !== "explicit_durable_preference" && exactUserQuote !== undefined) throw new Error("Unexpected exact user quote");
 	const correctionRole = proposal.correction_role === undefined ? undefined : assertSafeToken(proposal.correction_role, "correction_role", 32);
 	if (correctionRole !== undefined && correctionRole !== "old_negative" && correctionRole !== "replacement") throw new Error("Invalid correction_role");
 	const correctionGroupId = proposal.correction_group_id === undefined ? undefined : assertSafeToken(proposal.correction_group_id, "correction_group_id", 160);
@@ -123,6 +147,8 @@ function validateProposal(value: unknown, seenIds: Set<string>): HabitCandidateP
 		source_refs: sourceRefs,
 		...(evidenceSummary === undefined ? {} : { evidence_summary: evidenceSummary }),
 		...(evidenceStage === undefined ? {} : { evidence_stage: evidenceStage as "collecting" | "reviewable" }),
+		...(evidenceUnitRefs === undefined ? {} : { evidence_unit_refs: evidenceUnitRefs, evidence_basis: evidenceBasis as ProposalEvidenceBasis }),
+		...(exactUserQuote === undefined ? {} : { exact_user_quote: exactUserQuote }),
 		...(correctionRole === undefined ? {} : { correction_role: correctionRole as "old_negative" | "replacement", correction_group_id: correctionGroupId! }),
 		...(proposal.ambiguous === undefined ? {} : { ambiguous: false }),
 	};

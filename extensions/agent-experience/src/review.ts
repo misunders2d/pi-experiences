@@ -181,6 +181,17 @@ function uniqueArrayByCanonical(values: unknown[]): unknown[] {
 
 export function activationEligibilityFromHabit(row: any) {
 	const data = parseJson(row.data_json);
+	if (data.evidence_protocol === "situation_v2") {
+		const units = Array.isArray(data.evidence_units) ? data.evidence_units : [];
+		if (data.evidence_basis === "explicit_durable_preference") {
+			const exactStatements = new Set(units.filter((unit: any) => unit?.kind === "explicit_user_statement" && typeof unit.unit_id === "string").map((unit: any) => unit.unit_id));
+			return { eligible: exactStatements.size >= 1, unique_observations: exactStatements.size, distinct_days: exactStatements.size ? 1 : 0, dates: [] };
+		}
+		const outcomes = units.filter((unit: any) => unit?.kind === "assessed_user_feedback" && unit.independence_known === true && typeof unit.lineage_ref === "string");
+		const lineages = new Set(outcomes.map((unit: any) => unit.lineage_ref));
+		const dates = [...new Set(outcomes.map((unit: any) => String(unit.occurred_at || "").slice(0, 10)).filter((date: string) => /^\d{4}-\d{2}-\d{2}$/.test(date)))];
+		return { eligible: lineages.size >= 3 && dates.length >= 2, unique_observations: lineages.size, distinct_days: dates.length, dates };
+	}
 	const refs = uniqueRefs(data);
 	const dates = uniqueDates(data);
 	return { eligible: refs.length >= 3 && dates.length >= 2, unique_observations: refs.length, distinct_days: dates.length, dates };
@@ -667,10 +678,16 @@ export function resolveHabitDuplicate(db: any, input: { userId: string; duplicat
 		if ((input.action === "merge" || input.action === "supersede") && canonicalHabit && duplicateHabit) {
 			const canonicalData = { ...parseJson(canonicalHabit.data_json), condition: canonicalHabit.condition, behavior: canonicalHabit.behavior, polarity: canonicalHabit.polarity, confidence_bp: canonicalHabit.confidence_bp, record_kind: canonicalHabit.record_kind, schema_version: canonicalHabit.schema_version };
 			const duplicateData = parseJson(duplicateHabit.data_json);
+			const situationV2 = canonicalData.evidence_protocol === "situation_v2" || duplicateData.evidence_protocol === "situation_v2";
 			const mergedData = {
 				...canonicalData,
 				source_refs: uniqueArrayByCanonical([...(Array.isArray(canonicalData.source_refs) ? canonicalData.source_refs : []), ...(Array.isArray(duplicateData.source_refs) ? duplicateData.source_refs : [])]),
 				source_dates: uniqueArrayByCanonical([...(Array.isArray(canonicalData.source_dates) ? canonicalData.source_dates : []), ...(Array.isArray(duplicateData.source_dates) ? duplicateData.source_dates : [])]).sort(),
+				...(situationV2 ? {
+					evidence_protocol: "situation_v2",
+					evidence_units: uniqueArrayByCanonical([...(canonicalData.evidence_protocol === "situation_v2" && Array.isArray(canonicalData.evidence_units) ? canonicalData.evidence_units : []), ...(duplicateData.evidence_protocol === "situation_v2" && Array.isArray(duplicateData.evidence_units) ? duplicateData.evidence_units : [])]),
+					evidence_basis: canonicalData.evidence_basis === "explicit_durable_preference" || duplicateData.evidence_basis === "explicit_durable_preference" ? "explicit_durable_preference" : "inferred_pattern",
+				} : {}),
 				semantic_duplicate_resolution: { action: input.action, duplicate_id: before.id, resolved_at: input.now },
 			};
 			updateHabitRow(db, { userId, id: canonicalHabit.id, expectedStatus: canonicalHabit.status, expectedChecksum: canonicalHabit.checksum, data: mergedData, status: canonicalHabit.status, now: input.now });

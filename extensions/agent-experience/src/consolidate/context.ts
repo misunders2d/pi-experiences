@@ -56,7 +56,17 @@ function stringValues(value: unknown): string[] {
 	return strings;
 }
 
+function situationEvidenceUnits(data: Record<string, unknown>): Record<string, unknown>[] {
+	if (data.evidence_protocol !== "situation_v2" || !Array.isArray(data.evidence_units)) return [];
+	return data.evidence_units.filter((unit): unit is Record<string, unknown> => !!unit && typeof unit === "object" && !Array.isArray(unit));
+}
+
 function uniqueRefs(data: Record<string, unknown>): number {
+	if (data.evidence_protocol === "situation_v2") {
+		return new Set(situationEvidenceUnits(data)
+			.filter((unit) => unit.kind === "observed_outcome" && unit.independence_known === true && typeof unit.lineage_ref === "string")
+			.map((unit) => unit.lineage_ref as string)).size;
+	}
 	const refs = Array.isArray(data.source_refs) ? data.source_refs : [];
 	const advisorRefKeys = new Set(stringValues(data.advisor_source_ref_keys));
 	const nonAdvisorRefs = new Set(refs.map(refKey).filter((key): key is string => !!key && !advisorRefKeys.has(key)));
@@ -64,6 +74,12 @@ function uniqueRefs(data: Record<string, unknown>): number {
 }
 
 function sourceDates(data: Record<string, unknown>): string[] {
+	if (data.evidence_protocol === "situation_v2") {
+		return [...new Set(situationEvidenceUnits(data)
+			.filter((unit) => unit.kind === "observed_outcome" && unit.independence_known === true && typeof unit.occurred_at === "string")
+			.map((unit) => String(unit.occurred_at).slice(0, 10))
+			.filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date)))].sort().slice(-30);
+	}
 	const hasAdvisorMetadata = Object.prototype.hasOwnProperty.call(data, "advisor_events")
 		|| Object.prototype.hasOwnProperty.call(data, "advisor_source_ref_keys");
 	const dates = hasAdvisorMetadata

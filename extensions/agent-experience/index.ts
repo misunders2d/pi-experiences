@@ -64,6 +64,7 @@ import { purgeExpiredObservationArchives, readCurrentObservationManifest, readVa
 import { redactText } from "./src/storage/redaction.ts";
 import { classifyCaptureInput, type CaptureKey } from "./src/capture/origin.ts";
 import { CapturePairBuffer, buildPairPayload, type CompletedPair, type CloseReason } from "./src/capture/buffer.ts";
+import { resolveCapturedCausalContext } from "./src/capture/lineage.ts";
 import { extractSingleFinalAssistantText } from "./src/capture/extract.ts";
 import { promoteApprovedPendingCandidates, runSelectorRuntime, selectActiveSelectorSnapshot, selectorCandidatesForPreparation, type SelectorModelAdapter } from "./src/selector.ts";
 import { createPiSelectorModelAdapter } from "./src/selector-model.ts";
@@ -76,6 +77,7 @@ import type { ValidatedObservationRecord } from "./src/consolidate/observations.
 import { buildCompactHabitContext, type CompactHabitContextItem } from "./src/consolidate/context.ts";
 import { getProposalReadWatermark } from "./src/consolidate/commit.ts";
 import { expectedRangeFromObservations, runConsolidationOnce } from "./src/consolidate/runner.ts";
+import { buildSituationBatch, clampAndPurgeEpisodeFrontiers, purgeAllEpisodeFrontiers } from "./src/consolidate/situations.ts";
 import { createPiConsolidationModelAdapter, truncateForModel, type ConsolidationModelAdapter, type ConsolidationModelAdapterInput } from "./src/consolidate/model-adapter.ts";
 import { validateStandaloneConsolidationModel } from "./src/consolidate/standalone-model-adapter.ts";
 export { __buildAgentExperienceConsolidationSystemPromptForTest, __normalizeAgentExperienceConsolidationModelOutputForTest } from "./src/consolidate/model-adapter.ts";
@@ -107,6 +109,9 @@ import { appendAdvisorFindingObservation } from "./src/advisor/observation.ts";
 import { showSetupView, type SetupAction, type SetupSnapshot, type SetupView } from "./src/setup-ui.ts";
 
 const captureBuffer = new CapturePairBuffer();
+let inspectSystemdForAllOff = inspectScheduledAnalyzeSystemd;
+let disableSystemdForAllOff = disableScheduledAnalyzeSystemd;
+let restoreSystemdForAllOff = installScheduledAnalyzeSystemd;
 let selectorModelAdapter: SelectorModelAdapter | undefined;
 let selectorEmbeddingAdapterOverride: EmbeddingAdapter | undefined;
 let selectorLocalEmbeddingAdapter: LocalEmbeddingAdapter | undefined;
@@ -830,11 +835,14 @@ async function getEffectiveCapture(paths = getAgentExperiencePaths()) {
 	}
 }
 
-async function appendCapturedPair(root: string, pair: CompletedPair, reason: CloseReason) {
+async function appendCapturedPair(root: string, pair: CompletedPair, reason: CloseReason, ctx: Pick<ExtensionContext, "sessionManager">) {
+	const causalContext = pair.branchAnchorId === undefined
+		? undefined
+		: resolveCapturedCausalContext(ctx.sessionManager as any, pair.branchAnchorId);
 	await appendObservation(root, {
 		userId: pair.key.userId,
 		origin: pair.origin,
-		payload: buildPairPayload(pair, reason),
+		payload: buildPairPayload({ ...pair, ...(causalContext ? { causalContext } : {}) }, reason),
 	});
 }
 
@@ -1304,8 +1312,27 @@ async function handleSetupRetention(ctx: ExtensionCommandContext) {
 	const retentionDays = Number.parseInt(choice, 10) as 7 | 14 | 30;
 	if (![7, 14, 30].includes(retentionDays)) return notify(ctx, "Saved-example retention was left unchanged.", "warn");
 	if (retentionDays === config.observation_retention_days) return notify(ctx, `Analyzed source examples already use ${retentionDays}-day private retention.`, "info");
-	await setAgentExperienceObservationRetentionDays(retentionDays, paths);
-	return notify(ctx, `Analyzed redacted source examples will be deleted after ${retentionDays} days. Minimized evidence, integrity records, and review audit remain.`, "info");
+	const analyzeLock = await acquireAnalyzeLock(paths.root);
+	if (!analyzeLock) return notify(ctx, "Saved-example retention was left unchanged because Analyze is active. Try again after Analyze finishes.", "warn");
+	try {
+		if (await fileExists(resolvePrivatePath(paths.root, "ledger.sqlite"))) {
+			const storage = await openExistingExperienceStorage(paths.root, { userId: getConfiguredUserId() });
+			try {
+				storage.db.exec("BEGIN IMMEDIATE");
+				clampAndPurgeEpisodeFrontiers(storage.db, { userId: storage.userId, retentionDays, now: new Date().toISOString() });
+				storage.db.exec("COMMIT");
+			} catch (error) {
+				try { storage.db.exec("ROLLBACK"); } catch {}
+				throw error;
+			} finally {
+				storage.db.close();
+			}
+		}
+		await setAgentExperienceObservationRetentionDays(retentionDays, paths);
+		return notify(ctx, `Analyzed redacted source examples will be deleted after ${retentionDays} days. Minimized evidence, integrity records, and review audit remain.`, "info");
+	} finally {
+		await analyzeLock.release();
+	}
 }
 
 async function handleSetupSelector(ctx: ExtensionCommandContext) {
@@ -1736,10 +1763,12 @@ async function runAnalyzeNowJob(ctx: ExtensionCommandContext, preflight: {
 			if (!batch.length) throw new Error("Analyze bounded read made no progress");
 			const expected = expectedRangeFromObservations(batch, userId);
 			if (expected.file_generation !== preflight.generation || expected.seq_start !== committedSeq + 1 || expected.seq_end > preflight.targetSeq) throw new Error("Analyze snapshot range drifted");
-			const output = await adapter.generate({ model, userId, observations: batch, habitContext, expected, signal });
-			throwIfAborted();
+			const batchNow = new Date().toISOString();
 			storage = await initExperienceStorage(paths.root, { allowInit: true, userId });
-			const result = await runConsolidationOnce({ root: paths.root, db: storage.db, userId: storage.userId, observations: batch, modelOutput: output, model, host: preflight.host, config, dryRun: false, now: new Date().toISOString() });
+			const situationBatch = buildSituationBatch(storage.db, { userId, observations: batch, retentionDays: config.observation_retention_days, now: batchNow });
+			const output = await adapter.generate({ model, userId, observations: batch, habitContext, expected, situationBatch, signal });
+			throwIfAborted();
+			const result = await runConsolidationOnce({ root: paths.root, db: storage.db, userId: storage.userId, observations: batch, modelOutput: output, model, host: preflight.host, config, situationBatch, dryRun: false, now: batchNow });
 			if (!result.ok) throw new Error(`habit_learning_model_output_invalid:${String(result.reason || "model output invalid")}`);
 			const watermark = getProposalReadWatermark(storage.db, userId, preflight.generation);
 			const last = batch.at(-1)!;
@@ -2825,20 +2854,47 @@ async function handleOn(ctx: ExtensionCommandContext) {
 async function handleOff(ctx: ExtensionCommandContext) {
 	const paths = getAgentExperiencePaths();
 	const { config } = await readAgentExperienceConfig(paths);
-	let scheduleEnabled = config.timer_enabled;
+	const analyzeLock = await acquireAnalyzeLock(paths.root);
+	if (!analyzeLock) return notify(ctx, "Agent Experience remains ON because Analyze is active. Try Turn everything off again after Analyze finishes.", "warn");
+	let path = "";
+	let scheduleWasEnabled = false;
+	let scheduleDisabled = false;
+	let configChanged = false;
 	try {
-		const schedule = await inspectScheduledAnalyzeSystemd(paths, getConfiguredUserId(), { piRuntimeRoot: getPackageDir() });
-		scheduleEnabled ||= schedule.enabled && schedule.ownedByStateRoot;
-	} catch {}
-	if (scheduleEnabled) {
 		try {
-			await disableScheduledAnalyzeSystemd({ expectedStateRoot: paths.root });
-		} catch (error: any) {
-			return notify(ctx, `Agent Experience remains ON because setup could not verify the scheduled timer was disabled. Detail: ${redactText(String(error?.message || error)).slice(0, 180)}`, "warn");
+			const schedule = await inspectSystemdForAllOff(paths, getConfiguredUserId(), { piRuntimeRoot: getPackageDir() });
+			scheduleWasEnabled = schedule.enabled && schedule.ownedByStateRoot;
+		} catch (error) {
+			if (config.timer_enabled) throw error;
 		}
+		if (config.timer_enabled || scheduleWasEnabled) {
+			await disableSystemdForAllOff({ expectedStateRoot: paths.root });
+			scheduleDisabled = scheduleWasEnabled;
+		}
+		({ path } = await setAgentExperienceEnabled(false, paths));
+		configChanged = true;
+		if (await fileExists(resolvePrivatePath(paths.root, "ledger.sqlite"))) {
+			const storage = await openExistingExperienceStorage(paths.root, { userId: getConfiguredUserId() });
+			try {
+				storage.db.exec("BEGIN IMMEDIATE");
+				purgeAllEpisodeFrontiers(storage.db, storage.userId);
+				storage.db.exec("COMMIT");
+			} catch (error) {
+				try { storage.db.exec("ROLLBACK"); } catch {}
+				throw error;
+			} finally {
+				storage.db.close();
+			}
+		}
+		captureBuffer.clearAll();
+	} catch (error: any) {
+		let compensationFailed = false;
+		if (configChanged) await writeAgentExperienceConfig(config, paths).catch(() => { compensationFailed = true; });
+		if (scheduleDisabled) await restoreSystemdForAllOff(paths, getConfiguredUserId(), { piRuntimeRoot: getPackageDir() }).catch(() => { compensationFailed = true; });
+		return notify(ctx, `Agent Experience remains ON because all-off could not complete${compensationFailed ? " and rollback needs maintainer attention" : ""}. Detail: ${redactText(String(error?.message || error)).slice(0, 180)}`, "warn");
+	} finally {
+		await analyzeLock.release();
 	}
-	captureBuffer.clearAll();
-	const { path } = await setAgentExperienceEnabled(false, paths);
 	notify(
 		ctx,
 		[
@@ -2851,10 +2907,24 @@ async function handleOff(ctx: ExtensionCommandContext) {
 			"Prevent duplicate habits: OFF",
 			"Automatic Analyze schedule: OFF (installed files, if any, are retained)",
 			"Review prompts after Analyze: OFF",
-			"All-off drops in-memory capture buffers without writing observations. Existing records and local semantic files are preserved.",
+			"All-off drops in-memory capture buffers without writing observations and purges temporary episode frontiers. Existing learned records and local semantic files are preserved.",
 		].join("\n"),
 		"info",
 	);
+}
+
+export function __setAgentExperienceAllOffSystemdForTest(overrides?: {
+	inspect?: typeof inspectScheduledAnalyzeSystemd;
+	disable?: typeof disableScheduledAnalyzeSystemd;
+	restore?: typeof installScheduledAnalyzeSystemd;
+}) {
+	inspectSystemdForAllOff = overrides?.inspect || inspectScheduledAnalyzeSystemd;
+	disableSystemdForAllOff = overrides?.disable || disableScheduledAnalyzeSystemd;
+	restoreSystemdForAllOff = overrides?.restore || installScheduledAnalyzeSystemd;
+}
+
+export async function __runAgentExperienceAllOffForTest(ctx: ExtensionCommandContext) {
+	return handleOff(ctx);
 }
 
 function parseFlag(args: string[], name: string): string | undefined {
@@ -4684,9 +4754,10 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 			return;
 		}
 		try {
+			const branchAnchorId = typeof (ctx.sessionManager as any).getLeafId === "function" ? (ctx.sessionManager as any).getLeafId() : undefined;
 			await captureBuffer.acceptInput(
-				{ key: decision.key, text: decision.text, origin: decision.origin, createdAt: new Date().toISOString() },
-				(pair, reason) => appendCapturedPair(paths.root, pair, reason),
+				{ key: decision.key, text: decision.text, origin: decision.origin, createdAt: new Date().toISOString(), ...(branchAnchorId === undefined ? {} : { branchAnchorId }) },
+				(pair, reason) => appendCapturedPair(paths.root, pair, reason, ctx),
 			);
 		} catch (error) {
 			captureBuffer.dropKey(decision.key);
@@ -4782,7 +4853,7 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 			const { paths, active } = await getEffectiveCapture();
 			const key = captureKeyFromContext(ctx);
 			if (!active) captureBuffer.dropKey(key);
-			else if (key) await captureBuffer.settle(key, (pair, reason) => appendCapturedPair(paths.root, pair, reason));
+			else if (key) await captureBuffer.settle(key, (pair, reason) => appendCapturedPair(paths.root, pair, reason, ctx));
 		} catch (error) {
 			captureBuffer.dropKey(captureKeyFromContext(ctx));
 			notifyDedupedDiagnostic(ctx, captureDiagnosticsShown, diagnosticFor("capture-persist", error));
@@ -4865,7 +4936,7 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 			return;
 		}
 		try {
-			await captureBuffer.flushKey(key, "session_shutdown", (pair, reason) => appendCapturedPair(paths.root, pair, reason));
+			await captureBuffer.flushKey(key, "session_shutdown", (pair, reason) => appendCapturedPair(paths.root, pair, reason, ctx));
 		} catch (error) {
 			captureBuffer.dropKey(key);
 			notifyDedupedDiagnostic(ctx, captureDiagnosticsShown, diagnosticFor("capture-persist", error));

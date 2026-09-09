@@ -1,4 +1,5 @@
 import { keyToString, type CaptureKey } from "./origin.ts";
+import type { CapturedCausalContext } from "./lineage.ts";
 
 export const MAX_CAPTURE_STATES = 16;
 
@@ -9,6 +10,8 @@ export interface PendingInput {
 	text: string;
 	origin: { source: "local_interactive" };
 	createdAt: string;
+	/** Pi branch leaf before this user entry is appended; retained in memory only. */
+	branchAnchorId?: string | null;
 }
 
 export interface CompletedPair {
@@ -18,6 +21,8 @@ export interface CompletedPair {
 	assistantText: string;
 	inputCreatedAt: string;
 	completedAt: string;
+	branchAnchorId?: string | null;
+	causalContext?: CapturedCausalContext;
 }
 
 // "pending": user input received, no assistant text yet.
@@ -39,6 +44,7 @@ export interface PairPayload {
 	assistant_char_count: number;
 	input_created_at: string;
 	completed_at: string;
+	causal_context?: CapturedCausalContext;
 }
 
 export type AppendPair = (pair: CompletedPair, reason: CloseReason) => Promise<void>;
@@ -51,6 +57,7 @@ function pairFromSettling(state: { input: PendingInput; assistantText: string; c
 		assistantText: state.assistantText,
 		inputCreatedAt: state.input.createdAt,
 		completedAt: state.completedAt,
+		...(state.input.branchAnchorId === undefined ? {} : { branchAnchorId: state.input.branchAnchorId }),
 	};
 }
 
@@ -149,5 +156,6 @@ export function buildPairPayload(pair: CompletedPair, reason: CloseReason): Pair
 		assistant_char_count: pair.assistantText.length,
 		input_created_at: pair.inputCreatedAt,
 		completed_at: pair.completedAt,
+		...(pair.causalContext ? { causal_context: pair.causalContext } : {}),
 	};
 }

@@ -110,10 +110,10 @@ function applyAgentExperienceEnvOverrides(config, env = process.env) {
   }
   return out;
 }
-function parseAgentExperienceConfig(text, env) {
+function parseAgentExperienceConfig(text2, env) {
   const config = { ...DEFAULT_AGENT_EXPERIENCE_CONFIG };
   let section;
-  for (const line of text.split(/\r?\n/)) {
+  for (const line of text2.split(/\r?\n/)) {
     const trimmed = line.replace(/#.*/, "").trim();
     if (!trimmed) continue;
     const sectionMatch = trimmed.match(/^\[([A-Za-z0-9_.-]+)\]$/);
@@ -214,8 +214,8 @@ async function readAgentExperienceConfig(paths = getAgentExperiencePaths()) {
     return { config: applyAgentExperienceEnvOverrides({ ...DEFAULT_AGENT_EXPERIENCE_CONFIG }, process.env), exists: false, path: paths.configPath };
   }
   await assertRegularConfigFile(paths.configPath);
-  const text = await readFile(paths.configPath, "utf8");
-  return { config: parseAgentExperienceConfig(text, process.env), exists: true, path: paths.configPath };
+  const text2 = await readFile(paths.configPath, "utf8");
+  return { config: parseAgentExperienceConfig(text2, process.env), exists: true, path: paths.configPath };
 }
 async function assertRegularConfigFile(path) {
   try {
@@ -361,8 +361,8 @@ function redactJson(input) {
   return visit(input);
 }
 function containsUnredactedSensitiveText(value) {
-  const text = typeof value === "string" ? value : JSON.stringify(value);
-  const normalized = text || "";
+  const text2 = typeof value === "string" ? value : JSON.stringify(value);
+  const normalized = text2 || "";
   const assignmentScan = normalized.replace(new RegExp(REDACTED_ASSIGNMENT_SOURCE, "gi"), REDACTED);
   return /-----BEGIN [A-Z ]*(?:PRIVATE KEY|SECRET KEY)|[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}|(?:\+?1[-.\s])?(?:\(?\d{3}\)?[-.\s])\d{3}[-.\s]\d{4}|\b[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\b|(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}|(?:~\/|\/(?:home|Users|var\/folders|tmp|media|mnt|Volumes)\/[^\s"']+|[A-Za-z]:\\Users\\[^\s"']+)/i.test(normalized) || secretTokenRegex().test(normalized) || credentialUrlRegex().test(normalized) || sensitiveAssignmentRegex().test(assignmentScan);
 }
@@ -549,10 +549,10 @@ function tailChecksum(base) {
 function withTailChecksum(base) {
   return { ...base, manifest_checksum: tailChecksum(base) };
 }
-function parseTailManifest(text) {
+function parseTailManifest(text2) {
   let manifest;
   try {
-    manifest = JSON.parse(text);
+    manifest = JSON.parse(text2);
   } catch {
     throw new Error("Invalid observation tail manifest JSON");
   }
@@ -1327,9 +1327,9 @@ function habitFieldEmbeddingInputsV1(input) {
     behavior: habitBehaviorEmbeddingInputV1(input)
   };
 }
-function embeddingInputChecksum(text, version = SEMANTIC_EMBEDDING_INPUT_VERSION) {
+function embeddingInputChecksum(text2, version = SEMANTIC_EMBEDDING_INPUT_VERSION) {
   return sha256Hex(`${version}
-${text}`);
+${text2}`);
 }
 function semanticWordingIdentityChecksum(input) {
   return sha256Hex(`${SEMANTIC_WORDING_IDENTITY_VERSION}
@@ -1771,14 +1771,14 @@ function tableColumns(db, table) {
 }
 function stringOrNull(value, max = 2e3) {
   if (value === void 0 || value === null) return null;
-  const text = String(value);
-  if (text.length > max || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(text)) throw new Error("Invalid migrated typed string");
-  return text;
+  const text2 = String(value);
+  if (text2.length > max || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(text2)) throw new Error("Invalid migrated typed string");
+  return text2;
 }
 function safeRecordKind(value) {
-  const text = stringOrNull(value, 160) || "legacy_record_v1";
-  if (!/^[A-Za-z0-9._:-]+$/.test(text)) throw new Error("Invalid migrated record_kind");
-  return text;
+  const text2 = stringOrNull(value, 160) || "legacy_record_v1";
+  if (!/^[A-Za-z0-9._:-]+$/.test(text2)) throw new Error("Invalid migrated record_kind");
+  return text2;
 }
 function safeSchemaVersion(value) {
   const version = value === void 0 || value === null ? 1 : Number(value);
@@ -2357,14 +2357,14 @@ async function initExperienceStorage(root, options) {
 }
 function stringOrNull2(value, max = 2e3) {
   if (value === void 0 || value === null) return null;
-  const text = String(value);
-  if (text.length > max || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(text)) throw new Error("Invalid typed storage string");
-  return text;
+  const text2 = String(value);
+  if (text2.length > max || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(text2)) throw new Error("Invalid typed storage string");
+  return text2;
 }
 function safeRecordKind2(value) {
-  const text = stringOrNull2(value, 160) || "legacy_record_v1";
-  if (!/^[A-Za-z0-9._:-]+$/.test(text)) throw new Error("Invalid record_kind");
-  return text;
+  const text2 = stringOrNull2(value, 160) || "legacy_record_v1";
+  if (!/^[A-Za-z0-9._:-]+$/.test(text2)) throw new Error("Invalid record_kind");
+  return text2;
 }
 function safeSchemaVersion2(value) {
   const version = value === void 0 || value === null ? 1 : Number(value);
@@ -2460,6 +2460,7 @@ var ALLOWED_ORIGINS = /* @__PURE__ */ new Set(["test", "manual", "local_interact
 var SUPPORTED_PAYLOAD_KINDS = /* @__PURE__ */ new Set(["conversation_pair_v1", "advisor_finding_v1"]);
 var OBSERVATION_KEYS = /* @__PURE__ */ new Set(["id", "seq", "user_id", "origin", "prev_pair_ref", "payload_redacted", "created_at", "checksum"]);
 var ORIGIN_KEYS = /* @__PURE__ */ new Set(["source", "command"]);
+var CAUSAL_CONTEXT_KEYS = /* @__PURE__ */ new Set(["lineage_ref", "turn_ref", "parent_turn_ref", "independence_known"]);
 var ADVISOR_PAYLOAD_KEYS = /* @__PURE__ */ new Set([
   "kind",
   "finding_kind",
@@ -2499,7 +2500,18 @@ function validateOriginAndPayload(record) {
   const kind = payload?.kind;
   if (typeof kind !== "string" || !SUPPORTED_PAYLOAD_KINDS.has(kind)) throw new Error("Unsupported observation payload kind");
   if (origin.source === "advisor_finding" !== (kind === "advisor_finding_v1")) throw new Error("Observation origin and payload kind mismatch");
-  if (kind !== "advisor_finding_v1") return;
+  if (kind === "conversation_pair_v1") {
+    if (payload.causal_context === void 0) return;
+    if (!payload.causal_context || typeof payload.causal_context !== "object" || Array.isArray(payload.causal_context)) throw new Error("Invalid conversation causal context");
+    const causal2 = payload.causal_context;
+    for (const key of Object.keys(causal2)) if (!CAUSAL_CONTEXT_KEYS.has(key)) throw new Error("Unsupported conversation causal context field");
+    if (Object.keys(causal2).length !== CAUSAL_CONTEXT_KEYS.size) throw new Error("Incomplete conversation causal context");
+    if (typeof causal2.lineage_ref !== "string" || !/^[a-f0-9]{64}$/.test(causal2.lineage_ref)) throw new Error("Invalid conversation lineage_ref");
+    if (typeof causal2.turn_ref !== "string" || !/^[a-f0-9]{64}$/.test(causal2.turn_ref)) throw new Error("Invalid conversation turn_ref");
+    if (causal2.parent_turn_ref !== null && (typeof causal2.parent_turn_ref !== "string" || !/^[a-f0-9]{64}$/.test(causal2.parent_turn_ref))) throw new Error("Invalid conversation parent_turn_ref");
+    if (typeof causal2.independence_known !== "boolean") throw new Error("Invalid conversation independence_known");
+    return;
+  }
   for (const key of Object.keys(payload)) {
     if (!ADVISOR_PAYLOAD_KEYS.has(key)) throw new Error("Unsupported Advisor finding payload field");
   }
@@ -2544,9 +2556,9 @@ async function readValidatedObservationGeneration(root, manifest, userId) {
   const path = resolvePrivatePath(privateRoot, fileName);
   const info = await lstat7(path);
   if (!info.isFile() || info.isSymbolicLink()) throw new Error("Observation JSONL is not a regular private file");
-  const text = await readFile5(path, "utf8");
-  if (!text.endsWith("\n")) throw new Error("Observation JSONL has incomplete tail");
-  const records = text.trim() ? text.trim().split("\n").map((line) => JSON.parse(line)) : [];
+  const text2 = await readFile5(path, "utf8");
+  if (!text2.endsWith("\n")) throw new Error("Observation JSONL has incomplete tail");
+  const records = text2.trim() ? text2.trim().split("\n").map((line) => JSON.parse(line)) : [];
   return validateObservationRecords({ records, userId, fileGeneration });
 }
 function observationKey(ref) {
@@ -2598,10 +2610,10 @@ async function hashFile(path) {
   for await (const chunk of createReadStream(path)) hash.update(chunk);
   return hash.digest("hex");
 }
-function parseManifest(text) {
+function parseManifest(text2) {
   let manifest;
   try {
-    manifest = JSON.parse(text);
+    manifest = JSON.parse(text2);
   } catch {
     throw new Error("Invalid local embedding asset manifest JSON");
   }
@@ -2743,7 +2755,7 @@ function createLocalEmbeddingAdapter(root, options = {}) {
   }
   async function embed(texts, input = {}) {
     if (!Array.isArray(texts) || texts.length < 1 || texts.length > LOCAL_EMBEDDING_MAX_BATCH) throw new Error("Invalid local embedding batch");
-    if (texts.some((text) => typeof text !== "string" || text.length < 1 || text.length > 5e3)) throw new Error("Invalid local embedding text");
+    if (texts.some((text2) => typeof text2 !== "string" || text2.length < 1 || text2.length > 5e3)) throw new Error("Invalid local embedding text");
     if (input.signal?.aborted) throw input.signal.reason || new Error("local_embedding_aborted");
     const current = await ensureWorker();
     const id = randomUUID4();
@@ -2781,10 +2793,10 @@ init_private_root();
 init_redaction();
 function boundedJson(value, max = 24e3) {
   const safe = redactJson(value ?? {});
-  const text = canonicalJson(safe);
-  if (text.length > max) throw new Error("Semantic dedupe JSON too large");
-  if (containsUnredactedSensitiveText(text)) throw new Error("Semantic dedupe JSON contains unredacted sensitive text");
-  return text;
+  const text2 = canonicalJson(safe);
+  if (text2.length > max) throw new Error("Semantic dedupe JSON too large");
+  if (containsUnredactedSensitiveText(text2)) throw new Error("Semantic dedupe JSON contains unredacted sensitive text");
+  return text2;
 }
 function stableId(prefix, value) {
   return `${prefix}-${sha256Hex(canonicalJson(value)).slice(0, 40)}`;
@@ -3069,11 +3081,11 @@ async function prepareHabitFieldEmbeddings(db, input) {
     const entry = { habit };
     for (const field of ["condition", "behavior"]) {
       const version = field === "condition" ? SEMANTIC_CONDITION_EMBEDDING_INPUT_VERSION : SEMANTIC_BEHAVIOR_EMBEDDING_INPUT_VERSION;
-      const text = fields[field];
-      const checksum = embeddingInputChecksum(text, version);
+      const text2 = fields[field];
+      const checksum = embeddingInputChecksum(text2, version);
       const cached = getCachedHabitEmbedding(db, { userId: input.userId, habitId: habit.id, embeddingInputVersion: version, embeddingInputChecksum: checksum, habitRowChecksum: habit.checksum, provider: policy.provider, model: policy.model, dimensions: policy.dimensions });
       if (cached) entry[field] = { embeddingInputVersion: version, embeddingInputChecksum: checksum, vector: cached.vector, cached: true };
-      else missing.push({ habit, field, text, version, checksum });
+      else missing.push({ habit, field, text: text2, version, checksum });
     }
     partial.set(habit.id, entry);
   }
@@ -3450,6 +3462,9 @@ var PROPOSAL_KEYS = /* @__PURE__ */ new Set([
   "source_refs",
   "evidence_summary",
   "evidence_stage",
+  "evidence_unit_refs",
+  "evidence_basis",
+  "exact_user_quote",
   "correction_role",
   "correction_group_id",
   "ambiguous"
@@ -3505,6 +3520,22 @@ function validateProposal(value, seenIds) {
   const evidenceSummary = proposal.evidence_summary === void 0 ? void 0 : assertSafeToken(proposal.evidence_summary, "evidence_summary", 1e3);
   const evidenceStage = proposal.evidence_stage === void 0 ? void 0 : assertSafeToken(proposal.evidence_stage, "evidence_stage", 32);
   if (evidenceStage !== void 0 && evidenceStage !== "collecting" && evidenceStage !== "reviewable") throw new Error("Invalid evidence_stage");
+  const evidenceUnitRefs = proposal.evidence_unit_refs === void 0 ? void 0 : (() => {
+    if (!Array.isArray(proposal.evidence_unit_refs) || proposal.evidence_unit_refs.length < 1 || proposal.evidence_unit_refs.length > 20) throw new Error("Invalid evidence_unit_refs");
+    const refs = proposal.evidence_unit_refs.map((value2) => {
+      const ref = assertSafeToken(value2, "evidence_unit_ref", 64);
+      if (!/^[a-f0-9]{64}$/.test(ref)) throw new Error("Invalid evidence_unit_ref");
+      return ref;
+    });
+    if (new Set(refs).size !== refs.length) throw new Error("Duplicate evidence_unit_ref");
+    return refs;
+  })();
+  const evidenceBasis = proposal.evidence_basis === void 0 ? void 0 : assertSafeToken(proposal.evidence_basis, "evidence_basis", 40);
+  if (evidenceBasis !== void 0 && evidenceBasis !== "inferred_pattern" && evidenceBasis !== "explicit_durable_preference") throw new Error("Invalid evidence_basis");
+  const exactUserQuote = proposal.exact_user_quote === void 0 ? void 0 : assertSafeToken(proposal.exact_user_quote, "exact_user_quote", 400);
+  if (evidenceUnitRefs === void 0 !== (evidenceBasis === void 0)) throw new Error("Incomplete situation evidence metadata");
+  if (evidenceBasis === "explicit_durable_preference" && exactUserQuote === void 0) throw new Error("Explicit preference quote missing");
+  if (evidenceBasis !== "explicit_durable_preference" && exactUserQuote !== void 0) throw new Error("Unexpected exact user quote");
   const correctionRole = proposal.correction_role === void 0 ? void 0 : assertSafeToken(proposal.correction_role, "correction_role", 32);
   if (correctionRole !== void 0 && correctionRole !== "old_negative" && correctionRole !== "replacement") throw new Error("Invalid correction_role");
   const correctionGroupId = proposal.correction_group_id === void 0 ? void 0 : assertSafeToken(proposal.correction_group_id, "correction_group_id", 160);
@@ -3520,6 +3551,8 @@ function validateProposal(value, seenIds) {
     source_refs: sourceRefs,
     ...evidenceSummary === void 0 ? {} : { evidence_summary: evidenceSummary },
     ...evidenceStage === void 0 ? {} : { evidence_stage: evidenceStage },
+    ...evidenceUnitRefs === void 0 ? {} : { evidence_unit_refs: evidenceUnitRefs, evidence_basis: evidenceBasis },
+    ...exactUserQuote === void 0 ? {} : { exact_user_quote: exactUserQuote },
     ...correctionRole === void 0 ? {} : { correction_role: correctionRole, correction_group_id: correctionGroupId },
     ...proposal.ambiguous === void 0 ? {} : { ambiguous: false }
   };
@@ -3539,6 +3572,287 @@ function validateProposalBatch(value, expectedUserId) {
   const proposals = batch.proposals.map((proposal) => validateProposal(proposal, seenIds));
   const normalized = { schema_version: 1, user_id: userId, batch_id: batchId, created_at: createdAt, proposals };
   return { ...normalized, checksum: checksumJson({ schema: "agent_experience_proposal_batch_v1", batch: JSON.parse(canonicalJson(normalized)) }) };
+}
+
+// extensions/agent-experience/src/consolidate/situations.ts
+init_checksum();
+init_private_root();
+init_redaction();
+var EPISODE_FRONTIER_KIND = "episode_frontier_v1";
+var MAX_EPISODE_FRONTIERS_PER_USER = 64;
+var MAX_EPISODE_FRONTIERS_PER_BATCH = 16;
+var MAX_SITUATION_EVIDENCE_UNITS = 1e3;
+var SITUATION_CHARS = 400;
+var ACTION_CHARS = 600;
+var FEEDBACK_CHARS = 400;
+var HASH = /^[a-f0-9]{64}$/;
+function text(value, max) {
+  const safe = redactText(typeof value === "string" ? value : "").trim().replace(/\s+/g, " ");
+  return safe.length <= max ? safe : safe.slice(safe.length - max);
+}
+function sourceRef(record) {
+  return { file_generation: record.file_generation, seq: record.seq, checksum: record.checksum };
+}
+function causal(record) {
+  const payload = record.payload_redacted;
+  const value = payload?.kind === "conversation_pair_v1" ? payload.causal_context : void 0;
+  if (!value || !HASH.test(value.lineage_ref) || !HASH.test(value.turn_ref) || value.parent_turn_ref !== null && !HASH.test(value.parent_turn_ref) || typeof value.independence_known !== "boolean") return void 0;
+  return value;
+}
+function pairText(record) {
+  const payload = record.payload_redacted;
+  if (payload?.kind !== "conversation_pair_v1") return void 0;
+  const user = text(payload.user_text_redacted, SITUATION_CHARS);
+  const assistant = text(payload.assistant_text_redacted, ACTION_CHARS);
+  return user && assistant ? { user, assistant } : void 0;
+}
+function unitId(kind, value) {
+  return sha256Hex(canonicalJson({ schema: "agent_experience_evidence_unit_v1", kind, value }));
+}
+function frontierChecksum(value) {
+  return checksumJson({ schema: EPISODE_FRONTIER_KIND, frontier: value });
+}
+function parseFrontierRow(row) {
+  try {
+    const residual = JSON.parse(String(row.data_json || "{}"));
+    const data = { ...residual, record_kind: row.record_kind, schema_version: row.schema_version, status: row.status, habit_id: row.habit_id, condition: row.condition, behavior: row.behavior, polarity: row.polarity, confidence_bp: row.confidence_bp, activation: row.activation, staleness: row.staleness };
+    const rebuilt = buildTypedStorageRow("contexts", { id: row.id, userId: row.user_id, data, createdAt: row.created_at, updatedAt: row.updated_at });
+    if (rebuilt.checksum !== row.checksum || row.record_kind !== EPISODE_FRONTIER_KIND || row.status !== "active") return void 0;
+    const base = {
+      lineage_ref: residual.lineage_ref,
+      turn_ref: residual.turn_ref,
+      independence_known: residual.independence_known,
+      source_ref: residual.source_ref,
+      observed_at: residual.observed_at,
+      created_at: residual.created_at,
+      expires_at: residual.expires_at,
+      situation_redacted: residual.situation_redacted,
+      action_redacted: residual.action_redacted
+    };
+    if (!HASH.test(base.lineage_ref) || !HASH.test(base.turn_ref) || typeof base.independence_known !== "boolean") return void 0;
+    if (!base.source_ref || typeof base.source_ref.file_generation !== "string" || !Number.isInteger(base.source_ref.seq) || !HASH.test(base.source_ref.checksum)) return void 0;
+    if (![base.observed_at, base.created_at, base.expires_at].every((value) => typeof value === "string" && Number.isFinite(Date.parse(value)))) return void 0;
+    if (!base.situation_redacted || !base.action_redacted || text(base.situation_redacted, SITUATION_CHARS) !== base.situation_redacted || text(base.action_redacted, ACTION_CHARS) !== base.action_redacted) return void 0;
+    if (residual.frontier_checksum !== frontierChecksum(base)) return void 0;
+    return { id: row.id, row_checksum: row.checksum, ...base, frontier_checksum: residual.frontier_checksum };
+  } catch {
+    return void 0;
+  }
+}
+function frontierData(frontier) {
+  return {
+    record_kind: EPISODE_FRONTIER_KIND,
+    schema_version: 1,
+    status: "active",
+    lineage_ref: frontier.lineage_ref,
+    turn_ref: frontier.turn_ref,
+    independence_known: frontier.independence_known,
+    source_ref: frontier.source_ref,
+    observed_at: frontier.observed_at,
+    created_at: frontier.created_at,
+    expires_at: frontier.expires_at,
+    situation_redacted: frontier.situation_redacted,
+    action_redacted: frontier.action_redacted,
+    frontier_checksum: frontier.frontier_checksum
+  };
+}
+function transitionChecksum(value) {
+  return checksumJson({ schema: "agent_experience_episode_frontier_transition_v1", transition: JSON.parse(canonicalJson(value)) });
+}
+function assertSituationBatch(batch, input) {
+  if (batch.schema_version !== 1 || batch.user_id !== normalizeUserId(input.userId) || batch.file_generation !== input.fileGeneration || batch.seq_start !== input.seqStart || batch.seq_end !== input.seqEnd) throw new Error("Situation batch range mismatch");
+  const { checksum, ...without } = batch;
+  if (checksum !== checksumJson({ schema: "agent_experience_situation_batch_v1", batch: JSON.parse(canonicalJson(without)) })) throw new Error("Situation batch checksum mismatch");
+  const { checksum: transitionStored, ...transition } = batch.transition;
+  if (transitionStored !== transitionChecksum(transition)) throw new Error("Episode frontier transition checksum mismatch");
+}
+function buildSituationBatch(db, input) {
+  const userId = normalizeUserId(input.userId);
+  if (!input.observations.length) throw new Error("No observations for situation batch");
+  if (![7, 14, 30].includes(Math.trunc(input.retentionDays))) throw new Error("Invalid situation retention");
+  const nowMs = Date.parse(input.now);
+  if (!Number.isFinite(nowMs)) throw new Error("Invalid situation batch time");
+  const first = input.observations[0];
+  const last = input.observations.at(-1);
+  const currentActions = /* @__PURE__ */ new Map();
+  const parentRefs = /* @__PURE__ */ new Set();
+  for (const record of input.observations) {
+    const c = causal(record);
+    const pair = pairText(record);
+    if (!c || !pair || record.user_id !== userId || record.file_generation !== first.file_generation) continue;
+    const list = currentActions.get(c.turn_ref) || [];
+    list.push({ record, causal: c, pair });
+    currentActions.set(c.turn_ref, list);
+    if (c.parent_turn_ref) parentRefs.add(c.parent_turn_ref);
+  }
+  const rows = db.prepare(`SELECT * FROM contexts WHERE user_id = ? AND record_kind = ? ORDER BY updated_at DESC, id LIMIT ?`).all(userId, EPISODE_FRONTIER_KIND, MAX_EPISODE_FRONTIERS_PER_USER + 1);
+  const invalidRefs = [];
+  const frontierByTurn = /* @__PURE__ */ new Map();
+  for (const row of rows) {
+    const frontier = parseFrontierRow(row);
+    if (!frontier || Date.parse(frontier.expires_at) <= nowMs) {
+      invalidRefs.push({ id: String(row.id), row_checksum: String(row.checksum) });
+      continue;
+    }
+    if (!parentRefs.has(frontier.turn_ref)) continue;
+    const list = frontierByTurn.get(frontier.turn_ref) || [];
+    list.push(frontier);
+    frontierByTurn.set(frontier.turn_ref, list);
+  }
+  const matchedFrontiers = [...frontierByTurn.values()].flat().sort((a, b) => a.id.localeCompare(b.id)).slice(0, MAX_EPISODE_FRONTIERS_PER_BATCH);
+  const allowedFrontierIds = new Set(matchedFrontiers.map((frontier) => frontier.id));
+  for (const [turn, values] of frontierByTurn) frontierByTurn.set(turn, values.filter((value) => allowedFrontierIds.has(value.id)));
+  const outcomes = [];
+  const explicit = [];
+  const consumedFrontierRefs = /* @__PURE__ */ new Map();
+  for (const record of input.observations) {
+    const c = causal(record);
+    const pair = pairText(record);
+    if (!c || !pair) continue;
+    explicit.push({
+      evidence_unit_ref: unitId("explicit_user_statement", { lineage_ref: c.lineage_ref, turn_ref: c.turn_ref }),
+      kind: "explicit_user_statement",
+      lineage_ref: c.lineage_ref,
+      independence_known: c.independence_known,
+      occurred_at: record.created_at,
+      current_source_refs: [sourceRef(record)],
+      user_statement_redacted: text(pair.user, FEEDBACK_CHARS)
+    });
+    if (!c.parent_turn_ref) continue;
+    const currentParents = currentActions.get(c.parent_turn_ref) || [];
+    const storedParents = frontierByTurn.get(c.parent_turn_ref) || [];
+    const parentCount = currentParents.length + storedParents.length;
+    if (parentCount !== 1) continue;
+    const currentParent = currentParents[0];
+    const storedParent = storedParents[0];
+    const parentLineage = currentParent?.causal.lineage_ref ?? storedParent?.lineage_ref;
+    if (parentLineage !== c.lineage_ref) continue;
+    if (storedParent?.row_checksum) consumedFrontierRefs.set(storedParent.id, storedParent.row_checksum);
+    const actionTurnRef = currentParent?.causal.turn_ref ?? storedParent.turn_ref;
+    outcomes.push({
+      evidence_unit_ref: unitId("linked_turn", { lineage_ref: c.lineage_ref, action_turn_ref: actionTurnRef, linked_turn_ref: c.turn_ref }),
+      kind: "linked_turn",
+      lineage_ref: c.lineage_ref,
+      independence_known: c.independence_known && (currentParent?.causal.independence_known ?? storedParent.independence_known),
+      occurred_at: record.created_at,
+      current_source_refs: currentParent ? [sourceRef(currentParent.record), sourceRef(record)] : [sourceRef(record)],
+      ...storedParent ? { historical_source_ref: storedParent.source_ref } : {},
+      situation_redacted: currentParent?.pair.user ?? storedParent.situation_redacted,
+      action_redacted: currentParent?.pair.assistant ?? storedParent.action_redacted,
+      linked_user_turn_redacted: text(pair.user, FEEDBACK_CHARS)
+    });
+  }
+  const consumedTurnRefs = new Set([...currentActions.values()].flatMap((values) => values.map((value) => value.causal.parent_turn_ref)).filter((value) => !!value));
+  const upserts = [];
+  for (const values of currentActions.values()) {
+    if (values.length !== 1) continue;
+    const value = values[0];
+    if (consumedTurnRefs.has(value.causal.turn_ref)) continue;
+    const observedMs = Date.parse(value.record.created_at);
+    if (!Number.isFinite(observedMs)) continue;
+    const expiresAt = new Date(observedMs + input.retentionDays * 864e5).toISOString();
+    if (Date.parse(expiresAt) <= nowMs) continue;
+    const base = {
+      lineage_ref: value.causal.lineage_ref,
+      turn_ref: value.causal.turn_ref,
+      independence_known: value.causal.independence_known,
+      source_ref: sourceRef(value.record),
+      observed_at: value.record.created_at,
+      created_at: input.now,
+      expires_at: expiresAt,
+      situation_redacted: value.pair.user,
+      action_redacted: value.pair.assistant
+    };
+    upserts.push({ id: `frontier-${sha256Hex(canonicalJson({ user_id: userId, lineage_ref: base.lineage_ref, turn_ref: base.turn_ref })).slice(0, 40)}`, ...base, frontier_checksum: frontierChecksum(base) });
+  }
+  const deleteRefMap = /* @__PURE__ */ new Map();
+  for (const ref of [...invalidRefs, ...[...consumedFrontierRefs].map(([id, row_checksum]) => ({ id, row_checksum }))]) if (!deleteRefMap.has(ref.id)) deleteRefMap.set(ref.id, ref.row_checksum);
+  const transitionBase = { user_id: userId, created_at: input.now, delete_refs: [...deleteRefMap].map(([id, row_checksum]) => ({ id, row_checksum })).sort((a, b) => a.id.localeCompare(b.id)), upserts: upserts.sort((a, b) => a.id.localeCompare(b.id)) };
+  const transition = { ...transitionBase, checksum: transitionChecksum(transitionBase) };
+  const withoutChecksum = { schema_version: 1, user_id: userId, file_generation: first.file_generation, seq_start: first.seq, seq_end: last.seq, units: [...outcomes.slice(0, MAX_SITUATION_EVIDENCE_UNITS / 2), ...explicit.slice(0, MAX_SITUATION_EVIDENCE_UNITS / 2)], transition };
+  return { ...withoutChecksum, checksum: checksumJson({ schema: "agent_experience_situation_batch_v1", batch: JSON.parse(canonicalJson(withoutChecksum)) }) };
+}
+function refKey(ref) {
+  return `${ref.file_generation}:${ref.seq}:${ref.checksum}`;
+}
+function validateSituationEvidenceForProposal(proposal, batch) {
+  if (!Array.isArray(proposal.evidence_unit_refs) || proposal.evidence_unit_refs.length < 1 || proposal.evidence_unit_refs.length > 20) throw new Error("Invalid evidence_unit_refs");
+  if (new Set(proposal.evidence_unit_refs).size !== proposal.evidence_unit_refs.length) throw new Error("Duplicate evidence_unit_ref");
+  const byId = new Map(batch.units.map((unit) => [unit.evidence_unit_ref, unit]));
+  const units = proposal.evidence_unit_refs.map((id) => {
+    const unit = byId.get(id);
+    if (!unit) throw new Error("Evidence unit is unavailable");
+    return unit;
+  });
+  const expectedRefs = new Set(units.flatMap((unit) => unit.current_source_refs).map(refKey));
+  const actualRefs = new Set(proposal.source_refs.map(refKey));
+  if (expectedRefs.size !== actualRefs.size || [...expectedRefs].some((key) => !actualRefs.has(key))) throw new Error("Evidence unit source refs mismatch");
+  const basis = proposal.evidence_basis ?? "inferred_pattern";
+  if (basis === "inferred_pattern") {
+    if (units.some((unit) => unit.kind !== "linked_turn")) throw new Error("Inferred pattern requires assessed linked turns");
+    if (proposal.exact_user_quote !== void 0) throw new Error("Inferred pattern cannot carry explicit quote");
+  } else if (basis === "explicit_durable_preference") {
+    if (units.length !== 1 || units[0].kind !== "explicit_user_statement") throw new Error("Explicit durable preference requires one exact user statement");
+    if (typeof proposal.exact_user_quote !== "string" || proposal.exact_user_quote.length < 8 || proposal.exact_user_quote.length > FEEDBACK_CHARS || !units[0].user_statement_redacted?.includes(proposal.exact_user_quote)) throw new Error("Explicit durable preference quote mismatch");
+  } else throw new Error("Invalid evidence_basis");
+  return units;
+}
+function persistedSituationEvidence(units, basis) {
+  return units.map((unit) => ({
+    unit_id: unit.evidence_unit_ref,
+    kind: basis === "inferred_pattern" ? "assessed_user_feedback" : "explicit_user_statement",
+    lineage_ref: unit.lineage_ref,
+    independence_known: unit.independence_known,
+    occurred_at: unit.occurred_at,
+    current_source_refs: unit.current_source_refs,
+    ...unit.historical_source_ref ? { historical_source_ref: unit.historical_source_ref } : {}
+  }));
+}
+function situationEvidenceEligibility(existing, incoming, basis) {
+  const existingData = existing && typeof existing === "object" && !Array.isArray(existing) ? existing : {};
+  const prior = existingData.evidence_protocol === "situation_v2" && Array.isArray(existingData.evidence_units) ? existingData.evidence_units : [];
+  const combined = /* @__PURE__ */ new Map();
+  for (const unit of [...prior, ...incoming]) if (unit && typeof unit.unit_id === "string" && !combined.has(unit.unit_id)) combined.set(unit.unit_id, unit);
+  if (basis === "explicit_durable_preference") return { reviewable: incoming.length === 1 && incoming[0]?.kind === "explicit_user_statement", independent_lineages: 0, distinct_days: 0 };
+  const valid = [...combined.values()].filter((unit) => unit.kind === "assessed_user_feedback" && unit.independence_known === true && HASH.test(unit.lineage_ref));
+  const lineages = new Set(valid.map((unit) => unit.lineage_ref));
+  const days = new Set(valid.map((unit) => String(unit.occurred_at || "").slice(0, 10)).filter((day) => /^\d{4}-\d{2}-\d{2}$/.test(day)));
+  return { reviewable: lineages.size >= 3 && days.size >= 2, independent_lineages: lineages.size, distinct_days: days.size };
+}
+function applyEpisodeFrontierTransitionInTransaction(db, batch) {
+  const { checksum, ...transition } = batch.transition;
+  if (checksum !== transitionChecksum(transition)) throw new Error("Episode frontier transition checksum mismatch");
+  for (const ref of transition.delete_refs) {
+    const deleted = Number(db.prepare("DELETE FROM contexts WHERE user_id = ? AND record_kind = ? AND id = ? AND checksum = ?").run(transition.user_id, EPISODE_FRONTIER_KIND, ref.id, ref.row_checksum).changes || 0);
+    if (!deleted) {
+      const changed = db.prepare("SELECT 1 FROM contexts WHERE user_id = ? AND id = ?").get(transition.user_id, ref.id);
+      if (changed) throw new Error("Episode frontier changed after snapshot");
+    }
+  }
+  for (const frontier of transition.upserts) {
+    const row = buildTypedStorageRow("contexts", { id: frontier.id, userId: transition.user_id, data: frontierData(frontier), now: transition.created_at });
+    const existing = db.prepare("SELECT * FROM contexts WHERE user_id = ? AND id = ?").get(transition.user_id, frontier.id);
+    if (existing) {
+      const prior = parseFrontierRow(existing);
+      if (!prior || prior.lineage_ref !== frontier.lineage_ref || prior.turn_ref !== frontier.turn_ref || prior.independence_known !== frontier.independence_known || refKey(prior.source_ref) !== refKey(frontier.source_ref) || prior.situation_redacted !== frontier.situation_redacted || prior.action_redacted !== frontier.action_redacted) throw new Error("Episode frontier stable id collision");
+      continue;
+    }
+    db.prepare(`INSERT INTO contexts (id, user_id, record_kind, schema_version, status, habit_id, condition, behavior, polarity, confidence_bp, activation, staleness, data_json, checksum, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(row.id, row.user_id, row.record_kind, row.schema_version, row.status, row.habit_id, row.condition, row.behavior, row.polarity, row.confidence_bp, row.activation, row.staleness, row.data_json, row.checksum, row.created_at, row.updated_at);
+  }
+  const overflow = db.prepare(`SELECT id FROM contexts WHERE user_id = ? AND record_kind = ? ORDER BY updated_at DESC, id DESC LIMIT -1 OFFSET ?`).all(transition.user_id, EPISODE_FRONTIER_KIND, MAX_EPISODE_FRONTIERS_PER_USER);
+  for (const row of overflow) db.prepare("DELETE FROM contexts WHERE user_id = ? AND record_kind = ? AND id = ?").run(transition.user_id, EPISODE_FRONTIER_KIND, row.id);
+}
+function situationUnitsForModel(batch) {
+  return batch.units.map((unit) => redactJson({
+    evidence_unit_ref: unit.evidence_unit_ref,
+    kind: unit.kind,
+    occurred_at: unit.occurred_at,
+    independence_known: unit.independence_known,
+    ...unit.situation_redacted ? { situation: unit.situation_redacted } : {},
+    ...unit.action_redacted ? { assistant_action: unit.action_redacted } : {},
+    ...unit.linked_user_turn_redacted ? { linked_user_turn: unit.linked_user_turn_redacted } : {},
+    ...unit.user_statement_redacted ? { exact_user_statement: unit.user_statement_redacted } : {}
+  }));
 }
 
 // extensions/agent-experience/src/consolidate/commit.ts
@@ -3641,6 +3955,15 @@ function mergeCandidateData(existingResidual, incoming) {
     ...existingNonAdvisorSourceDates,
     ...Array.isArray(incoming?.non_advisor_source_dates) ? incoming.non_advisor_source_dates : []
   ]).sort();
+  if (incoming?.evidence_protocol === "situation_v2") {
+    merged.evidence_protocol = "situation_v2";
+    merged.evidence_basis = existingResidual?.evidence_basis === "explicit_durable_preference" || incoming?.evidence_basis === "explicit_durable_preference" ? "explicit_durable_preference" : "inferred_pattern";
+    const units = /* @__PURE__ */ new Map();
+    for (const unit of [...existingResidual?.evidence_protocol === "situation_v2" && Array.isArray(existingResidual?.evidence_units) ? existingResidual.evidence_units : [], ...Array.isArray(incoming?.evidence_units) ? incoming.evidence_units : []]) {
+      if (unit && typeof unit === "object" && typeof unit.unit_id === "string" && !units.has(unit.unit_id)) units.set(unit.unit_id, unit);
+    }
+    merged.evidence_units = [...units.values()];
+  }
   return merged;
 }
 function insertIdempotentStorageRecord(db, table, input) {
@@ -3765,7 +4088,7 @@ function validateSourceRefs(proposal, observationMap) {
     return observation;
   });
 }
-function proposalCandidateData(batch, proposal, sourceDates2, advisorEvidence) {
+function proposalCandidateData(batch, proposal, sourceDates2, advisorEvidence, situation) {
   return {
     schema_version: 2,
     record_kind: "candidate_habit_v1",
@@ -3784,11 +4107,12 @@ function proposalCandidateData(batch, proposal, sourceDates2, advisorEvidence) {
     evidence_stage: proposal.evidence_stage || "reviewable",
     source_refs: proposal.source_refs,
     source_dates: sourceDates2,
+    ...situation ? { evidence_protocol: "situation_v2", evidence_units: situation.evidenceUnits, evidence_basis: situation.basis, eligibility_summary: situation.eligibility } : {},
     ...proposal.correction_role ? { correction_role: proposal.correction_role, correction_group_id: proposal.correction_group_id } : {},
     ...advisorEvidence
   };
 }
-function proposalEvidenceData(_batch, proposal, sourceDates2, habitId, advisorEvidence) {
+function proposalEvidenceData(_batch, proposal, sourceDates2, habitId, advisorEvidence, situation) {
   return {
     schema_version: 2,
     record_kind: "candidate_evidence_v1",
@@ -3802,6 +4126,7 @@ function proposalEvidenceData(_batch, proposal, sourceDates2, habitId, advisorEv
     evidence_stage: proposal.evidence_stage || "reviewable",
     source_refs: proposal.source_refs,
     source_dates: sourceDates2,
+    ...situation ? { evidence_protocol: "situation_v2", evidence_units: situation.evidenceUnits, evidence_basis: situation.basis, eligibility_summary: situation.eligibility } : {},
     ...proposal.evidence_summary === void 0 ? {} : { evidence_summary: proposal.evidence_summary },
     ...proposal.correction_role ? { correction_role: proposal.correction_role, correction_group_id: proposal.correction_group_id } : {},
     ...advisorEvidence
@@ -3870,12 +4195,27 @@ async function consolidateProposalBatch(input) {
   if (policy.enabled && !input.semantic?.provider) throw new Error("Semantic duplicate provider unavailable");
   const staged = [];
   for (let i = 0; i < batch.proposals.length; i++) {
-    const proposal = batch.proposals[i];
+    let proposal = batch.proposals[i];
     const sourceDates2 = sourceRecordsByProposal[i].map((record) => record.created_at);
     const advisorEvidence = advisorEvidenceMetadata(sourceRecordsByProposal[i]);
     const hasIndependentCorrectionAuthority = sourceRecordsByProposal[i].some((record) => record.origin?.source !== "advisor_finding");
-    let candidateData = proposalCandidateData(batch, proposal, sourceDates2, advisorEvidence);
     const candidateId = stableId2("candidate", habitIdentity(proposal, userId));
+    let situation;
+    if (input.situationBatch) {
+      const units = validateSituationEvidenceForProposal(proposal, input.situationBatch);
+      const basis = proposal.evidence_basis ?? "inferred_pattern";
+      const evidenceUnits = persistedSituationEvidence(units, basis);
+      const existing = input.db.prepare("SELECT data_json FROM habits WHERE user_id = ? AND id = ?").get(userId, candidateId);
+      let existingData = {};
+      try {
+        existingData = existing ? JSON.parse(existing.data_json) : {};
+      } catch {
+      }
+      const eligibility = situationEvidenceEligibility(existingData, evidenceUnits, basis);
+      proposal = { ...proposal, evidence_stage: eligibility.reviewable ? "reviewable" : "collecting" };
+      situation = { evidenceUnits, basis, eligibility };
+    }
+    let candidateData = proposalCandidateData(batch, proposal, sourceDates2, advisorEvidence, situation);
     let evidenceHabitId = candidateId;
     let duplicateMatch;
     let stagedRow;
@@ -3892,9 +4232,9 @@ async function consolidateProposalBatch(input) {
         candidateData = { ...candidateData, review_status: "duplicate_resolution", active: false, injectable: false, semantic_duplicate: storedDuplicateMatch };
       }
     }
-    const evidenceData = proposalEvidenceData(batch, proposal, sourceDates2, evidenceHabitId, advisorEvidence);
+    const evidenceData = proposalEvidenceData(batch, proposal, sourceDates2, evidenceHabitId, advisorEvidence, situation);
     const evidenceId = stableId2("evidence", { schema_version: 2, user_id: userId, payload: evidenceData });
-    staged.push({ proposal, sourceDates: sourceDates2, candidateId, evidenceId, candidateData, evidenceData, advisorEvidence, hasIndependentCorrectionAuthority, duplicateMatch });
+    staged.push({ proposal, sourceDates: sourceDates2, candidateId, evidenceId, candidateData, evidenceData, advisorEvidence, situation, hasIndependentCorrectionAuthority, duplicateMatch });
   }
   let result;
   input.db.exec("BEGIN IMMEDIATE");
@@ -3910,7 +4250,7 @@ async function consolidateProposalBatch(input) {
         if (matches.length === 1) {
           const target = matches[0];
           suppressContradictedHabit(input.db, { userId, before: target, proposal: item.proposal, sourceDates: item.sourceDates, now: batch.created_at });
-          const evidenceData = proposalEvidenceData(batch, item.proposal, item.sourceDates, target.id, item.advisorEvidence);
+          const evidenceData = proposalEvidenceData(batch, item.proposal, item.sourceDates, target.id, item.advisorEvidence, item.situation);
           const evidenceId = stableId2("evidence", { schema_version: 2, user_id: userId, payload: evidenceData });
           const evidence2 = insertIdempotentStorageRecord(input.db, "evidence", { id: evidenceId, userId, data: evidenceData, now: batch.created_at });
           candidateIds.push(target.id);
@@ -3934,6 +4274,7 @@ async function consolidateProposalBatch(input) {
       if (candidate.inserted) insertedCandidates++;
       if (evidence.inserted) insertedEvidence++;
     }
+    if (input.situationBatch) applyEpisodeFrontierTransitionInTransaction(input.db, input.situationBatch);
     const watermark = upsertWatermark(input.db, { user_id: userId, file_generation: fileGeneration, seq: maxRef.seq, checksum: maxRef.checksum, updated_at: batch.created_at });
     let readWatermark;
     if (input.readCoverage) {
@@ -3988,9 +4329,10 @@ function recordZeroProposalReadCoverage(input) {
 // extensions/agent-experience/src/consolidate/model-output.ts
 var MODEL_OUTPUT_KEYS = /* @__PURE__ */ new Set(["schema_version", "user_id", "file_generation", "batch_id", "model", "created_at", "observations_read", "proposals"]);
 var OBSERVATIONS_READ_KEYS = /* @__PURE__ */ new Set(["seq_start", "seq_end", "checksum"]);
-var HABIT_KEYS = /* @__PURE__ */ new Set(["proposal_id", "kind", "candidate_key", "condition", "behavior", "polarity", "confidence_bp", "source_refs", "evidence_summary", "evidence_stage", "ambiguous"]);
-var CORRECTION_KEYS = /* @__PURE__ */ new Set(["proposal_id", "kind", "candidate_key", "old_condition", "old_behavior", "new_condition", "new_behavior", "confidence_bp", "source_refs", "evidence_summary", "evidence_stage", "ambiguous"]);
-var EXPERIENCE_KEYS = /* @__PURE__ */ new Set(["proposal_id", "kind", "candidate_key", "scope", "authority", "applicability", "content", "rationale", "exceptions", "confidence_bp", "source_refs", "evidence_summary", "ambiguous"]);
+var SITUATION_KEYS = ["evidence_unit_refs", "evidence_basis", "exact_user_quote"];
+var HABIT_KEYS = /* @__PURE__ */ new Set(["proposal_id", "kind", "candidate_key", "condition", "behavior", "polarity", "confidence_bp", "source_refs", "evidence_summary", "evidence_stage", ...SITUATION_KEYS, "ambiguous"]);
+var CORRECTION_KEYS = /* @__PURE__ */ new Set(["proposal_id", "kind", "candidate_key", "old_condition", "old_behavior", "new_condition", "new_behavior", "confidence_bp", "source_refs", "evidence_summary", "evidence_stage", ...SITUATION_KEYS, "ambiguous"]);
+var EXPERIENCE_KEYS = /* @__PURE__ */ new Set(["proposal_id", "kind", "candidate_key", "scope", "authority", "applicability", "content", "rationale", "exceptions", "confidence_bp", "source_refs", "evidence_summary", ...SITUATION_KEYS, "ambiguous"]);
 var SCOPE_KEYS = /* @__PURE__ */ new Set(["kind", "key"]);
 var EXPERIENCE_KIND_SET = new Set(EXPERIENCE_KINDS);
 var EXPERIENCE_SCOPE_SET = new Set(EXPERIENCE_SCOPE_KINDS);
@@ -4006,15 +4348,15 @@ function assertSafeToken2(value, label, max = 160) {
   return value;
 }
 function assertSafeText(value, label, max = 1e3) {
-  const text = assertSafeToken2(value, label, max);
-  if (containsUnredactedSensitiveText(text)) throw new Error(`${label} contains unredacted sensitive text`);
-  return text;
+  const text2 = assertSafeToken2(value, label, max);
+  if (containsUnredactedSensitiveText(text2)) throw new Error(`${label} contains unredacted sensitive text`);
+  return text2;
 }
-function assertGeneralizedHabitText(text, label) {
-  if (/\b(?:agent experience|pi-experiences|experience-consolidate)\b/i.test(text)) throw new Error(`${label} appears overfit to one project`);
-  if (/\bv?\d+\.\d+\.\d+(?:[-+][A-Za-z0-9._-]+)?\b/.test(text)) throw new Error(`${label} appears overfit to one version`);
-  if (/(^|[\s("'`])(?:~\/|\.\.?\/|\/[A-Za-z0-9._-])/.test(text)) throw new Error(`${label} appears overfit to one file path`);
-  if (/\b[a-f0-9]{12,}\b/i.test(text)) throw new Error(`${label} appears overfit to one hash or screenshot`);
+function assertGeneralizedHabitText(text2, label) {
+  if (/\b(?:agent experience|pi-experiences|experience-consolidate)\b/i.test(text2)) throw new Error(`${label} appears overfit to one project`);
+  if (/\bv?\d+\.\d+\.\d+(?:[-+][A-Za-z0-9._-]+)?\b/.test(text2)) throw new Error(`${label} appears overfit to one version`);
+  if (/(^|[\s("'`])(?:~\/|\.\.?\/|\/[A-Za-z0-9._-])/.test(text2)) throw new Error(`${label} appears overfit to one file path`);
+  if (/\b[a-f0-9]{12,}\b/i.test(text2)) throw new Error(`${label} appears overfit to one hash or screenshot`);
 }
 function assertGeneration2(value) {
   const generation = assertSafeToken2(value, "file_generation", 80);
@@ -4075,6 +4417,18 @@ function validateProposal2(value, seenIds, generation, seqStart, seqEnd) {
   const proposalId = assertSafeToken2(proposal.proposal_id, "proposal_id");
   if (seenIds.has(proposalId)) throw new Error("Duplicate model proposal_id");
   seenIds.add(proposalId);
+  const evidenceUnitRefs = proposal.evidence_unit_refs === void 0 ? void 0 : (() => {
+    if (!Array.isArray(proposal.evidence_unit_refs) || proposal.evidence_unit_refs.length < 1 || proposal.evidence_unit_refs.length > 20) throw new Error("Invalid evidence_unit_refs");
+    const refs = proposal.evidence_unit_refs.map((value2) => assertChecksum(value2, "evidence_unit_ref"));
+    if (new Set(refs).size !== refs.length) throw new Error("Duplicate evidence_unit_ref");
+    return refs;
+  })();
+  const evidenceBasis = proposal.evidence_basis === void 0 ? void 0 : assertSafeToken2(proposal.evidence_basis, "evidence_basis", 40);
+  if (evidenceBasis !== void 0 && evidenceBasis !== "inferred_pattern" && evidenceBasis !== "explicit_durable_preference") throw new Error("Invalid evidence_basis");
+  const exactUserQuote = proposal.exact_user_quote === void 0 ? void 0 : assertSafeText(proposal.exact_user_quote, "exact_user_quote", 400);
+  if (evidenceUnitRefs === void 0 !== (evidenceBasis === void 0)) throw new Error("Incomplete situation evidence metadata");
+  if (evidenceBasis === "explicit_durable_preference" && exactUserQuote === void 0) throw new Error("Explicit preference quote missing");
+  if (evidenceBasis !== "explicit_durable_preference" && exactUserQuote !== void 0) throw new Error("Unexpected exact user quote");
   const base = {
     proposal_id: proposalId,
     candidate_key: assertSafeToken2(proposal.candidate_key, "candidate_key"),
@@ -4084,6 +4438,8 @@ function validateProposal2(value, seenIds, generation, seqStart, seqEnd) {
     ...proposal.evidence_stage === void 0 ? {} : { evidence_stage: proposal.evidence_stage === "collecting" || proposal.evidence_stage === "reviewable" ? proposal.evidence_stage : (() => {
       throw new Error("Invalid evidence_stage");
     })() },
+    ...evidenceUnitRefs === void 0 ? {} : { evidence_unit_refs: evidenceUnitRefs, evidence_basis: evidenceBasis },
+    ...exactUserQuote === void 0 ? {} : { exact_user_quote: exactUserQuote },
     ...proposal.ambiguous === void 0 ? {} : { ambiguous: false }
   };
   if (EXPERIENCE_KIND_SET.has(kind)) {
@@ -4184,7 +4540,9 @@ function modelOutputToProposalBatch(batch) {
         confidence_bp: proposal.confidence_bp,
         source_refs: proposal.source_refs,
         ...proposal.evidence_summary === void 0 ? {} : { evidence_summary: proposal.evidence_summary },
-        ...proposal.evidence_stage === void 0 ? {} : { evidence_stage: proposal.evidence_stage }
+        ...proposal.evidence_stage === void 0 ? {} : { evidence_stage: proposal.evidence_stage },
+        ...proposal.evidence_unit_refs === void 0 ? {} : { evidence_unit_refs: proposal.evidence_unit_refs, evidence_basis: proposal.evidence_basis },
+        ...proposal.exact_user_quote === void 0 ? {} : { exact_user_quote: proposal.exact_user_quote }
       }];
     }
     return [
@@ -4200,7 +4558,9 @@ function modelOutputToProposalBatch(batch) {
         ...proposal.evidence_summary === void 0 ? {} : { evidence_summary: proposal.evidence_summary },
         correction_role: "old_negative",
         correction_group_id: proposal.proposal_id,
-        ...proposal.evidence_stage === void 0 ? {} : { evidence_stage: proposal.evidence_stage }
+        ...proposal.evidence_stage === void 0 ? {} : { evidence_stage: proposal.evidence_stage },
+        ...proposal.evidence_unit_refs === void 0 ? {} : { evidence_unit_refs: proposal.evidence_unit_refs, evidence_basis: proposal.evidence_basis },
+        ...proposal.exact_user_quote === void 0 ? {} : { exact_user_quote: proposal.exact_user_quote }
       },
       {
         proposal_id: `${proposal.proposal_id}-new-positive`,
@@ -4214,7 +4574,9 @@ function modelOutputToProposalBatch(batch) {
         ...proposal.evidence_summary === void 0 ? {} : { evidence_summary: proposal.evidence_summary },
         correction_role: "replacement",
         correction_group_id: proposal.proposal_id,
-        ...proposal.evidence_stage === void 0 ? {} : { evidence_stage: proposal.evidence_stage }
+        ...proposal.evidence_stage === void 0 ? {} : { evidence_stage: proposal.evidence_stage },
+        ...proposal.evidence_unit_refs === void 0 ? {} : { evidence_unit_refs: proposal.evidence_unit_refs, evidence_basis: proposal.evidence_basis },
+        ...proposal.exact_user_quote === void 0 ? {} : { exact_user_quote: proposal.exact_user_quote }
       }
     ];
   });
@@ -4247,7 +4609,13 @@ function insertPendingReview(db, input) {
 function insertModelOutputQuarantine(db, input) {
   const userId = normalizeUserId(input.userId);
   if (!Number.isInteger(input.seqStart) || !Number.isInteger(input.seqEnd) || input.seqStart < 1 || input.seqEnd < input.seqStart) throw new Error("Invalid quarantine range");
-  const redacted = redactJson(input.output ?? {});
+  const transientKeys = /* @__PURE__ */ new Set(["exact_user_quote", "exact_user_statement", "support_quote", "support_quotes", "situation", "assistant_action", "user_feedback", "reasoning", "analysis", "chain_of_thought", "mechanism", "mechanism_hypothesis", "unknowns"]);
+  const scrubTransientModelDetail = (value) => {
+    if (Array.isArray(value)) return value.map(scrubTransientModelDetail);
+    if (!value || typeof value !== "object") return value;
+    return Object.fromEntries(Object.entries(value).filter(([key]) => !transientKeys.has(key)).map(([key, nested]) => [key, scrubTransientModelDetail(nested)]));
+  };
+  const redacted = redactJson(scrubTransientModelDetail(input.output ?? {}));
   const outputJson = canonicalJson(redacted);
   if (outputJson.length > 24e3) throw new Error("Quarantine output too large");
   const checksum = checksumJson({ schema: "agent_experience_model_output_quarantine_v1", output: JSON.parse(outputJson) });
@@ -4299,6 +4667,7 @@ function commitTypedExperienceProposals(input) {
   input.db.exec("BEGIN IMMEDIATE");
   try {
     for (const proposal of proposals) {
+      const situationUnits = input.situationBatch ? validateSituationEvidenceForProposal(proposal, input.situationBatch) : void 0;
       const sources = proposal.source_refs.map((ref) => {
         const observation = observationByKey.get(`${ref.file_generation}:${ref.seq}`);
         if (!observation) throw new Error("Typed experience source observation is unavailable");
@@ -4332,7 +4701,12 @@ function commitTypedExperienceProposals(input) {
         lastConfirmedAt: input.output.created_at,
         supersedes: [],
         conflictsWith,
-        provenance: sources.map((source) => ({
+        provenance: situationUnits ? situationUnits.map((unit) => ({
+          source: "conversation",
+          host: input.host,
+          evidenceId: `situation:${unit.evidence_unit_ref}`,
+          observedAt: unit.occurred_at
+        })) : sources.map((source) => ({
           source: source.origin.source === "advisor_finding" ? "advisor_finding" : "conversation",
           host: input.host,
           evidenceId: `observation:${source.file_generation}:${source.seq}:${source.checksum}`,
@@ -4342,6 +4716,7 @@ function commitTypedExperienceProposals(input) {
       candidateIds.push(id);
       if (!existed) insertedCandidates += 1;
     }
+    if (input.situationBatch) applyEpisodeFrontierTransitionInTransaction(input.db, input.situationBatch);
     const readCoverage = recordProposalReadCoverageInTransaction({
       db: input.db,
       userId: input.userId,
@@ -4400,6 +4775,7 @@ async function processValidatedModelOutput(input) {
   const userId = normalizeUserId(input.userId);
   if (input.output.user_id !== userId) throw new Error("Model output user mismatch");
   validateModelOutputSourceRefs(input.output, input.observations);
+  if (input.situationBatch) for (const proposal of input.output.proposals) validateSituationEvidenceForProposal(proposal, input.situationBatch);
   if (input.expectedRange) {
     if (input.output.file_generation !== input.expectedRange.file_generation || input.output.seq_start !== input.expectedRange.seq_start || input.output.seq_end !== input.expectedRange.seq_end || input.output.read_checksum !== input.expectedRange.read_checksum) throw new Error("Model output expected range mismatch");
   }
@@ -4416,6 +4792,7 @@ async function processValidatedModelOutput(input) {
     input.db.exec("BEGIN IMMEDIATE");
     try {
       pending = insertPendingReview(input.db, { userId, kind: "candidate_key_conflict", payload: { file_generation: input.output.file_generation, seq_start: input.output.seq_start, seq_end: input.output.seq_end, conflict }, createdAt: input.output.created_at });
+      if (input.situationBatch) applyEpisodeFrontierTransitionInTransaction(input.db, input.situationBatch);
       readCoverage = recordProposalReadCoverageInTransaction({ db: input.db, userId, fileGeneration: input.output.file_generation, seqStart: input.output.seq_start, last: sourceLast, createdAt: input.output.created_at });
       input.db.exec("COMMIT");
     } catch (error) {
@@ -4428,7 +4805,23 @@ async function processValidatedModelOutput(input) {
     return { user_id: userId, file_generation: input.output.file_generation, candidate_ids: [], evidence_ids: [], watermark_after: null, read_watermark_after: readCoverage.watermark_after, pending_review_id: pending.id, inserted: { pending_review: pending.inserted ? 1 : 0, read_watermark: readCoverage.inserted.read_watermark } };
   }
   if (input.output.proposals.length === 0) {
-    const zero = recordZeroProposalReadCoverage({ db: input.db, userId, fileGeneration: input.output.file_generation, seqStart: input.output.seq_start, last: sourceLast, createdAt: input.output.created_at });
+    if (!input.situationBatch) {
+      const zero2 = recordZeroProposalReadCoverage({ db: input.db, userId, fileGeneration: input.output.file_generation, seqStart: input.output.seq_start, last: sourceLast, createdAt: input.output.created_at });
+      return { user_id: userId, file_generation: input.output.file_generation, candidate_ids: [], evidence_ids: [], watermark_after: null, read_watermark_after: zero2.watermark_after, inserted: zero2.inserted };
+    }
+    let zero;
+    input.db.exec("BEGIN IMMEDIATE");
+    try {
+      applyEpisodeFrontierTransitionInTransaction(input.db, input.situationBatch);
+      zero = recordProposalReadCoverageInTransaction({ db: input.db, userId, fileGeneration: input.output.file_generation, seqStart: input.output.seq_start, last: sourceLast, createdAt: input.output.created_at });
+      input.db.exec("COMMIT");
+    } catch (error) {
+      try {
+        input.db.exec("ROLLBACK");
+      } catch {
+      }
+      throw error;
+    }
     return { user_id: userId, file_generation: input.output.file_generation, candidate_ids: [], evidence_ids: [], watermark_after: null, read_watermark_after: zero.watermark_after, inserted: zero.inserted };
   }
   if (typedProposalCount > 0) {
@@ -4438,10 +4831,551 @@ async function processValidatedModelOutput(input) {
       output: input.output,
       observations: input.observations,
       sourceLast,
-      host: input.host ?? "pi"
+      host: input.host ?? "pi",
+      situationBatch: input.situationBatch
     });
   }
-  return consolidateProposalBatch({ db: input.db, userId, proposalBatch: modelOutputToProposalBatch(input.output), observations: input.observations, readCoverage: { seq_start: input.output.seq_start, last: sourceLast }, semantic: input.semantic });
+  return consolidateProposalBatch({ db: input.db, userId, proposalBatch: modelOutputToProposalBatch(input.output), observations: input.observations, readCoverage: { seq_start: input.output.seq_start, last: sourceLast }, situationBatch: input.situationBatch, semantic: input.semantic });
+}
+
+// extensions/agent-experience/src/consolidate/context.ts
+init_private_root();
+init_redaction();
+function parseJson(value) {
+  try {
+    const parsed = JSON.parse(String(value || "{}"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+function normalizeText(value) {
+  return String(value ?? "").trim().replace(/\s+/g, " ").toLowerCase();
+}
+function refKey2(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return void 0;
+  const ref = value;
+  if (typeof ref.file_generation !== "string" || !Number.isInteger(ref.seq) || typeof ref.checksum !== "string") return void 0;
+  return `${ref.file_generation}:${ref.seq}:${ref.checksum}`;
+}
+function advisorEvents(data) {
+  const values = Array.isArray(data.advisor_events) ? data.advisor_events : [];
+  const events = /* @__PURE__ */ new Map();
+  for (const value of values) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    const event = value;
+    if (typeof event.event_fingerprint !== "string" || !/^[0-9a-f]{64}$/.test(event.event_fingerprint)) continue;
+    if (typeof event.created_at !== "string" || !Number.isFinite(Date.parse(event.created_at))) continue;
+    if (!events.has(event.event_fingerprint)) events.set(event.event_fingerprint, { event_fingerprint: event.event_fingerprint, created_at: event.created_at });
+  }
+  return [...events.values()];
+}
+function stringValues(value) {
+  if (!Array.isArray(value)) return [];
+  const strings = [];
+  for (const item of value) {
+    if (typeof item === "string") strings.push(item);
+  }
+  return strings;
+}
+function situationEvidenceUnits(data) {
+  if (data.evidence_protocol !== "situation_v2" || !Array.isArray(data.evidence_units)) return [];
+  return data.evidence_units.filter((unit) => !!unit && typeof unit === "object" && !Array.isArray(unit));
+}
+function uniqueRefs(data) {
+  if (data.evidence_protocol === "situation_v2") {
+    return new Set(situationEvidenceUnits(data).filter((unit) => unit.kind === "observed_outcome" && unit.independence_known === true && typeof unit.lineage_ref === "string").map((unit) => unit.lineage_ref)).size;
+  }
+  const refs = Array.isArray(data.source_refs) ? data.source_refs : [];
+  const advisorRefKeys = new Set(stringValues(data.advisor_source_ref_keys));
+  const nonAdvisorRefs = new Set(refs.map(refKey2).filter((key) => !!key && !advisorRefKeys.has(key)));
+  return nonAdvisorRefs.size + advisorEvents(data).length;
+}
+function sourceDates(data) {
+  if (data.evidence_protocol === "situation_v2") {
+    return [...new Set(situationEvidenceUnits(data).filter((unit) => unit.kind === "observed_outcome" && unit.independence_known === true && typeof unit.occurred_at === "string").map((unit) => String(unit.occurred_at).slice(0, 10)).filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date)))].sort().slice(-30);
+  }
+  const hasAdvisorMetadata = Object.prototype.hasOwnProperty.call(data, "advisor_events") || Object.prototype.hasOwnProperty.call(data, "advisor_source_ref_keys");
+  const dates = hasAdvisorMetadata ? [...stringValues(data.non_advisor_source_dates), ...advisorEvents(data).map((event) => event.created_at)] : stringValues(data.source_dates);
+  return [...new Set(dates.map((date) => date.slice(0, 10)).filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date)))].sort().slice(-30);
+}
+function buildCompactHabitContext(db, input) {
+  const userId = normalizeUserId(input.userId);
+  const limit = Math.max(1, Math.min(100, Math.trunc(input.limit ?? 60)));
+  const rows = db.prepare("SELECT condition, behavior, polarity, status, confidence_bp, data_json FROM habits WHERE user_id = ? AND status IN ('candidate','active','disabled','dormant','suppressed_by_law') ORDER BY updated_at DESC, id LIMIT ?").all(userId, limit);
+  return rows.map((row) => {
+    const data = parseJson(row.data_json);
+    const dates = sourceDates(data);
+    return redactJson({
+      condition: String(row.condition || "").slice(0, 1e3),
+      behavior: String(row.behavior || "").slice(0, 1e3),
+      polarity: Number(row.polarity),
+      status: String(row.status),
+      review_status: typeof data.review_status === "string" ? data.review_status : null,
+      confidence_bp: Number(row.confidence_bp),
+      unique_observations: uniqueRefs(data),
+      distinct_days: dates.length,
+      source_dates: dates,
+      advisor_event_fingerprints: advisorEvents(data).map((event) => event.event_fingerprint)
+    });
+  });
+}
+function compactContextIdentity(value) {
+  return `${normalizeText(value.condition)}
+${normalizeText(value.behavior)}
+${Number(value.polarity)}`;
+}
+
+// extensions/agent-experience/src/consolidate/prompt.ts
+var GENERALIZED_HABIT_INSTRUCTIONS = [
+  "Extract the reusable behavioral essence across repeated examples. Do not overfit to one project, package, repo, file path, version, screenshot, or proper noun.",
+  "Write condition as a general situation class, not a one-off context. Prefer 'When preparing a release' over 'When working on Agent Experience'; prefer 'When the user reports UI confusion' over a specific package name.",
+  "Write behavior as durable agent conduct that can apply to future similar work. Durable tool/task categories such as npm package releases or Pi UI debugging are allowed when the repeated behavior truly belongs to that category; one-off names such as Agent Experience, pi-experiences, specific versions, hashes, paths, or screenshot ids are not.",
+  "If examples share only a project-specific fact and no broader reusable behavior, return no proposal for that pattern."
+];
+var HABIT_CLASSIFICATION_RUBRIC = [
+  "Classify each pattern before proposing. Only a HABIT is proposable:",
+  "- HABIT: a durable, reusable way to behave across similar future work. Propose these.",
+  "- FACT: durable knowledge or project context. A fact belongs in memory. Never propose it as a habit.",
+  "- SKILL: a deliberately authored procedure or playbook. A procedure is a skill. Never propose it as a habit.",
+  "- ONE-OFF INSTRUCTION: a single-task directive. A single-task instruction has no reusable behavior. Never propose it as a habit."
+];
+var HABIT_FEWSHOT_EXAMPLES = [
+  "Propose (habit): condition 'When reporting whether work is finished', behavior 'State done or blocked, cite concrete evidence, then give the next action.'",
+  "Propose (habit): condition 'When a request is ambiguous enough to change correctness', behavior 'Ask one focused question before proceeding.'",
+  "Do NOT propose (fact): 'The release ships from the main branch.' A fact belongs in memory, not a habit.",
+  "Do NOT propose (skill): 'Follow the deployment checklist.' A procedure is a skill, not a habit.",
+  "Do NOT propose (one-off): 'Rename this flag in this file now.' A single-task instruction has no reusable behavior."
+];
+var FRICTION_EXTRACTION_INSTRUCTIONS = [
+  "Identify candidates by causal reasoning over the batch, not by clustering superficially similar messages. Shared words are not a habit.",
+  "For each habit candidate, work in three steps: (1) LOCATE FRICTION \u2014 a moment where the user corrected the assistant, repeated a request, expressed dissatisfaction, or had to clarify something the assistant should have anticipated; (2) INFER THE IMPROVEMENT DIRECTION \u2014 the behavioral change that would have prevented that friction; (3) FORMULATE \u2014 express it as a generalized applicability/content experience following the generalization rules.",
+  "Weight friction over preference. Corrections, complaints, and repeated requests are the primary, higher-confidence habit signal. Stable positive preferences with no friction still qualify, but require stronger and cleaner repetition and MUST receive lower confidence than friction-derived candidates.",
+  "Advisor findings are lower-authority context only. They cannot prove user feedback, explicit-user authority, independent situations, approval, or direct mutation.",
+  "Use only server-linked neutral evidence units. A parent link proves chronology, not that the later user turn evaluates the earlier assistant action.",
+  "Friction example: an assistant message claims a task is finished, and the next user message says the result was not actually verified. Propose a habit: 'When claiming a task is complete, verify the result before reporting it.'",
+  "Negative example: several messages share a keyword but show no common correction, dissatisfaction, or repeated preference. Return no proposal."
+];
+
+// extensions/agent-experience/src/consolidate/model-adapter.ts
+init_redaction();
+function parseProviderModel(value) {
+  const slash = value.indexOf("/");
+  if (slash <= 0) return void 0;
+  const provider = value.slice(0, slash);
+  const modelId = value.slice(slash + 1);
+  if (!provider || !modelId || provider.includes("..") || modelId.includes("..") || modelId.includes("\0")) return void 0;
+  return { provider, modelId };
+}
+function truncateForModel(value, max = 900) {
+  const text2 = redactText(typeof value === "string" ? value : JSON.stringify(value ?? {}));
+  return text2.length > max ? `${text2.slice(0, max)}\u2026` : text2;
+}
+function advisorFingerprint(record) {
+  if (record.origin.source !== "advisor_finding") return void 0;
+  const payload = record.payload_redacted;
+  return payload?.kind === "advisor_finding_v1" && typeof payload.event_fingerprint === "string" ? payload.event_fingerprint : void 0;
+}
+function collapseAdvisorObservations(observations) {
+  const fingerprints = /* @__PURE__ */ new Set();
+  return observations.filter((record) => {
+    const fingerprint = advisorFingerprint(record);
+    if (!fingerprint) return true;
+    if (fingerprints.has(fingerprint)) return false;
+    fingerprints.add(fingerprint);
+    return true;
+  });
+}
+function observationsForModelPrompt(observations) {
+  return collapseAdvisorObservations(observations).map((record) => {
+    const payload = record.payload_redacted && typeof record.payload_redacted === "object" && !Array.isArray(record.payload_redacted) ? record.payload_redacted : {};
+    if (payload?.kind === "advisor_finding_v1") {
+      return {
+        seq: record.seq,
+        checksum: record.checksum,
+        created_at: record.created_at,
+        origin: "advisor_finding",
+        assistant: truncateForModel(payload.primary_behavior_redacted, 1200),
+        advisor_finding: truncateForModel(payload.approved_behavior_redacted, 900),
+        severity: payload.severity
+      };
+    }
+    return {
+      seq: record.seq,
+      checksum: record.checksum,
+      created_at: record.created_at,
+      origin: record.origin.source,
+      user: truncateForModel(payload?.user_text_redacted, 900),
+      assistant: truncateForModel(payload?.assistant_text_redacted, 1200)
+    };
+  });
+}
+function extractionJson(text2) {
+  const trimmed = text2.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+  }
+  const start = trimmed.indexOf("{");
+  const end = trimmed.lastIndexOf("}");
+  if (start >= 0 && end > start) return JSON.parse(trimmed.slice(start, end + 1));
+  throw new Error("habit_learning_model_invalid_json");
+}
+function extractAssistantText(message) {
+  const parts = Array.isArray(message?.content) ? message.content : [];
+  return parts.filter((part) => part?.type === "text" && typeof part.text === "string").map((part) => part.text).join("\n").slice(0, 2e4);
+}
+function buildConsolidationSystemPrompt(fileGeneration) {
+  const outputSchema = {
+    schema_version: 1,
+    assessments: [{
+      unit_ref: "opaque-unit-id-from-input",
+      objective: "bounded factual objective",
+      constraints: ["factual constraint"],
+      consequential_action: "what the assistant actually did",
+      actual_user_feedback: "user_reported_feedback | explicit_durable_preference | unrelated_followup | unknown",
+      support_quotes: [{ role: "user", quote: "exact quote from linked_user_turn or exact_user_statement" }],
+      mechanism: { classification: "observed | inferred | unknown", summary: "bounded mechanism" },
+      unknowns: ["what evidence does not establish"],
+      applicability: "where a reusable lesson would apply",
+      exceptions: ["where it would not apply"],
+      durability: "durable_reusable | task_local | unknown"
+    }],
+    user_id: "owner",
+    file_generation: fileGeneration,
+    batch_id: "manual-id",
+    model: "provider/model",
+    created_at: "ISO",
+    observations_read: { seq_start: 1, seq_end: 3, checksum: "last-read-checksum" },
+    proposals: [{
+      proposal_id: "p1",
+      kind: "habit_candidate",
+      candidate_key: "stable-kebab-key",
+      condition: "When ...",
+      behavior: "Do ...",
+      polarity: 1,
+      confidence_bp: 8e3,
+      source_refs: [{ file_generation: fileGeneration, seq: 1, checksum: "server-validated-checksum" }],
+      evidence_unit_refs: ["opaque-unit-id-from-input"],
+      evidence_basis: "inferred_pattern",
+      evidence_summary: "short redacted summary",
+      ambiguous: false
+    }]
+  };
+  return [
+    "You are Agent Experience habit learning.",
+    "Return JSON only. No prose. No markdown unless JSON object only.",
+    "Infer durable user preferences or corrections from redacted user/assistant observations.",
+    ...FRICTION_EXTRACTION_INSTRUCTIONS,
+    "Assess only promising evidence units, before proposing anything. Emit at most 6 concise assessments and 0-3 proposals within one shared 12,000-character assessment budget; empty assessments with zero proposals is valid. A linked_turn proves chronology only, never success, failure, or relevance.",
+    "Every cited proposal unit must have one complete assessment separating objective/constraints, consequential assistant action, actual user feedback, role-bound exact user quote support, observed vs inferred mechanism, unknowns, applicability/exceptions, and durable-vs-task-local verdict. Never cite an unassessed unit.",
+    "Use actual_user_feedback=user_reported_feedback only when the linked user turn itself reports an outcome or correction. Use unrelated_followup for a new task and unknown when evidence does not establish feedback. Assistant success claims never prove outcomes.",
+    "Only propose habits supported by supplied units having complete admissible assessments. Unknown feedback, unrelated follow-ups, and task-local assessments cannot support proposals. Inferred patterns also require a non-unknown mechanism; an exact explicit future/general preference may mark mechanism unknown or not applicable without inventing a cause.",
+    "For inferred patterns, cite evidence_basis=inferred_pattern and only assessed linked_turn unit refs.",
+    "For one explicit durable future/general preference, cite evidence_basis=explicit_durable_preference, exactly one assessed explicit_user_statement unit ref, and exact_user_quote copied verbatim from that user-role unit. Do not treat a task-local command as durable.",
+    "Advisor findings are lower-authority context only: they cannot prove outcomes, explicit-user authority, or independent situations.",
+    "Do not include secrets, emails, phone numbers, tokens, raw prompts, private paths, or private identifiers.",
+    "Prefer 0-3 concise candidate habits. Return zero proposals if evidence is weak.",
+    "Only propose repeated patterns, except one unmistakable explicit durable preference. Combine compact existing habit context with the new validated units.",
+    "A repeated habit needs at least 3 server-validated independent conversation lineages across at least 2 days. Multiple turns or branches from one lineage count once.",
+    "When the same pattern recurs, reuse its exact canonical condition, behavior, and polarity from existing_habit_context. Do not paraphrase or fork it.",
+    ...GENERALIZED_HABIT_INSTRUCTIONS,
+    ...HABIT_CLASSIFICATION_RUBRIC,
+    ...HABIT_FEWSHOT_EXAMPLES,
+    "Every proposal must cite only supplied opaque evidence_unit_refs; source_refs is server-derived and model-provided values are ignored. If units are absent or none have admissible assessments, return zero proposals. Legacy observations and Advisor findings cannot bypass this contract. Never invent historical references.",
+    "All proposals are inactive candidates. Never approve or activate them.",
+    "Exact output schema:",
+    JSON.stringify(outputSchema)
+  ].join("\n");
+}
+function buildConsolidationUserPrompt(input) {
+  return JSON.stringify({
+    task: "Analyze these redacted examples and produce reviewable behavioral habit suggestions.",
+    user_id: input.userId,
+    file_generation: input.expected.file_generation,
+    model: input.model,
+    created_at: (/* @__PURE__ */ new Date()).toISOString(),
+    observations_read: { seq_start: input.expected.seq_start, seq_end: input.expected.seq_end, checksum: input.expected.read_checksum },
+    existing_habit_context: (input.habitContext || []).map(({ advisor_event_fingerprints: _internalFingerprints, ...visible }) => visible),
+    validated_evidence_units: input.situationBatch ? situationUnitsForModel(input.situationBatch) : [],
+    // Raw observations are legacy-only. New capture contract exposes only bounded neutral units.
+    observations: input.situationBatch ? [] : observationsForModelPrompt(input.observations)
+  }, null, 2);
+}
+function requireNonEmptyString(value, field) {
+  if (typeof value !== "string" || !value.trim()) throw new Error(`habit_learning_model_missing_${field}`);
+  return redactText(value.trim()).slice(0, 1e3);
+}
+function normalizeSourceRefs(rawRefs, input) {
+  if (!Array.isArray(rawRefs) || rawRefs.length === 0) throw new Error("habit_learning_model_missing_source_refs");
+  const bySeq = new Map(input.observations.map((record) => [record.seq, record]));
+  const refs = rawRefs.map((ref) => {
+    if (!Number.isInteger(ref?.seq)) throw new Error("habit_learning_model_missing_source_ref_seq");
+    const record = bySeq.get(ref.seq);
+    if (!record) throw new Error("habit_learning_model_invalid_source_ref");
+    const suppliedGeneration = typeof ref?.file_generation === "string" ? ref.file_generation : input.expected.file_generation;
+    if (suppliedGeneration !== record.file_generation) throw new Error("habit_learning_model_source_ref_generation_mismatch");
+    return { file_generation: record.file_generation, seq: record.seq, checksum: record.checksum };
+  });
+  return refs.filter((ref, index, array) => array.findIndex((candidate) => candidate.seq === ref.seq) === index);
+}
+var assessmentValidatedOutputs = /* @__PURE__ */ new WeakSet();
+function requireStringArray(value, field, maxItems) {
+  if (!Array.isArray(value) || value.length > maxItems) throw new Error(`habit_learning_model_invalid_${field}`);
+  return value.map((item) => requireNonEmptyString(item, field).slice(0, 400));
+}
+function validateSituationAssessments(raw, input) {
+  const units = input.situationBatch?.units || [];
+  if (raw === void 0 && units.length === 0) return /* @__PURE__ */ new Map();
+  if (!Array.isArray(raw) || raw.length > 6 || JSON.stringify(raw).length > 12e3) throw new Error("habit_learning_model_invalid_situation_assessments");
+  const byUnit = new Map(units.map((unit) => [unit.evidence_unit_ref, unit]));
+  const assessments = /* @__PURE__ */ new Map();
+  for (const value of raw) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("habit_learning_model_invalid_situation_assessment");
+    const item = value;
+    const allowed = /* @__PURE__ */ new Set(["unit_ref", "objective", "constraints", "consequential_action", "actual_user_feedback", "support_quotes", "mechanism", "unknowns", "applicability", "exceptions", "durability"]);
+    if (Object.keys(item).some((key) => !allowed.has(key))) throw new Error("habit_learning_model_invalid_situation_assessment_field");
+    const unitRef = requireNonEmptyString(item.unit_ref, "assessment_unit_ref");
+    const unit = byUnit.get(unitRef);
+    if (!unit || assessments.has(unitRef)) throw new Error("habit_learning_model_invalid_assessment_unit_ref");
+    requireNonEmptyString(item.objective, "assessment_objective");
+    requireStringArray(item.constraints, "assessment_constraints", 12);
+    requireNonEmptyString(item.consequential_action, "assessment_consequential_action");
+    if (!["user_reported_feedback", "explicit_durable_preference", "unrelated_followup", "unknown"].includes(item.actual_user_feedback)) throw new Error("habit_learning_model_invalid_actual_user_feedback");
+    if (!Array.isArray(item.support_quotes) || item.support_quotes.length > 6) throw new Error("habit_learning_model_invalid_support_quotes");
+    const quoteSource = unit.kind === "linked_turn" ? unit.linked_user_turn_redacted : unit.user_statement_redacted;
+    for (const support of item.support_quotes) {
+      if (!support || typeof support !== "object" || Array.isArray(support) || Object.keys(support).some((key) => key !== "role" && key !== "quote") || support.role !== "user") throw new Error("habit_learning_model_invalid_role_bound_quote");
+      const quote = requireNonEmptyString(support.quote, "support_quote").slice(0, 400);
+      if (!quoteSource?.includes(quote)) throw new Error("habit_learning_model_forged_support_quote");
+    }
+    if ((item.actual_user_feedback === "user_reported_feedback" || item.actual_user_feedback === "explicit_durable_preference") && item.support_quotes.length < 1) throw new Error("habit_learning_model_missing_support_quote");
+    if (!item.mechanism || typeof item.mechanism !== "object" || Array.isArray(item.mechanism) || Object.keys(item.mechanism).some((key) => key !== "classification" && key !== "summary")) throw new Error("habit_learning_model_invalid_mechanism");
+    if (!["observed", "inferred", "unknown"].includes(item.mechanism.classification)) throw new Error("habit_learning_model_invalid_mechanism_classification");
+    requireNonEmptyString(item.mechanism.summary, "assessment_mechanism_summary");
+    requireStringArray(item.unknowns, "assessment_unknowns", 12);
+    requireNonEmptyString(item.applicability, "assessment_applicability");
+    requireStringArray(item.exceptions, "assessment_exceptions", 12);
+    if (!["durable_reusable", "task_local", "unknown"].includes(item.durability)) throw new Error("habit_learning_model_invalid_durability");
+    assessments.set(unitRef, { unit_ref: unitRef, actual_user_feedback: item.actual_user_feedback, durability: item.durability, mechanism_classification: item.mechanism.classification });
+  }
+  return assessments;
+}
+function normalizeSituationEvidence(proposal, input, assessments) {
+  if (!input.situationBatch) return { source_refs: normalizeSourceRefs(proposal?.source_refs, input) };
+  if (!Array.isArray(proposal?.evidence_unit_refs)) throw new Error("habit_learning_model_missing_evidence_unit_refs");
+  const evidence_unit_refs = proposal.evidence_unit_refs.map((value) => requireNonEmptyString(value, "evidence_unit_ref"));
+  const evidence_basis = proposal.evidence_basis;
+  const exact_user_quote = proposal.exact_user_quote === void 0 ? void 0 : String(proposal.exact_user_quote).trim();
+  const byId = new Map(input.situationBatch.units.map((unit) => [unit.evidence_unit_ref, unit]));
+  const source_refs = evidence_unit_refs.flatMap((id) => byId.get(id)?.current_source_refs || []).filter((ref, index, refs) => refs.findIndex((candidate) => candidate.file_generation === ref.file_generation && candidate.seq === ref.seq && candidate.checksum === ref.checksum) === index);
+  const units = validateSituationEvidenceForProposal({ source_refs, evidence_unit_refs, evidence_basis, ...exact_user_quote === void 0 ? {} : { exact_user_quote } }, input.situationBatch);
+  for (const unit of units) {
+    const assessment = assessments?.get(unit.evidence_unit_ref);
+    if (!assessment || assessment.durability !== "durable_reusable") throw new Error("habit_learning_model_inadmissible_situation_assessment");
+    if (evidence_basis === "inferred_pattern") {
+      if (assessment.mechanism_classification === "unknown") throw new Error("habit_learning_model_inadmissible_situation_assessment");
+      if (assessment.actual_user_feedback !== "user_reported_feedback") throw new Error("habit_learning_model_inadmissible_feedback_assessment");
+    }
+    if (evidence_basis === "explicit_durable_preference" && assessment.actual_user_feedback !== "explicit_durable_preference") throw new Error("habit_learning_model_inadmissible_preference_assessment");
+  }
+  return { source_refs, evidence_unit_refs, evidence_basis, ...exact_user_quote === void 0 ? {} : { exact_user_quote } };
+}
+function newEvidenceStats(refs, input) {
+  const bySeq = new Map(input.observations.map((record) => [record.seq, record]));
+  const nonAdvisorSeqs = /* @__PURE__ */ new Set();
+  const nonAdvisorDays = /* @__PURE__ */ new Set();
+  const advisorEvents2 = /* @__PURE__ */ new Map();
+  for (const ref of refs) {
+    const record = bySeq.get(ref.seq);
+    if (!record) continue;
+    const fingerprint = advisorFingerprint(record);
+    const day = new Date(record.created_at).toISOString().slice(0, 10);
+    if (fingerprint) {
+      if (!advisorEvents2.has(fingerprint)) advisorEvents2.set(fingerprint, day);
+      continue;
+    }
+    nonAdvisorSeqs.add(record.seq);
+    nonAdvisorDays.add(day);
+  }
+  return { nonAdvisorSeqs, nonAdvisorDays, advisorEvents: advisorEvents2 };
+}
+function matchingHabitContext(input, candidate) {
+  const identity = compactContextIdentity(candidate);
+  return (input.habitContext || []).find((item) => compactContextIdentity(item) === identity);
+}
+function hasEnoughRepeatedEvidence(refs, input, candidate) {
+  const fresh = newEvidenceStats(refs, input);
+  const existing = matchingHabitContext(input, candidate);
+  const existingFingerprints = new Set(existing?.advisor_event_fingerprints || []);
+  const newAdvisorEvents = [...fresh.advisorEvents].filter(([fingerprint]) => !existingFingerprints.has(fingerprint));
+  const days = /* @__PURE__ */ new Set([
+    ...existing?.source_dates || [],
+    ...fresh.nonAdvisorDays,
+    ...newAdvisorEvents.map(([, day]) => day)
+  ]);
+  const count = Number(existing?.unique_observations || 0) + fresh.nonAdvisorSeqs.size + newAdvisorEvents.length;
+  return count >= 3 && days.size >= 2;
+}
+function withoutAdvisorEvidence(refs, input) {
+  const bySeq = new Map(input.observations.map((record) => [record.seq, record]));
+  return refs.filter((ref) => bySeq.get(ref.seq)?.origin.source !== "advisor_finding");
+}
+function normalizeConfidence(value) {
+  if (!Number.isInteger(value) || value < 0 || value > 1e4) throw new Error("habit_learning_model_invalid_confidence");
+  return value;
+}
+var EXPERIENCE_KIND_SET2 = new Set(EXPERIENCE_KINDS);
+var EXPERIENCE_SCOPE_SET2 = new Set(EXPERIENCE_SCOPE_KINDS);
+var EXPERIENCE_AUTHORITY_SET2 = new Set(EXPERIENCE_AUTHORITIES);
+var UNTRUSTED_INSTRUCTION_PATTERN = /<\/?system|ignore\s+(?:all\s+|previous\s+)?instructions|tool\s+output\s+(?:says|instructs)/i;
+function normalizeConsolidationModelOutput(raw, input, options = {}) {
+  if (input.situationBatch && (!Array.isArray(raw?.proposals) || raw.proposals.length > 3)) throw new Error("habit_learning_model_invalid_proposal_count");
+  const assessments = input.situationBatch ? validateSituationAssessments(raw?.assessments, input) : void 0;
+  const proposals = Array.isArray(raw?.proposals) ? raw.proposals.slice(0, input.situationBatch ? 3 : 50).flatMap((proposal) => {
+    if (options.habitsOnly && EXPERIENCE_KIND_SET2.has(proposal?.kind)) return [];
+    if (EXPERIENCE_KIND_SET2.has(proposal?.kind)) {
+      const situationEvidence2 = normalizeSituationEvidence(proposal, input, assessments);
+      const source_refs2 = situationEvidence2.source_refs;
+      if (!proposal.scope || typeof proposal.scope !== "object" || Array.isArray(proposal.scope)) {
+        throw new Error("experience_learning_model_invalid_scope");
+      }
+      if (!EXPERIENCE_SCOPE_SET2.has(proposal.scope.kind)) throw new Error("experience_learning_model_invalid_scope");
+      const scope = proposal.scope.kind === "user" ? { kind: "user" } : { kind: proposal.scope.kind, key: requireNonEmptyString(proposal.scope.key, "scope_key") };
+      if (!EXPERIENCE_AUTHORITY_SET2.has(proposal.authority)) throw new Error("experience_learning_model_invalid_authority");
+      const applicability = requireNonEmptyString(proposal.applicability, "applicability");
+      const content = requireNonEmptyString(proposal.content, "content");
+      if (UNTRUSTED_INSTRUCTION_PATTERN.test(applicability) || UNTRUSTED_INSTRUCTION_PATTERN.test(content)) {
+        throw new Error("experience_learning_model_untrusted_instruction");
+      }
+      const rationale = typeof proposal.rationale === "string" && !proposal.rationale.trim() ? void 0 : proposal.rationale === void 0 ? void 0 : requireNonEmptyString(proposal.rationale, "rationale");
+      if (!Array.isArray(proposal.exceptions) || proposal.exceptions.length > 32) {
+        throw new Error("experience_learning_model_invalid_exceptions");
+      }
+      const exceptions = proposal.exceptions.map((exception) => requireNonEmptyString(exception, "exception"));
+      const explicitAuthorityRefs = withoutAdvisorEvidence(source_refs2, input);
+      if (proposal.authority === "explicit_user" && explicitAuthorityRefs.length === 0) {
+        throw new Error("experience_learning_model_explicit_authority_without_user_source");
+      }
+      const needsRepetition = proposal.kind === "habit" || proposal.kind === "preference" && proposal.authority !== "explicit_user";
+      if (needsRepetition && !hasEnoughRepeatedEvidence(source_refs2, input, {
+        condition: applicability,
+        behavior: content,
+        polarity: 1
+      })) return [];
+      return [{
+        proposal_id: requireNonEmptyString(proposal.proposal_id, "proposal_id"),
+        kind: proposal.kind,
+        candidate_key: requireNonEmptyString(proposal.candidate_key, "candidate_key"),
+        scope,
+        authority: proposal.authority,
+        applicability,
+        content,
+        ...rationale === void 0 ? {} : { rationale },
+        exceptions,
+        confidence_bp: normalizeConfidence(proposal.confidence_bp),
+        source_refs: source_refs2,
+        ...proposal.evidence_summary ? { evidence_summary: redactText(String(proposal.evidence_summary)).slice(0, 1e3) } : {},
+        ...situationEvidence2.evidence_unit_refs ? situationEvidence2 : {},
+        ambiguous: proposal.ambiguous === true
+      }];
+    }
+    const situationEvidence = normalizeSituationEvidence(proposal, input, assessments);
+    const source_refs = situationEvidence.source_refs;
+    if (proposal?.kind === "correction_split") {
+      const old_condition = requireNonEmptyString(proposal.old_condition, "old_condition");
+      const old_behavior = requireNonEmptyString(proposal.old_behavior, "old_behavior");
+      const new_condition = requireNonEmptyString(proposal.new_condition, "new_condition");
+      const new_behavior = requireNonEmptyString(proposal.new_behavior, "new_behavior");
+      const confidence_bp = normalizeConfidence(proposal.confidence_bp);
+      const correctionAuthorityRefs = withoutAdvisorEvidence(source_refs, input);
+      const repeatedReplacement = hasEnoughRepeatedEvidence(correctionAuthorityRefs, input, { condition: new_condition, behavior: new_behavior, polarity: 1 });
+      const oldContext = matchingHabitContext(input, { condition: old_condition, behavior: old_behavior, polarity: 1 });
+      const explicitCorrection = confidence_bp >= 8500 && correctionAuthorityRefs.length >= 1 && oldContext?.status === "active";
+      const evidence_stage2 = repeatedReplacement || explicitCorrection ? "reviewable" : "collecting";
+      return [{
+        proposal_id: requireNonEmptyString(proposal.proposal_id, "proposal_id"),
+        kind: "correction_split",
+        candidate_key: requireNonEmptyString(proposal.candidate_key, "candidate_key"),
+        old_condition,
+        old_behavior,
+        new_condition,
+        new_behavior,
+        confidence_bp,
+        source_refs,
+        evidence_stage: evidence_stage2,
+        ...proposal.evidence_summary ? { evidence_summary: redactText(String(proposal.evidence_summary)).slice(0, 1e3) } : {},
+        ...situationEvidence.evidence_unit_refs ? situationEvidence : {},
+        ambiguous: proposal.ambiguous === true
+      }];
+    }
+    if (proposal?.kind !== "habit_candidate") throw new Error("habit_learning_model_invalid_proposal_kind");
+    const condition = requireNonEmptyString(proposal.condition, "condition");
+    const behavior = requireNonEmptyString(proposal.behavior, "behavior");
+    const polarity = proposal.polarity === -1 ? -1 : 1;
+    const evidence_stage = hasEnoughRepeatedEvidence(source_refs, input, { condition, behavior, polarity }) ? "reviewable" : "collecting";
+    return [{
+      proposal_id: requireNonEmptyString(proposal.proposal_id, "proposal_id"),
+      kind: "habit_candidate",
+      candidate_key: requireNonEmptyString(proposal.candidate_key, "candidate_key"),
+      condition,
+      behavior,
+      polarity,
+      confidence_bp: normalizeConfidence(proposal.confidence_bp),
+      source_refs,
+      evidence_stage,
+      ...proposal.evidence_summary ? { evidence_summary: redactText(String(proposal.evidence_summary)).slice(0, 1e3) } : {},
+      ...situationEvidence.evidence_unit_refs ? situationEvidence : {},
+      ambiguous: proposal.ambiguous === true
+    }];
+  }) : [];
+  const normalized = {
+    schema_version: 1,
+    user_id: input.userId,
+    file_generation: input.expected.file_generation,
+    batch_id: String(raw?.batch_id || `manual-${Date.now()}`),
+    model: input.model,
+    created_at: (/* @__PURE__ */ new Date()).toISOString(),
+    observations_read: { seq_start: input.expected.seq_start, seq_end: input.expected.seq_end, checksum: input.expected.read_checksum },
+    proposals
+  };
+  if (input.situationBatch) assessmentValidatedOutputs.add(normalized);
+  return normalized;
+}
+function isAssessmentValidatedModelOutput(value) {
+  return !!value && typeof value === "object" && assessmentValidatedOutputs.has(value);
+}
+function createPiConsolidationModelAdapter(ctx, options) {
+  const purpose = options.purpose || "agent-experience-manual-habit-learning";
+  return {
+    async generate(input) {
+      const parsed = parseProviderModel(input.model);
+      if (!parsed) throw new Error("habit_learning_model_invalid");
+      const model = ctx.modelRegistry?.find?.(parsed.provider, parsed.modelId);
+      if (!model) throw new Error("habit_learning_model_unavailable");
+      const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+      if (!auth.ok || !auth.apiKey) throw new Error("habit_learning_model_auth_unavailable");
+      const response = await options.complete(model, {
+        systemPrompt: buildConsolidationSystemPrompt(input.expected.file_generation),
+        messages: [{ role: "user", content: buildConsolidationUserPrompt(input), timestamp: Date.now() }]
+      }, {
+        apiKey: auth.apiKey,
+        headers: auth.headers,
+        env: auth.env,
+        signal: input.signal ?? ctx.signal,
+        timeoutMs: 12e4,
+        maxRetries: 1,
+        maxRetryDelayMs: 0,
+        maxTokens: 4096,
+        reasoning: "high",
+        metadata: { purpose }
+      });
+      if (response?.stopReason === "length") throw new Error("habit_learning_model_truncated_response");
+      const text2 = extractAssistantText(response);
+      if (!text2.trim()) throw new Error("habit_learning_model_empty_response");
+      return normalizeConsolidationModelOutput(extractionJson(text2), input, { habitsOnly: true });
+    }
+  };
 }
 
 // extensions/agent-experience/src/consolidate/runner.ts
@@ -4510,14 +5444,44 @@ async function runConsolidationOnce(input) {
   try {
     const expected = expectedRangeFromObservations(input.observations, userId);
     const before = tableCounts(input.db);
+    const authoritativeSituationBatch = buildSituationBatch(input.db, {
+      userId,
+      observations: input.observations,
+      retentionDays: input.config?.observation_retention_days ?? 7,
+      now: createdAt
+    });
+    if (input.situationBatch) {
+      assertSituationBatch(input.situationBatch, { userId, fileGeneration: expected.file_generation, seqStart: expected.seq_start, seqEnd: expected.seq_end });
+      if (input.situationBatch.checksum !== authoritativeSituationBatch.checksum) throw new Error("Situation batch differs from authoritative runner snapshot");
+    }
+    const hasCausalInput = input.observations.some((record) => {
+      const payload = record.payload_redacted;
+      return payload?.kind === "conversation_pair_v1" && payload.causal_context !== void 0;
+    });
+    const requireSituationContract = !!input.config || hasCausalInput;
+    const situationBatch = requireSituationContract ? authoritativeSituationBatch : void 0;
     let output;
     try {
-      output = validateModelOutputBatch(input.modelOutput, userId);
+      let candidateOutput = input.modelOutput;
+      if (situationBatch && !isAssessmentValidatedModelOutput(candidateOutput)) {
+        candidateOutput = normalizeConsolidationModelOutput(candidateOutput, {
+          model: input.model,
+          userId,
+          observations: input.observations,
+          habitContext: buildCompactHabitContext(input.db, { userId, limit: 60 }),
+          expected,
+          situationBatch
+        }, { habitsOnly: true });
+      }
+      if (situationBatch && !isAssessmentValidatedModelOutput(candidateOutput)) throw new Error("habit_learning_model_missing_assessment_proof");
+      output = validateModelOutputBatch(candidateOutput, userId);
       validateModelOutputExpectedRange(output, expected);
       validateModelOutputSourceRefs(output, input.observations);
+      if (situationBatch) for (const proposal of output.proposals) validateSituationEvidenceForProposal(proposal, situationBatch);
     } catch (error) {
       if (!input.dryRun) {
-        insertModelOutputQuarantine(input.db, { userId, fileGeneration: expected.file_generation, seqStart: expected.seq_start, seqEnd: expected.seq_end, reason: "read_range_mismatch", model: input.model, output: input.modelOutput, createdAt });
+        const quarantineOutput = situationBatch ? { contract: "situation_assessment_v1", validation: "rejected", proposal_count: Array.isArray(input.modelOutput?.proposals) ? Math.min(input.modelOutput.proposals.length, 200) : 0 } : input.modelOutput;
+        insertModelOutputQuarantine(input.db, { userId, fileGeneration: expected.file_generation, seqStart: expected.seq_start, seqEnd: expected.seq_end, reason: "model_output_invalid", model: input.model, output: quarantineOutput, createdAt });
       }
       return { ok: false, dry_run: !!input.dryRun, reason: String(error?.message || "model_output_invalid"), quarantined: !input.dryRun, expected, before, after: tableCounts(input.db) };
     }
@@ -4537,7 +5501,7 @@ async function runConsolidationOnce(input) {
       if (!provider) return { ok: false, dry_run: false, reason: "semantic_embedding_provider_unavailable", expected, diff, before, after: tableCounts(input.db) };
       semantic = { policy: semanticPolicy, provider, signal: input.semantic?.signal };
     }
-    const result = await processValidatedModelOutput({ db: input.db, userId, output, observations: input.observations, host: input.host, expectedRange: expected, semantic });
+    const result = await processValidatedModelOutput({ db: input.db, userId, output, observations: input.observations, host: input.host, expectedRange: expected, situationBatch, semantic });
     return { ok: true, dry_run: false, expected, diff, result, before, after: tableCounts(input.db) };
   } finally {
     await ownedEmbeddingProvider?.close?.().catch(() => void 0);
@@ -4549,440 +5513,6 @@ async function runConsolidationOnce(input) {
 import { readFile as readFile7, realpath as realpath2 } from "node:fs/promises";
 import { isAbsolute as isAbsolute2, join as join2 } from "node:path";
 import { pathToFileURL } from "node:url";
-
-// extensions/agent-experience/src/consolidate/context.ts
-init_private_root();
-init_redaction();
-function parseJson(value) {
-  try {
-    const parsed = JSON.parse(String(value || "{}"));
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-function normalizeText(value) {
-  return String(value ?? "").trim().replace(/\s+/g, " ").toLowerCase();
-}
-function refKey(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return void 0;
-  const ref = value;
-  if (typeof ref.file_generation !== "string" || !Number.isInteger(ref.seq) || typeof ref.checksum !== "string") return void 0;
-  return `${ref.file_generation}:${ref.seq}:${ref.checksum}`;
-}
-function advisorEvents(data) {
-  const values = Array.isArray(data.advisor_events) ? data.advisor_events : [];
-  const events = /* @__PURE__ */ new Map();
-  for (const value of values) {
-    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
-    const event = value;
-    if (typeof event.event_fingerprint !== "string" || !/^[0-9a-f]{64}$/.test(event.event_fingerprint)) continue;
-    if (typeof event.created_at !== "string" || !Number.isFinite(Date.parse(event.created_at))) continue;
-    if (!events.has(event.event_fingerprint)) events.set(event.event_fingerprint, { event_fingerprint: event.event_fingerprint, created_at: event.created_at });
-  }
-  return [...events.values()];
-}
-function stringValues(value) {
-  if (!Array.isArray(value)) return [];
-  const strings = [];
-  for (const item of value) {
-    if (typeof item === "string") strings.push(item);
-  }
-  return strings;
-}
-function uniqueRefs(data) {
-  const refs = Array.isArray(data.source_refs) ? data.source_refs : [];
-  const advisorRefKeys = new Set(stringValues(data.advisor_source_ref_keys));
-  const nonAdvisorRefs = new Set(refs.map(refKey).filter((key) => !!key && !advisorRefKeys.has(key)));
-  return nonAdvisorRefs.size + advisorEvents(data).length;
-}
-function sourceDates(data) {
-  const hasAdvisorMetadata = Object.prototype.hasOwnProperty.call(data, "advisor_events") || Object.prototype.hasOwnProperty.call(data, "advisor_source_ref_keys");
-  const dates = hasAdvisorMetadata ? [...stringValues(data.non_advisor_source_dates), ...advisorEvents(data).map((event) => event.created_at)] : stringValues(data.source_dates);
-  return [...new Set(dates.map((date) => date.slice(0, 10)).filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date)))].sort().slice(-30);
-}
-function buildCompactHabitContext(db, input) {
-  const userId = normalizeUserId(input.userId);
-  const limit = Math.max(1, Math.min(100, Math.trunc(input.limit ?? 60)));
-  const rows = db.prepare("SELECT condition, behavior, polarity, status, confidence_bp, data_json FROM habits WHERE user_id = ? AND status IN ('candidate','active','disabled','dormant','suppressed_by_law') ORDER BY updated_at DESC, id LIMIT ?").all(userId, limit);
-  return rows.map((row) => {
-    const data = parseJson(row.data_json);
-    const dates = sourceDates(data);
-    return redactJson({
-      condition: String(row.condition || "").slice(0, 1e3),
-      behavior: String(row.behavior || "").slice(0, 1e3),
-      polarity: Number(row.polarity),
-      status: String(row.status),
-      review_status: typeof data.review_status === "string" ? data.review_status : null,
-      confidence_bp: Number(row.confidence_bp),
-      unique_observations: uniqueRefs(data),
-      distinct_days: dates.length,
-      source_dates: dates,
-      advisor_event_fingerprints: advisorEvents(data).map((event) => event.event_fingerprint)
-    });
-  });
-}
-function compactContextIdentity(value) {
-  return `${normalizeText(value.condition)}
-${normalizeText(value.behavior)}
-${Number(value.polarity)}`;
-}
-
-// extensions/agent-experience/src/consolidate/prompt.ts
-var GENERALIZED_HABIT_INSTRUCTIONS = [
-  "Extract the reusable behavioral essence across repeated examples. Do not overfit to one project, package, repo, file path, version, screenshot, or proper noun.",
-  "Write condition as a general situation class, not a one-off context. Prefer 'When preparing a release' over 'When working on Agent Experience'; prefer 'When the user reports UI confusion' over a specific package name.",
-  "Write behavior as durable agent conduct that can apply to future similar work. Durable tool/task categories such as npm package releases or Pi UI debugging are allowed when the repeated behavior truly belongs to that category; one-off names such as Agent Experience, pi-experiences, specific versions, hashes, paths, or screenshot ids are not.",
-  "If examples share only a project-specific fact and no broader reusable behavior, return no proposal for that pattern."
-];
-var HABIT_CLASSIFICATION_RUBRIC = [
-  "Classify each pattern before proposing. Only a HABIT is proposable:",
-  "- HABIT: a durable, reusable way to behave across similar future work. Propose these.",
-  "- FACT: durable knowledge or project context. A fact belongs in memory. Never propose it as a habit.",
-  "- SKILL: a deliberately authored procedure or playbook. A procedure is a skill. Never propose it as a habit.",
-  "- ONE-OFF INSTRUCTION: a single-task directive. A single-task instruction has no reusable behavior. Never propose it as a habit."
-];
-var HABIT_FEWSHOT_EXAMPLES = [
-  "Propose (habit): condition 'When reporting whether work is finished', behavior 'State done or blocked, cite concrete evidence, then give the next action.'",
-  "Propose (habit): condition 'When a request is ambiguous enough to change correctness', behavior 'Ask one focused question before proceeding.'",
-  "Do NOT propose (fact): 'The release ships from the main branch.' A fact belongs in memory, not a habit.",
-  "Do NOT propose (skill): 'Follow the deployment checklist.' A procedure is a skill, not a habit.",
-  "Do NOT propose (one-off): 'Rename this flag in this file now.' A single-task instruction has no reusable behavior."
-];
-var FRICTION_EXTRACTION_INSTRUCTIONS = [
-  "Identify candidates by causal reasoning over the batch, not by clustering superficially similar messages. Shared words are not a habit.",
-  "For each habit candidate, work in three steps: (1) LOCATE FRICTION \u2014 a moment where the user corrected the assistant, repeated a request, expressed dissatisfaction, or had to clarify something the assistant should have anticipated; (2) INFER THE IMPROVEMENT DIRECTION \u2014 the behavioral change that would have prevented that friction; (3) FORMULATE \u2014 express it as a generalized applicability/content experience following the generalization rules.",
-  "Weight friction over preference. Corrections, complaints, and repeated requests are the primary, higher-confidence habit signal. Stable positive preferences with no friction still qualify, but require stronger and cleaner repetition and MUST receive lower confidence than friction-derived candidates.",
-  "Advisor findings are lower-authority observations, not user corrections. They can support an ordinary candidate only after at least three distinct event fingerprints across at least two days. They can never justify explicit-user authority, approval, or direct mutation.",
-  "Adjacent observations MAY be related conversation turns, but adjacency is NOT guaranteed: concurrent sessions can interleave into one stream and captured pairs can be dropped, leaving gaps. So corroborate before linking \u2014 treat observation N+1 user pushback as friction evidence about observation N ONLY when the pushback content plausibly refers to that assistant behavior AND their created_at timestamps are close (minutes, not hours).",
-  "Friction example: an assistant message claims a task is finished, and the next user message says the result was not actually verified. Propose a habit: 'When claiming a task is complete, verify the result before reporting it.'",
-  "Negative example: several messages share a keyword but show no common correction, dissatisfaction, or repeated preference. Return no proposal."
-];
-
-// extensions/agent-experience/src/consolidate/model-adapter.ts
-init_redaction();
-function parseProviderModel(value) {
-  const slash = value.indexOf("/");
-  if (slash <= 0) return void 0;
-  const provider = value.slice(0, slash);
-  const modelId = value.slice(slash + 1);
-  if (!provider || !modelId || provider.includes("..") || modelId.includes("..") || modelId.includes("\0")) return void 0;
-  return { provider, modelId };
-}
-function truncateForModel(value, max = 900) {
-  const text = redactText(typeof value === "string" ? value : JSON.stringify(value ?? {}));
-  return text.length > max ? `${text.slice(0, max)}\u2026` : text;
-}
-function advisorFingerprint(record) {
-  if (record.origin.source !== "advisor_finding") return void 0;
-  const payload = record.payload_redacted;
-  return payload?.kind === "advisor_finding_v1" && typeof payload.event_fingerprint === "string" ? payload.event_fingerprint : void 0;
-}
-function collapseAdvisorObservations(observations) {
-  const fingerprints = /* @__PURE__ */ new Set();
-  return observations.filter((record) => {
-    const fingerprint = advisorFingerprint(record);
-    if (!fingerprint) return true;
-    if (fingerprints.has(fingerprint)) return false;
-    fingerprints.add(fingerprint);
-    return true;
-  });
-}
-function observationsForModelPrompt(observations) {
-  return collapseAdvisorObservations(observations).map((record) => {
-    const payload = record.payload_redacted && typeof record.payload_redacted === "object" && !Array.isArray(record.payload_redacted) ? record.payload_redacted : {};
-    if (payload?.kind === "advisor_finding_v1") {
-      return {
-        seq: record.seq,
-        checksum: record.checksum,
-        created_at: record.created_at,
-        origin: "advisor_finding",
-        assistant: truncateForModel(payload.primary_behavior_redacted, 1200),
-        advisor_finding: truncateForModel(payload.approved_behavior_redacted, 900),
-        severity: payload.severity
-      };
-    }
-    return {
-      seq: record.seq,
-      checksum: record.checksum,
-      created_at: record.created_at,
-      origin: record.origin.source,
-      user: truncateForModel(payload?.user_text_redacted, 900),
-      assistant: truncateForModel(payload?.assistant_text_redacted, 1200)
-    };
-  });
-}
-function extractionJson(text) {
-  const trimmed = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
-  try {
-    return JSON.parse(trimmed);
-  } catch {
-  }
-  const start = trimmed.indexOf("{");
-  const end = trimmed.lastIndexOf("}");
-  if (start >= 0 && end > start) return JSON.parse(trimmed.slice(start, end + 1));
-  throw new Error("habit_learning_model_invalid_json");
-}
-function extractAssistantText(message) {
-  const parts = Array.isArray(message?.content) ? message.content : [];
-  return parts.filter((part) => part?.type === "text" && typeof part.text === "string").map((part) => part.text).join("\n").slice(0, 2e4);
-}
-function buildConsolidationSystemPrompt(fileGeneration) {
-  const outputSchema = {
-    schema_version: 1,
-    user_id: "owner",
-    file_generation: fileGeneration,
-    batch_id: "manual-id",
-    model: "provider/model",
-    created_at: "ISO",
-    observations_read: { seq_start: 1, seq_end: 3, checksum: "last-read-checksum" },
-    proposals: [{
-      proposal_id: "p1",
-      kind: "habit_candidate",
-      candidate_key: "stable-kebab-key",
-      condition: "When ...",
-      behavior: "Do ...",
-      polarity: 1,
-      confidence_bp: 8e3,
-      source_refs: [{ file_generation: fileGeneration, seq: 1, checksum: "..." }],
-      evidence_summary: "short redacted summary",
-      ambiguous: false
-    }]
-  };
-  return [
-    "You are Agent Experience habit learning.",
-    "Return JSON only. No prose. No markdown unless JSON object only.",
-    "Infer durable user preferences or corrections from redacted user/assistant observations.",
-    ...FRICTION_EXTRACTION_INSTRUCTIONS,
-    "Only propose habits supported by the provided observations. Do not invent facts.",
-    "Do not include secrets, emails, phone numbers, tokens, raw prompts, private paths, or private identifiers.",
-    "Prefer 0-3 concise candidate habits. Return zero proposals if evidence is weak.",
-    "Only propose repeated patterns. Combine compact existing habit context with the new unread observations, but cite source_refs only from the new observations.",
-    "A repeated habit needs at least 3 total supporting observations across at least 2 days.",
-    "When the same pattern recurs, reuse its exact canonical condition, behavior, and polarity from existing_habit_context. Do not paraphrase or fork it.",
-    ...GENERALIZED_HABIT_INSTRUCTIONS,
-    ...HABIT_CLASSIFICATION_RUBRIC,
-    ...HABIT_FEWSHOT_EXAMPLES,
-    "Every proposal must cite source_refs using only provided seq/checksum values.",
-    "All proposals are inactive candidates. Never approve or activate them.",
-    "Exact output schema:",
-    JSON.stringify(outputSchema)
-  ].join("\n");
-}
-function buildConsolidationUserPrompt(input) {
-  return JSON.stringify({
-    task: "Analyze these redacted examples and produce reviewable behavioral habit suggestions.",
-    user_id: input.userId,
-    file_generation: input.expected.file_generation,
-    model: input.model,
-    created_at: (/* @__PURE__ */ new Date()).toISOString(),
-    observations_read: { seq_start: input.expected.seq_start, seq_end: input.expected.seq_end, checksum: input.expected.read_checksum },
-    existing_habit_context: (input.habitContext || []).map(({ advisor_event_fingerprints: _internalFingerprints, ...visible }) => visible),
-    observations: observationsForModelPrompt(input.observations)
-  }, null, 2);
-}
-function requireNonEmptyString(value, field) {
-  if (typeof value !== "string" || !value.trim()) throw new Error(`habit_learning_model_missing_${field}`);
-  return redactText(value.trim()).slice(0, 1e3);
-}
-function normalizeSourceRefs(rawRefs, input) {
-  if (!Array.isArray(rawRefs) || rawRefs.length === 0) throw new Error("habit_learning_model_missing_source_refs");
-  const bySeq = new Map(input.observations.map((record) => [record.seq, record]));
-  const refs = rawRefs.map((ref) => {
-    if (!Number.isInteger(ref?.seq)) throw new Error("habit_learning_model_missing_source_ref_seq");
-    const record = bySeq.get(ref.seq);
-    if (!record) throw new Error("habit_learning_model_invalid_source_ref");
-    const suppliedGeneration = typeof ref?.file_generation === "string" ? ref.file_generation : input.expected.file_generation;
-    if (suppliedGeneration !== record.file_generation) throw new Error("habit_learning_model_source_ref_generation_mismatch");
-    return { file_generation: record.file_generation, seq: record.seq, checksum: record.checksum };
-  });
-  return refs.filter((ref, index, array) => array.findIndex((candidate) => candidate.seq === ref.seq) === index);
-}
-function newEvidenceStats(refs, input) {
-  const bySeq = new Map(input.observations.map((record) => [record.seq, record]));
-  const nonAdvisorSeqs = /* @__PURE__ */ new Set();
-  const nonAdvisorDays = /* @__PURE__ */ new Set();
-  const advisorEvents2 = /* @__PURE__ */ new Map();
-  for (const ref of refs) {
-    const record = bySeq.get(ref.seq);
-    if (!record) continue;
-    const fingerprint = advisorFingerprint(record);
-    const day = new Date(record.created_at).toISOString().slice(0, 10);
-    if (fingerprint) {
-      if (!advisorEvents2.has(fingerprint)) advisorEvents2.set(fingerprint, day);
-      continue;
-    }
-    nonAdvisorSeqs.add(record.seq);
-    nonAdvisorDays.add(day);
-  }
-  return { nonAdvisorSeqs, nonAdvisorDays, advisorEvents: advisorEvents2 };
-}
-function matchingHabitContext(input, candidate) {
-  const identity = compactContextIdentity(candidate);
-  return (input.habitContext || []).find((item) => compactContextIdentity(item) === identity);
-}
-function hasEnoughRepeatedEvidence(refs, input, candidate) {
-  const fresh = newEvidenceStats(refs, input);
-  const existing = matchingHabitContext(input, candidate);
-  const existingFingerprints = new Set(existing?.advisor_event_fingerprints || []);
-  const newAdvisorEvents = [...fresh.advisorEvents].filter(([fingerprint]) => !existingFingerprints.has(fingerprint));
-  const days = /* @__PURE__ */ new Set([
-    ...existing?.source_dates || [],
-    ...fresh.nonAdvisorDays,
-    ...newAdvisorEvents.map(([, day]) => day)
-  ]);
-  const count = Number(existing?.unique_observations || 0) + fresh.nonAdvisorSeqs.size + newAdvisorEvents.length;
-  return count >= 3 && days.size >= 2;
-}
-function withoutAdvisorEvidence(refs, input) {
-  const bySeq = new Map(input.observations.map((record) => [record.seq, record]));
-  return refs.filter((ref) => bySeq.get(ref.seq)?.origin.source !== "advisor_finding");
-}
-function normalizeConfidence(value) {
-  if (!Number.isInteger(value) || value < 0 || value > 1e4) throw new Error("habit_learning_model_invalid_confidence");
-  return value;
-}
-var EXPERIENCE_KIND_SET2 = new Set(EXPERIENCE_KINDS);
-var EXPERIENCE_SCOPE_SET2 = new Set(EXPERIENCE_SCOPE_KINDS);
-var EXPERIENCE_AUTHORITY_SET2 = new Set(EXPERIENCE_AUTHORITIES);
-var UNTRUSTED_INSTRUCTION_PATTERN = /<\/?system|ignore\s+(?:all\s+|previous\s+)?instructions|tool\s+output\s+(?:says|instructs)/i;
-function normalizeConsolidationModelOutput(raw, input, options = {}) {
-  const proposals = Array.isArray(raw?.proposals) ? raw.proposals.slice(0, 50).flatMap((proposal) => {
-    if (options.habitsOnly && EXPERIENCE_KIND_SET2.has(proposal?.kind)) return [];
-    if (EXPERIENCE_KIND_SET2.has(proposal?.kind)) {
-      const source_refs2 = normalizeSourceRefs(proposal?.source_refs, input);
-      if (!proposal.scope || typeof proposal.scope !== "object" || Array.isArray(proposal.scope)) {
-        throw new Error("experience_learning_model_invalid_scope");
-      }
-      if (!EXPERIENCE_SCOPE_SET2.has(proposal.scope.kind)) throw new Error("experience_learning_model_invalid_scope");
-      const scope = proposal.scope.kind === "user" ? { kind: "user" } : { kind: proposal.scope.kind, key: requireNonEmptyString(proposal.scope.key, "scope_key") };
-      if (!EXPERIENCE_AUTHORITY_SET2.has(proposal.authority)) throw new Error("experience_learning_model_invalid_authority");
-      const applicability = requireNonEmptyString(proposal.applicability, "applicability");
-      const content = requireNonEmptyString(proposal.content, "content");
-      if (UNTRUSTED_INSTRUCTION_PATTERN.test(applicability) || UNTRUSTED_INSTRUCTION_PATTERN.test(content)) {
-        throw new Error("experience_learning_model_untrusted_instruction");
-      }
-      const rationale = typeof proposal.rationale === "string" && !proposal.rationale.trim() ? void 0 : proposal.rationale === void 0 ? void 0 : requireNonEmptyString(proposal.rationale, "rationale");
-      if (!Array.isArray(proposal.exceptions) || proposal.exceptions.length > 32) {
-        throw new Error("experience_learning_model_invalid_exceptions");
-      }
-      const exceptions = proposal.exceptions.map((exception) => requireNonEmptyString(exception, "exception"));
-      const explicitAuthorityRefs = withoutAdvisorEvidence(source_refs2, input);
-      if (proposal.authority === "explicit_user" && explicitAuthorityRefs.length === 0) {
-        throw new Error("experience_learning_model_explicit_authority_without_user_source");
-      }
-      const needsRepetition = proposal.kind === "habit" || proposal.kind === "preference" && proposal.authority !== "explicit_user";
-      if (needsRepetition && !hasEnoughRepeatedEvidence(source_refs2, input, {
-        condition: applicability,
-        behavior: content,
-        polarity: 1
-      })) return [];
-      return [{
-        proposal_id: requireNonEmptyString(proposal.proposal_id, "proposal_id"),
-        kind: proposal.kind,
-        candidate_key: requireNonEmptyString(proposal.candidate_key, "candidate_key"),
-        scope,
-        authority: proposal.authority,
-        applicability,
-        content,
-        ...rationale === void 0 ? {} : { rationale },
-        exceptions,
-        confidence_bp: normalizeConfidence(proposal.confidence_bp),
-        source_refs: source_refs2,
-        ...proposal.evidence_summary ? { evidence_summary: redactText(String(proposal.evidence_summary)).slice(0, 1e3) } : {},
-        ambiguous: proposal.ambiguous === true
-      }];
-    }
-    const source_refs = normalizeSourceRefs(proposal?.source_refs, input);
-    if (proposal?.kind === "correction_split") {
-      const old_condition = requireNonEmptyString(proposal.old_condition, "old_condition");
-      const old_behavior = requireNonEmptyString(proposal.old_behavior, "old_behavior");
-      const new_condition = requireNonEmptyString(proposal.new_condition, "new_condition");
-      const new_behavior = requireNonEmptyString(proposal.new_behavior, "new_behavior");
-      const confidence_bp = normalizeConfidence(proposal.confidence_bp);
-      const correctionAuthorityRefs = withoutAdvisorEvidence(source_refs, input);
-      const repeatedReplacement = hasEnoughRepeatedEvidence(correctionAuthorityRefs, input, { condition: new_condition, behavior: new_behavior, polarity: 1 });
-      const oldContext = matchingHabitContext(input, { condition: old_condition, behavior: old_behavior, polarity: 1 });
-      const explicitCorrection = confidence_bp >= 8500 && correctionAuthorityRefs.length >= 1 && oldContext?.status === "active";
-      const evidence_stage2 = repeatedReplacement || explicitCorrection ? "reviewable" : "collecting";
-      return [{
-        proposal_id: requireNonEmptyString(proposal.proposal_id, "proposal_id"),
-        kind: "correction_split",
-        candidate_key: requireNonEmptyString(proposal.candidate_key, "candidate_key"),
-        old_condition,
-        old_behavior,
-        new_condition,
-        new_behavior,
-        confidence_bp,
-        source_refs,
-        evidence_stage: evidence_stage2,
-        ...proposal.evidence_summary ? { evidence_summary: redactText(String(proposal.evidence_summary)).slice(0, 1e3) } : {},
-        ambiguous: proposal.ambiguous === true
-      }];
-    }
-    if (proposal?.kind !== "habit_candidate") throw new Error("habit_learning_model_invalid_proposal_kind");
-    const condition = requireNonEmptyString(proposal.condition, "condition");
-    const behavior = requireNonEmptyString(proposal.behavior, "behavior");
-    const polarity = proposal.polarity === -1 ? -1 : 1;
-    const evidence_stage = hasEnoughRepeatedEvidence(source_refs, input, { condition, behavior, polarity }) ? "reviewable" : "collecting";
-    return [{
-      proposal_id: requireNonEmptyString(proposal.proposal_id, "proposal_id"),
-      kind: "habit_candidate",
-      candidate_key: requireNonEmptyString(proposal.candidate_key, "candidate_key"),
-      condition,
-      behavior,
-      polarity,
-      confidence_bp: normalizeConfidence(proposal.confidence_bp),
-      source_refs,
-      evidence_stage,
-      ...proposal.evidence_summary ? { evidence_summary: redactText(String(proposal.evidence_summary)).slice(0, 1e3) } : {},
-      ambiguous: proposal.ambiguous === true
-    }];
-  }) : [];
-  return {
-    schema_version: 1,
-    user_id: input.userId,
-    file_generation: input.expected.file_generation,
-    batch_id: String(raw?.batch_id || `manual-${Date.now()}`),
-    model: input.model,
-    created_at: (/* @__PURE__ */ new Date()).toISOString(),
-    observations_read: { seq_start: input.expected.seq_start, seq_end: input.expected.seq_end, checksum: input.expected.read_checksum },
-    proposals
-  };
-}
-function createPiConsolidationModelAdapter(ctx, options) {
-  const purpose = options.purpose || "agent-experience-manual-habit-learning";
-  return {
-    async generate(input) {
-      const parsed = parseProviderModel(input.model);
-      if (!parsed) throw new Error("habit_learning_model_invalid");
-      const model = ctx.modelRegistry?.find?.(parsed.provider, parsed.modelId);
-      if (!model) throw new Error("habit_learning_model_unavailable");
-      const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-      if (!auth.ok || !auth.apiKey) throw new Error("habit_learning_model_auth_unavailable");
-      const response = await options.complete(model, {
-        systemPrompt: buildConsolidationSystemPrompt(input.expected.file_generation),
-        messages: [{ role: "user", content: buildConsolidationUserPrompt(input), timestamp: Date.now() }]
-      }, {
-        apiKey: auth.apiKey,
-        headers: auth.headers,
-        env: auth.env,
-        signal: input.signal ?? ctx.signal,
-        timeoutMs: 12e4,
-        maxRetries: 1,
-        maxRetryDelayMs: 0,
-        maxTokens: 4096,
-        metadata: { purpose }
-      });
-      if (response?.stopReason === "length") throw new Error("habit_learning_model_truncated_response");
-      const text = extractAssistantText(response);
-      if (!text.trim()) throw new Error("habit_learning_model_empty_response");
-      return normalizeConsolidationModelOutput(extractionJson(text), input, { habitsOnly: true });
-    }
-  };
-}
-
-// extensions/agent-experience/src/consolidate/standalone-model-adapter.ts
 init_redaction();
 var PI_CODING_AGENT_PACKAGE = "@earendil-works/pi-coding-agent";
 async function validatedRuntimeRoot(input) {
@@ -5054,9 +5584,9 @@ var LAW_CHECKER_VERSION = "agent_experience_law_check_v1";
 function normalizeText2(value) {
   return String(value ?? "").trim().replace(/\s+/g, " ").toLowerCase();
 }
-function parseJson2(text) {
+function parseJson2(text2) {
   try {
-    return JSON.parse(String(text || "{}"));
+    return JSON.parse(String(text2 || "{}"));
   } catch {
     return {};
   }
@@ -5071,6 +5601,17 @@ function uniqueDates(data) {
 }
 function activationEligibilityFromHabit(row) {
   const data = parseJson2(row.data_json);
+  if (data.evidence_protocol === "situation_v2") {
+    const units = Array.isArray(data.evidence_units) ? data.evidence_units : [];
+    if (data.evidence_basis === "explicit_durable_preference") {
+      const exactStatements = new Set(units.filter((unit) => unit?.kind === "explicit_user_statement" && typeof unit.unit_id === "string").map((unit) => unit.unit_id));
+      return { eligible: exactStatements.size >= 1, unique_observations: exactStatements.size, distinct_days: exactStatements.size ? 1 : 0, dates: [] };
+    }
+    const outcomes = units.filter((unit) => unit?.kind === "assessed_user_feedback" && unit.independence_known === true && typeof unit.lineage_ref === "string");
+    const lineages = new Set(outcomes.map((unit) => unit.lineage_ref));
+    const dates2 = [...new Set(outcomes.map((unit) => String(unit.occurred_at || "").slice(0, 10)).filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date)))];
+    return { eligible: lineages.size >= 3 && dates2.length >= 2, unique_observations: lineages.size, distinct_days: dates2.length, dates: dates2 };
+  }
   const refs = uniqueRefs2(data);
   const dates = uniqueDates(data);
   return { eligible: refs.length >= 3 && dates.length >= 2, unique_observations: refs.length, distinct_days: dates.length, dates };
@@ -5086,11 +5627,11 @@ async function readConfiguredLawSnapshot(root, config) {
   const info = await lstat9(file);
   if (!info.isFile() || info.isSymbolicLink()) throw new Error("Agent Experience safety file is not a regular private file");
   if (info.size > 1e6) throw new Error("Agent Experience safety file exceeds the 1 MB limit");
-  const text = await readFile8(file, "utf8");
-  const checksum = sha256Hex(text);
+  const text2 = await readFile8(file, "utf8");
+  const checksum = sha256Hex(text2);
   const files = [{ path: file, checksum, required: true }];
   return { version: LAW_CHECKER_VERSION, hash: checksumJson({ version: LAW_CHECKER_VERSION, files }), files, text: `FILE: ${file}
-${text}` };
+${text2}` };
 }
 function revalidateLawSnapshotSync(snapshot) {
   const absoluteFiles = snapshot.files.filter((file) => isAbsolute3(file.path));
@@ -5101,12 +5642,12 @@ function revalidateLawSnapshotSync(snapshot) {
     if (!isAbsolute3(file.path)) throw new Error("Agent Experience safety snapshot contains an invalid path");
     const info = lstatSync(file.path);
     if (!info.isFile() || info.isSymbolicLink() || info.size > 1e6) throw new Error("Agent Experience safety file changed or is unsafe");
-    const text = readFileSync(file.path, "utf8");
-    const checksum = sha256Hex(text);
+    const text2 = readFileSync(file.path, "utf8");
+    const checksum = sha256Hex(text2);
     if (checksum !== file.checksum) throw new Error("Agent Experience safety file changed; retry the action");
     files.push({ ...file, checksum });
     parts.push(`FILE: ${file.path}
-${text}`);
+${text2}`);
   }
   const hash = checksumJson({ version: LAW_CHECKER_VERSION, files });
   if (hash !== snapshot.hash) throw new Error("Agent Experience safety snapshot changed; retry the action");
@@ -5115,7 +5656,7 @@ ${text}`);
 function checkHabitLaw(input) {
   if (input.law.version !== LAW_CHECKER_VERSION) throw new Error("Unsupported law checker version");
   if (!input.law.files.some((file) => file.required)) throw new Error("Required law file missing");
-  const text = normalizeText2(`${input.condition || ""} ${input.behavior || ""}`);
+  const text2 = normalizeText2(`${input.condition || ""} ${input.behavior || ""}`);
   const blocked = [
     /ignore .*safety/,
     /bypass .*safety/,
@@ -5133,7 +5674,7 @@ function checkHabitLaw(input) {
     /inject .*quarantine/,
     /inject .*pending[- ]review/
   ];
-  const reasons = blocked.filter((rule) => rule.test(text)).map((rule) => String(rule));
+  const reasons = blocked.filter((rule) => rule.test(text2)).map((rule) => String(rule));
   return { pass: reasons.length === 0, reasons, law_hash: input.law.hash, version: input.law.version };
 }
 var OPPOSITES = [
@@ -5196,10 +5737,10 @@ function selectorConditionIdentityChecksum(condition) {
 ${normalizeSemanticText(condition)}`);
 }
 function expectationFor(candidate) {
-  const text = selectorConditionEmbeddingInputV1(candidate.condition);
+  const text2 = selectorConditionEmbeddingInputV1(candidate.condition);
   return {
     habitId: candidate.id,
-    embeddingInputChecksum: embeddingInputChecksum(text, SELECTOR_CONDITION_EMBEDDING_INPUT_VERSION),
+    embeddingInputChecksum: embeddingInputChecksum(text2, SELECTOR_CONDITION_EMBEDDING_INPUT_VERSION),
     // Version-scoped compatibility note: for selector condition rows only, the
     // legacy-named habit_row_checksum column stores stable condition identity.
     // Mutable confidence/staleness changes therefore do not invalidate meaning.
@@ -5321,9 +5862,9 @@ async function prepareSelectorConditionVectors(db, input) {
 init_redaction();
 
 // extensions/agent-experience/src/selector.ts
-function parseJson3(text) {
+function parseJson3(text2) {
   try {
-    return JSON.parse(String(text || "{}"));
+    return JSON.parse(String(text2 || "{}"));
   } catch {
     return {};
   }
@@ -5332,10 +5873,10 @@ function stableId4(prefix, value) {
   return `${prefix}-${sha256Hex(canonicalJson(value)).slice(0, 40)}`;
 }
 function boundedJson2(value, max = 12e3) {
-  const text = canonicalJson(redactJson(value ?? {}));
-  if (text.length > max) throw new Error("Selector payload too large");
-  if (containsUnredactedSensitiveText(text)) throw new Error("Selector payload contains unredacted sensitive text");
-  return text;
+  const text2 = canonicalJson(redactJson(value ?? {}));
+  if (text2.length > max) throw new Error("Selector payload too large");
+  if (containsUnredactedSensitiveText(text2)) throw new Error("Selector payload contains unredacted sensitive text");
+  return text2;
 }
 function selectorCandidateFromRow(row) {
   const data = parseJson3(row.data_json);
@@ -5590,15 +6131,18 @@ async function runScheduledAnalyzeCore(input) {
     }
     const adapter = await input.adapterFactory();
     const expected = expectedRangeFromObservations(range.records, userId);
+    const batchNow = now();
+    storage = await initExperienceStorage(input.root, { allowInit: true, userId });
+    const situationBatch = buildSituationBatch(storage.db, { userId, observations: range.records, retentionDays: input.config.observation_retention_days, now: batchNow });
     const output = await adapter.generate({
       model: input.config.consolidation_model,
       userId,
       observations: range.records,
       habitContext,
       expected,
+      situationBatch,
       signal: input.signal
     });
-    storage = await initExperienceStorage(input.root, { allowInit: true, userId });
     const result = await runConsolidationOnce({
       root: input.root,
       db: storage.db,
@@ -5607,8 +6151,9 @@ async function runScheduledAnalyzeCore(input) {
       modelOutput: output,
       model: input.config.consolidation_model,
       config: input.config,
+      situationBatch,
       dryRun: false,
-      now: now()
+      now: batchNow
     });
     if (!result.ok) throw new Error(`scheduled_model_output_invalid:${String(result.reason || "invalid")}`);
     let promoted = 0;

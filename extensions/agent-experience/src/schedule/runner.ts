@@ -3,6 +3,7 @@ import { buildCompactHabitContext } from "../consolidate/context.ts";
 import type { ConsolidationModelAdapter } from "../consolidate/model-adapter.ts";
 import { getProposalReadWatermark } from "../consolidate/commit.ts";
 import { expectedRangeFromObservations, runConsolidationOnce } from "../consolidate/runner.ts";
+import { buildSituationBatch } from "../consolidate/situations.ts";
 import { readConfiguredLawSnapshot } from "../review.ts";
 import { createEmbeddingAdapterFromConfig, semanticPolicyFromConfig } from "../semantic/config.ts";
 import type { EmbeddingAdapter } from "../semantic/types.ts";
@@ -70,16 +71,19 @@ export async function runScheduledAnalyzeCore(input: {
 		// The model adapter is deliberately created only after unread work is proven.
 		const adapter = await input.adapterFactory();
 		const expected = expectedRangeFromObservations(range.records, userId);
+		const batchNow = now();
+		storage = await initExperienceStorage(input.root, { allowInit: true, userId });
+		const situationBatch = buildSituationBatch(storage.db, { userId, observations: range.records, retentionDays: input.config.observation_retention_days, now: batchNow });
 		const output = await adapter.generate({
 			model: input.config.consolidation_model,
 			userId,
 			observations: range.records,
 			habitContext,
 			expected,
+			situationBatch,
 			signal: input.signal,
 		});
 
-		storage = await initExperienceStorage(input.root, { allowInit: true, userId });
 		const result = await runConsolidationOnce({
 			root: input.root,
 			db: storage.db,
@@ -88,8 +92,9 @@ export async function runScheduledAnalyzeCore(input: {
 			modelOutput: output,
 			model: input.config.consolidation_model,
 			config: input.config,
+			situationBatch,
 			dryRun: false,
-			now: now(),
+			now: batchNow,
 		});
 		if (!result.ok) throw new Error(`scheduled_model_output_invalid:${String(result.reason || "invalid")}`);
 

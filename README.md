@@ -221,7 +221,7 @@ Analyze runs as a bounded nonblocking job. Suggestions remain inert until approv
 
 ## Review and activation
 
-An Analyze-generated suggestion currently needs repeated evidence: at least three cited observations across at least two days. A directly declared habit bypasses only that repetition threshold after you confirm its exact wording; it does not bypass safety law, conflicts, local duplicate checking, stale-state checks, or audit.
+An inferred Analyze suggestion needs assessed user feedback from at least three independent known conversation lineages across at least two days. Turns and forks from one lineage count once; unknown/legacy lineage and Advisor findings cannot increase independence. One unmistakable user-stated future/general preference may be reviewable from its exact user-role statement. A directly declared habit bypasses only that repetition threshold after you confirm its exact wording; it does not bypass safety law, conflicts, local duplicate checking, stale-state checks, or audit.
 
 Approval and activation are separate when a requirement is temporarily unmet. An approved candidate can remain visibly waiting for enough evidence, current safety-law approval, conflict resolution, or local duplicate checking.
 
@@ -264,7 +264,7 @@ When you manually start Analyze from setup or `/experience analyze`, Pi snapshot
 
 When an approved habit later steers a TUI answer, its approved `When:` / `Do:` wording is retained in that local Pi session as the visible provenance marker. The marker contains no raw prompt or source example and never enters LLM context.
 
-Fully analyzed source text expires after seven days by default; setup also offers 14 or 30 days. Minimized evidence and audit history remain so reviewed habits can still be explained. Backups exclude raw observation text and downloaded duplicate-model files.
+Fully analyzed source text expires after seven days by default; setup also offers 14 or 30 days. Retention is anchored to each original observation timestamp, including after retention is shortened; Analyze never grants old evidence a fresh window. Minimized evidence and audit history remain so reviewed habits can still be explained. Backups exclude raw observation text and downloaded duplicate-model files.
 
 ## Frequently asked questions
 
@@ -406,7 +406,7 @@ Observation storage uses:
 - a fixed-width offset index;
 - token-owned single-writer locking.
 
-Append validates only bounded tail state rather than parsing all history. Manual Analyze snapshots the same-user unread queue waiting at action start, then seeks through that fixed queue using sequential calls bounded by default to at most 200 records and 80,000 bytes each. Examples appended afterward wait for the next run. Each batch advances the read watermark only in its successful reducer transaction, so earlier committed progress remains valid if a later batch fails. Compact structured habit/candidate context is rebuilt between committed batches, preserving cross-batch learning without resending committed raw observations. Scheduled Analyze remains one bounded batch per scheduled run. The Analyze model prompt performs friction-weighted causal extraction — locating friction across likely-related observation turns (adjacency is a bounded heuristic the model is instructed to corroborate before attributing pushback, not a pipeline-enforced guarantee, since concurrent sessions can interleave into one stream and pairs can be dropped), inferring the improvement direction, and formulating a generalized When/Do habit — rather than clustering superficially similar wording; friction-derived candidates outrank friction-free positive preferences.
+Append validates only bounded tail state rather than parsing all history. Manual Analyze snapshots the same-user unread queue waiting at action start, then seeks through that fixed queue using sequential calls bounded by default to at most 200 records and 80,000 bytes each. Examples appended afterward wait for the next run. Each batch advances the read watermark only in its successful reducer transaction, so earlier committed progress remains valid if a later batch fails. Compact structured habit/candidate context is rebuilt between committed batches, preserving cross-batch learning without resending committed raw observations. Scheduled Analyze remains one bounded batch per scheduled run. Opaque captured lineage and parent-turn links establish chronology only. Analyze transiently assesses objective, constraints, consequential action, exact user-role feedback support, mechanism confidence, unknowns, applicability, exceptions, and durable-vs-task-local scope before any proposal. Unrelated next tasks, assistant success claims, and task-local instructions are inadmissible. Inferred lessons also require a supported mechanism; an exact future/general user preference does not need an invented causal mechanism. Assessment prose and quotes are discarded before proposal persistence or quarantine.
 
 After a generation is fully analyzed, source text rotates through a recovery journal. Rotated redacted source text expires after:
 

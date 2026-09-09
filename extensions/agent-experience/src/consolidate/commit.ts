@@ -8,6 +8,7 @@ import type { EmbeddingAdapter, SemanticDedupePolicy } from "../semantic/types.t
 import type { ValidatedObservationRecord } from "./observations.ts";
 import { observationKey } from "./observations.ts";
 import { validateProposalBatch, type HabitCandidateProposal, type ValidatedProposalBatch } from "./proposals.ts";
+import { applyEpisodeFrontierTransitionInTransaction, persistedSituationEvidence, situationEvidenceEligibility, validateSituationEvidenceForProposal, type SituationBatch, type SituationEvidenceBasis } from "./situations.ts";
 
 export interface ConsolidationResult {
 	user_id: string;
@@ -36,6 +37,7 @@ interface CommitInput {
 	proposalBatch: unknown;
 	observations: ValidatedObservationRecord[];
 	readCoverage?: { seq_start: number; last: ValidatedObservationRecord };
+	situationBatch?: SituationBatch;
 	semantic?: { policy?: Partial<SemanticDedupePolicy>; provider?: EmbeddingAdapter; signal?: AbortSignal };
 }
 
@@ -163,6 +165,15 @@ function mergeCandidateData(existingResidual: any, incoming: any): unknown {
 		...existingNonAdvisorSourceDates,
 		...(Array.isArray(incoming?.non_advisor_source_dates) ? incoming.non_advisor_source_dates : []),
 	]).sort();
+	if (incoming?.evidence_protocol === "situation_v2") {
+		merged.evidence_protocol = "situation_v2";
+		merged.evidence_basis = existingResidual?.evidence_basis === "explicit_durable_preference" || incoming?.evidence_basis === "explicit_durable_preference" ? "explicit_durable_preference" : "inferred_pattern";
+		const units = new Map<string, unknown>();
+		for (const unit of [...(existingResidual?.evidence_protocol === "situation_v2" && Array.isArray(existingResidual?.evidence_units) ? existingResidual.evidence_units : []), ...(Array.isArray(incoming?.evidence_units) ? incoming.evidence_units : [])]) {
+			if (unit && typeof unit === "object" && typeof unit.unit_id === "string" && !units.has(unit.unit_id)) units.set(unit.unit_id, unit);
+		}
+		merged.evidence_units = [...units.values()];
+	}
 	return merged;
 }
 
@@ -307,7 +318,7 @@ function validateSourceRefs(proposal: HabitCandidateProposal, observationMap: Ma
 	});
 }
 
-function proposalCandidateData(batch: ValidatedProposalBatch, proposal: HabitCandidateProposal, sourceDates: string[], advisorEvidence: AdvisorEvidenceMetadata) {
+function proposalCandidateData(batch: ValidatedProposalBatch, proposal: HabitCandidateProposal, sourceDates: string[], advisorEvidence: AdvisorEvidenceMetadata, situation?: { evidenceUnits: unknown[]; basis: SituationEvidenceBasis; eligibility: ReturnType<typeof situationEvidenceEligibility> }) {
 	return {
 		schema_version: 2,
 		record_kind: "candidate_habit_v1",
@@ -326,12 +337,13 @@ function proposalCandidateData(batch: ValidatedProposalBatch, proposal: HabitCan
 		evidence_stage: proposal.evidence_stage || "reviewable",
 		source_refs: proposal.source_refs,
 		source_dates: sourceDates,
+		...(situation ? { evidence_protocol: "situation_v2", evidence_units: situation.evidenceUnits, evidence_basis: situation.basis, eligibility_summary: situation.eligibility } : {}),
 		...(proposal.correction_role ? { correction_role: proposal.correction_role, correction_group_id: proposal.correction_group_id } : {}),
 		...advisorEvidence,
 	};
 }
 
-function proposalEvidenceData(_batch: ValidatedProposalBatch, proposal: HabitCandidateProposal, sourceDates: string[], habitId: string, advisorEvidence: AdvisorEvidenceMetadata) {
+function proposalEvidenceData(_batch: ValidatedProposalBatch, proposal: HabitCandidateProposal, sourceDates: string[], habitId: string, advisorEvidence: AdvisorEvidenceMetadata, situation?: { evidenceUnits: unknown[]; basis: SituationEvidenceBasis; eligibility: ReturnType<typeof situationEvidenceEligibility> }) {
 	return {
 		schema_version: 2,
 		record_kind: "candidate_evidence_v1",
@@ -345,6 +357,7 @@ function proposalEvidenceData(_batch: ValidatedProposalBatch, proposal: HabitCan
 		evidence_stage: proposal.evidence_stage || "reviewable",
 		source_refs: proposal.source_refs,
 		source_dates: sourceDates,
+		...(situation ? { evidence_protocol: "situation_v2", evidence_units: situation.evidenceUnits, evidence_basis: situation.basis, eligibility_summary: situation.eligibility } : {}),
 		...(proposal.evidence_summary === undefined ? {} : { evidence_summary: proposal.evidence_summary }),
 		...(proposal.correction_role ? { correction_role: proposal.correction_role, correction_group_id: proposal.correction_group_id } : {}),
 		...advisorEvidence,
@@ -414,14 +427,26 @@ export async function consolidateProposalBatch(input: CommitInput): Promise<Cons
 	if (!maxRef) throw new Error("Proposal batch missing source refs");
 	const policy = sanitizePolicy(input.semantic?.policy);
 	if (policy.enabled && !input.semantic?.provider) throw new Error("Semantic duplicate provider unavailable");
-	const staged: Array<{ proposal: HabitCandidateProposal; sourceDates: string[]; candidateId: string; evidenceId: string; candidateData: any; evidenceData: any; advisorEvidence: AdvisorEvidenceMetadata; hasIndependentCorrectionAuthority: boolean; duplicateMatch?: any }> = [];
+	const staged: Array<{ proposal: HabitCandidateProposal; sourceDates: string[]; candidateId: string; evidenceId: string; candidateData: any; evidenceData: any; advisorEvidence: AdvisorEvidenceMetadata; situation?: { evidenceUnits: unknown[]; basis: SituationEvidenceBasis; eligibility: ReturnType<typeof situationEvidenceEligibility> }; hasIndependentCorrectionAuthority: boolean; duplicateMatch?: any }> = [];
 	for (let i = 0; i < batch.proposals.length; i++) {
-		const proposal = batch.proposals[i];
+		let proposal = batch.proposals[i];
 		const sourceDates = sourceRecordsByProposal[i].map((record) => record.created_at);
 		const advisorEvidence = advisorEvidenceMetadata(sourceRecordsByProposal[i]);
 		const hasIndependentCorrectionAuthority = sourceRecordsByProposal[i].some((record) => record.origin?.source !== "advisor_finding");
-		let candidateData = proposalCandidateData(batch, proposal, sourceDates, advisorEvidence);
 		const candidateId = stableId("candidate", habitIdentity(proposal, userId));
+		let situation: { evidenceUnits: unknown[]; basis: SituationEvidenceBasis; eligibility: ReturnType<typeof situationEvidenceEligibility> } | undefined;
+		if (input.situationBatch) {
+			const units = validateSituationEvidenceForProposal(proposal, input.situationBatch);
+			const basis = proposal.evidence_basis ?? "inferred_pattern";
+			const evidenceUnits = persistedSituationEvidence(units, basis);
+			const existing = input.db.prepare("SELECT data_json FROM habits WHERE user_id = ? AND id = ?").get(userId, candidateId);
+			let existingData: unknown = {};
+			try { existingData = existing ? JSON.parse(existing.data_json) : {}; } catch {}
+			const eligibility = situationEvidenceEligibility(existingData, evidenceUnits, basis);
+			proposal = { ...proposal, evidence_stage: eligibility.reviewable ? "reviewable" : "collecting" };
+			situation = { evidenceUnits, basis, eligibility };
+		}
+		let candidateData = proposalCandidateData(batch, proposal, sourceDates, advisorEvidence, situation);
 		let evidenceHabitId = candidateId;
 		let duplicateMatch: any;
 		let stagedRow: any;
@@ -438,9 +463,9 @@ export async function consolidateProposalBatch(input: CommitInput): Promise<Cons
 				candidateData = { ...candidateData, review_status: "duplicate_resolution", active: false, injectable: false, semantic_duplicate: storedDuplicateMatch };
 			}
 		}
-		const evidenceData = proposalEvidenceData(batch, proposal, sourceDates, evidenceHabitId, advisorEvidence);
+		const evidenceData = proposalEvidenceData(batch, proposal, sourceDates, evidenceHabitId, advisorEvidence, situation);
 		const evidenceId = stableId("evidence", { schema_version: 2, user_id: userId, payload: evidenceData });
-		staged.push({ proposal, sourceDates, candidateId, evidenceId, candidateData, evidenceData, advisorEvidence, hasIndependentCorrectionAuthority, duplicateMatch });
+		staged.push({ proposal, sourceDates, candidateId, evidenceId, candidateData, evidenceData, advisorEvidence, situation, hasIndependentCorrectionAuthority, duplicateMatch });
 	}
 	let result: ConsolidationResult | undefined;
 	input.db.exec("BEGIN IMMEDIATE");
@@ -461,7 +486,7 @@ export async function consolidateProposalBatch(input: CommitInput): Promise<Cons
 				if (matches.length === 1) {
 					const target = matches[0];
 					suppressContradictedHabit(input.db, { userId, before: target, proposal: item.proposal, sourceDates: item.sourceDates, now: batch.created_at });
-					const evidenceData = proposalEvidenceData(batch, item.proposal, item.sourceDates, target.id, item.advisorEvidence);
+					const evidenceData = proposalEvidenceData(batch, item.proposal, item.sourceDates, target.id, item.advisorEvidence, item.situation);
 					const evidenceId = stableId("evidence", { schema_version: 2, user_id: userId, payload: evidenceData });
 					const evidence = insertIdempotentStorageRecord(input.db, "evidence", { id: evidenceId, userId, data: evidenceData, now: batch.created_at });
 					candidateIds.push(target.id);
@@ -485,6 +510,7 @@ export async function consolidateProposalBatch(input: CommitInput): Promise<Cons
 			if (candidate.inserted) insertedCandidates++;
 			if (evidence.inserted) insertedEvidence++;
 		}
+		if (input.situationBatch) applyEpisodeFrontierTransitionInTransaction(input.db, input.situationBatch);
 		const watermark = upsertWatermark(input.db, { user_id: userId, file_generation: fileGeneration, seq: maxRef.seq, checksum: maxRef.checksum, updated_at: batch.created_at });
 		let readWatermark: { row: Watermark; changed: 0 | 1 } | undefined;
 		if (input.readCoverage) {

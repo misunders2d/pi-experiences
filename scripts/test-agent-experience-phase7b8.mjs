@@ -191,7 +191,7 @@ try {
   }).join('\n') + '\n', 'utf8');
   const output = modelOutput(observations);
   const fixture = join(temp, 'model-output.json');
-  await writeFile(fixture, JSON.stringify(output), 'utf8');
+  await writeFile(fixture, JSON.stringify({ ...output, proposals: [] }), 'utf8');
   const beforeDry = counts(storage.db);
   const dry = await runConsolidationOnce({ root, db: storage.db, userId: 'owner', observations, modelOutput: output, model: 'openai-codex/gpt-5.5', dryRun: true, now: '2026-07-08T03:00:00.000Z' });
   assert.equal(dry.ok, true);

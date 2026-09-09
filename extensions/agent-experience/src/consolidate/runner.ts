@@ -8,6 +8,9 @@ import type { EmbeddingAdapter, SemanticDedupePolicy } from "../semantic/types.t
 import type { ExperienceHost } from "../experience/types.ts";
 import type { ValidatedObservationRecord } from "./observations.ts";
 import { validateModelOutputBatch, validateModelOutputSourceRefs, modelOutputToProposalBatch, insertModelOutputQuarantine, processValidatedModelOutput, type ValidatedModelOutputBatch } from "./model-output.ts";
+import { buildCompactHabitContext } from "./context.ts";
+import { isAssessmentValidatedModelOutput, normalizeConsolidationModelOutput } from "./model-adapter.ts";
+import { assertSituationBatch, buildSituationBatch, validateSituationEvidenceForProposal, type SituationBatch } from "./situations.ts";
 
 export interface ConsolidationExpectedRange {
 	user_id: string;
@@ -86,7 +89,7 @@ function tableCounts(db: any): Record<string, number> {
 	return Object.fromEntries(tables.map((table) => [table, Number(db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get().count)]));
 }
 
-export async function runConsolidationOnce(input: { root: string; db: any; userId: string; observations: ValidatedObservationRecord[]; modelOutput: unknown; model: string; host?: ExperienceHost; config?: AgentExperienceConfig; semantic?: { policy?: Partial<SemanticDedupePolicy>; provider?: EmbeddingAdapter; signal?: AbortSignal }; dryRun?: boolean; now?: string }) {
+export async function runConsolidationOnce(input: { root: string; db: any; userId: string; observations: ValidatedObservationRecord[]; modelOutput: unknown; model: string; host?: ExperienceHost; config?: AgentExperienceConfig; situationBatch?: SituationBatch; semantic?: { policy?: Partial<SemanticDedupePolicy>; provider?: EmbeddingAdapter; signal?: AbortSignal }; dryRun?: boolean; now?: string }) {
 	const userId = normalizeUserId(input.userId);
 	const createdAt = input.now || new Date().toISOString();
 	const lock = await acquireConsolidationLock(input.root, { owner: "experience-consolidate", createdAt });
@@ -94,14 +97,46 @@ export async function runConsolidationOnce(input: { root: string; db: any; userI
 	try {
 		const expected = expectedRangeFromObservations(input.observations, userId);
 		const before = tableCounts(input.db);
+		const authoritativeSituationBatch = buildSituationBatch(input.db, {
+			userId,
+			observations: input.observations,
+			retentionDays: input.config?.observation_retention_days ?? 7,
+			now: createdAt,
+		});
+		if (input.situationBatch) {
+			assertSituationBatch(input.situationBatch, { userId, fileGeneration: expected.file_generation, seqStart: expected.seq_start, seqEnd: expected.seq_end });
+			if (input.situationBatch.checksum !== authoritativeSituationBatch.checksum) throw new Error("Situation batch differs from authoritative runner snapshot");
+		}
+		const hasCausalInput = input.observations.some((record) => {
+			const payload = record.payload_redacted as any;
+			return payload?.kind === "conversation_pair_v1" && payload.causal_context !== undefined;
+		});
+		const requireSituationContract = !!input.config || hasCausalInput;
+		const situationBatch = requireSituationContract ? authoritativeSituationBatch : undefined;
 		let output: ValidatedModelOutputBatch;
 		try {
-			output = validateModelOutputBatch(input.modelOutput, userId);
+			let candidateOutput = input.modelOutput;
+			if (situationBatch && !isAssessmentValidatedModelOutput(candidateOutput)) {
+				candidateOutput = normalizeConsolidationModelOutput(candidateOutput as any, {
+					model: input.model,
+					userId,
+					observations: input.observations,
+					habitContext: buildCompactHabitContext(input.db, { userId, limit: 60 }),
+					expected,
+					situationBatch,
+				}, { habitsOnly: true });
+			}
+			if (situationBatch && !isAssessmentValidatedModelOutput(candidateOutput)) throw new Error("habit_learning_model_missing_assessment_proof");
+			output = validateModelOutputBatch(candidateOutput, userId);
 			validateModelOutputExpectedRange(output, expected);
 			validateModelOutputSourceRefs(output, input.observations);
+			if (situationBatch) for (const proposal of output.proposals) validateSituationEvidenceForProposal(proposal, situationBatch);
 		} catch (error: any) {
 			if (!input.dryRun) {
-				insertModelOutputQuarantine(input.db, { userId, fileGeneration: expected.file_generation, seqStart: expected.seq_start, seqEnd: expected.seq_end, reason: "read_range_mismatch", model: input.model, output: input.modelOutput, createdAt });
+				const quarantineOutput = situationBatch
+					? { contract: "situation_assessment_v1", validation: "rejected", proposal_count: Array.isArray((input.modelOutput as any)?.proposals) ? Math.min((input.modelOutput as any).proposals.length, 200) : 0 }
+					: input.modelOutput;
+				insertModelOutputQuarantine(input.db, { userId, fileGeneration: expected.file_generation, seqStart: expected.seq_start, seqEnd: expected.seq_end, reason: "model_output_invalid", model: input.model, output: quarantineOutput, createdAt });
 			}
 			return { ok: false, dry_run: !!input.dryRun, reason: String(error?.message || "model_output_invalid"), quarantined: !input.dryRun, expected, before, after: tableCounts(input.db) };
 		}
@@ -121,7 +156,7 @@ export async function runConsolidationOnce(input: { root: string; db: any; userI
 			if (!provider) return { ok: false, dry_run: false, reason: "semantic_embedding_provider_unavailable", expected, diff, before, after: tableCounts(input.db) };
 			semantic = { policy: semanticPolicy, provider, signal: input.semantic?.signal };
 		}
-		const result = await processValidatedModelOutput({ db: input.db, userId, output, observations: input.observations, host: input.host, expectedRange: expected, semantic });
+		const result = await processValidatedModelOutput({ db: input.db, userId, output, observations: input.observations, host: input.host, expectedRange: expected, situationBatch, semantic });
 		return { ok: true, dry_run: false, expected, diff, result, before, after: tableCounts(input.db) };
 	} finally {
 		await ownedEmbeddingProvider?.close?.().catch(() => undefined);

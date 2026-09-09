@@ -7,7 +7,8 @@ import { containsUnredactedSensitiveText, redactJson } from "../storage/redactio
 import type { ValidatedObservationRecord } from "./observations.ts";
 import { observationKey } from "./observations.ts";
 import { consolidateProposalBatch, recordProposalReadCoverageInTransaction, recordZeroProposalReadCoverage, type ConsolidationResult, type Watermark } from "./commit.ts";
-import type { ProposalBatch, ProposalSourceRef } from "./proposals.ts";
+import type { ProposalBatch, ProposalEvidenceBasis, ProposalSourceRef } from "./proposals.ts";
+import { applyEpisodeFrontierTransitionInTransaction, validateSituationEvidenceForProposal, type SituationBatch } from "./situations.ts";
 
 export type ModelProposalKind = ExperienceKind | "habit_candidate" | "correction_split";
 
@@ -24,6 +25,9 @@ export interface HabitCandidateModelProposal {
 	source_refs: ModelOutputSourceRef[];
 	evidence_summary?: string;
 	evidence_stage?: "collecting" | "reviewable";
+	evidence_unit_refs?: string[];
+	evidence_basis?: ProposalEvidenceBasis;
+	exact_user_quote?: string;
 	ambiguous?: false;
 }
 
@@ -39,6 +43,9 @@ export interface CorrectionSplitModelProposal {
 	source_refs: ModelOutputSourceRef[];
 	evidence_summary?: string;
 	evidence_stage?: "collecting" | "reviewable";
+	evidence_unit_refs?: string[];
+	evidence_basis?: ProposalEvidenceBasis;
+	exact_user_quote?: string;
 	ambiguous?: false;
 }
 
@@ -55,6 +62,9 @@ export interface ExperienceCandidateModelProposal {
 	confidence_bp: number;
 	source_refs: ModelOutputSourceRef[];
 	evidence_summary?: string;
+	evidence_unit_refs?: string[];
+	evidence_basis?: ProposalEvidenceBasis;
+	exact_user_quote?: string;
 	ambiguous?: false;
 }
 
@@ -76,9 +86,10 @@ export interface ValidatedModelOutputBatch {
 
 const MODEL_OUTPUT_KEYS = new Set(["schema_version", "user_id", "file_generation", "batch_id", "model", "created_at", "observations_read", "proposals"]);
 const OBSERVATIONS_READ_KEYS = new Set(["seq_start", "seq_end", "checksum"]);
-const HABIT_KEYS = new Set(["proposal_id", "kind", "candidate_key", "condition", "behavior", "polarity", "confidence_bp", "source_refs", "evidence_summary", "evidence_stage", "ambiguous"]);
-const CORRECTION_KEYS = new Set(["proposal_id", "kind", "candidate_key", "old_condition", "old_behavior", "new_condition", "new_behavior", "confidence_bp", "source_refs", "evidence_summary", "evidence_stage", "ambiguous"]);
-const EXPERIENCE_KEYS = new Set(["proposal_id", "kind", "candidate_key", "scope", "authority", "applicability", "content", "rationale", "exceptions", "confidence_bp", "source_refs", "evidence_summary", "ambiguous"]);
+const SITUATION_KEYS = ["evidence_unit_refs", "evidence_basis", "exact_user_quote"];
+const HABIT_KEYS = new Set(["proposal_id", "kind", "candidate_key", "condition", "behavior", "polarity", "confidence_bp", "source_refs", "evidence_summary", "evidence_stage", ...SITUATION_KEYS, "ambiguous"]);
+const CORRECTION_KEYS = new Set(["proposal_id", "kind", "candidate_key", "old_condition", "old_behavior", "new_condition", "new_behavior", "confidence_bp", "source_refs", "evidence_summary", "evidence_stage", ...SITUATION_KEYS, "ambiguous"]);
+const EXPERIENCE_KEYS = new Set(["proposal_id", "kind", "candidate_key", "scope", "authority", "applicability", "content", "rationale", "exceptions", "confidence_bp", "source_refs", "evidence_summary", ...SITUATION_KEYS, "ambiguous"]);
 const SCOPE_KEYS = new Set(["kind", "key"]);
 const EXPERIENCE_KIND_SET = new Set<string>(EXPERIENCE_KINDS);
 const EXPERIENCE_SCOPE_SET = new Set<string>(EXPERIENCE_SCOPE_KINDS);
@@ -175,6 +186,18 @@ function validateProposal(value: unknown, seenIds: Set<string>, generation: stri
 	const proposalId = assertSafeToken(proposal.proposal_id, "proposal_id");
 	if (seenIds.has(proposalId)) throw new Error("Duplicate model proposal_id");
 	seenIds.add(proposalId);
+	const evidenceUnitRefs = proposal.evidence_unit_refs === undefined ? undefined : (() => {
+		if (!Array.isArray(proposal.evidence_unit_refs) || proposal.evidence_unit_refs.length < 1 || proposal.evidence_unit_refs.length > 20) throw new Error("Invalid evidence_unit_refs");
+		const refs = proposal.evidence_unit_refs.map((value) => assertChecksum(value, "evidence_unit_ref"));
+		if (new Set(refs).size !== refs.length) throw new Error("Duplicate evidence_unit_ref");
+		return refs;
+	})();
+	const evidenceBasis = proposal.evidence_basis === undefined ? undefined : assertSafeToken(proposal.evidence_basis, "evidence_basis", 40);
+	if (evidenceBasis !== undefined && evidenceBasis !== "inferred_pattern" && evidenceBasis !== "explicit_durable_preference") throw new Error("Invalid evidence_basis");
+	const exactUserQuote = proposal.exact_user_quote === undefined ? undefined : assertSafeText(proposal.exact_user_quote, "exact_user_quote", 400);
+	if ((evidenceUnitRefs === undefined) !== (evidenceBasis === undefined)) throw new Error("Incomplete situation evidence metadata");
+	if (evidenceBasis === "explicit_durable_preference" && exactUserQuote === undefined) throw new Error("Explicit preference quote missing");
+	if (evidenceBasis !== "explicit_durable_preference" && exactUserQuote !== undefined) throw new Error("Unexpected exact user quote");
 	const base = {
 		proposal_id: proposalId,
 		candidate_key: assertSafeToken(proposal.candidate_key, "candidate_key"),
@@ -182,6 +205,8 @@ function validateProposal(value: unknown, seenIds: Set<string>, generation: stri
 		source_refs: validateRefs(proposal.source_refs, generation, seqStart, seqEnd),
 		...(proposal.evidence_summary === undefined ? {} : { evidence_summary: assertSafeText(proposal.evidence_summary, "evidence_summary") }),
 		...(proposal.evidence_stage === undefined ? {} : { evidence_stage: proposal.evidence_stage === "collecting" || proposal.evidence_stage === "reviewable" ? proposal.evidence_stage : (() => { throw new Error("Invalid evidence_stage"); })() }),
+		...(evidenceUnitRefs === undefined ? {} : { evidence_unit_refs: evidenceUnitRefs, evidence_basis: evidenceBasis as ProposalEvidenceBasis }),
+		...(exactUserQuote === undefined ? {} : { exact_user_quote: exactUserQuote }),
 		...(proposal.ambiguous === undefined ? {} : { ambiguous: false as const }),
 	};
 	if (EXPERIENCE_KIND_SET.has(kind)) {
@@ -285,6 +310,8 @@ export function modelOutputToProposalBatch(batch: ValidatedModelOutputBatch): Pr
 				source_refs: proposal.source_refs,
 				...(proposal.evidence_summary === undefined ? {} : { evidence_summary: proposal.evidence_summary }),
 				...(proposal.evidence_stage === undefined ? {} : { evidence_stage: proposal.evidence_stage }),
+				...(proposal.evidence_unit_refs === undefined ? {} : { evidence_unit_refs: proposal.evidence_unit_refs, evidence_basis: proposal.evidence_basis! }),
+				...(proposal.exact_user_quote === undefined ? {} : { exact_user_quote: proposal.exact_user_quote }),
 			}];
 		}
 		return [
@@ -301,6 +328,8 @@ export function modelOutputToProposalBatch(batch: ValidatedModelOutputBatch): Pr
 				correction_role: "old_negative",
 				correction_group_id: proposal.proposal_id,
 				...(proposal.evidence_stage === undefined ? {} : { evidence_stage: proposal.evidence_stage }),
+				...(proposal.evidence_unit_refs === undefined ? {} : { evidence_unit_refs: proposal.evidence_unit_refs, evidence_basis: proposal.evidence_basis! }),
+				...(proposal.exact_user_quote === undefined ? {} : { exact_user_quote: proposal.exact_user_quote }),
 			},
 			{
 				proposal_id: `${proposal.proposal_id}-new-positive`,
@@ -315,6 +344,8 @@ export function modelOutputToProposalBatch(batch: ValidatedModelOutputBatch): Pr
 				correction_role: "replacement",
 				correction_group_id: proposal.proposal_id,
 				...(proposal.evidence_stage === undefined ? {} : { evidence_stage: proposal.evidence_stage }),
+				...(proposal.evidence_unit_refs === undefined ? {} : { evidence_unit_refs: proposal.evidence_unit_refs, evidence_basis: proposal.evidence_basis! }),
+				...(proposal.exact_user_quote === undefined ? {} : { exact_user_quote: proposal.exact_user_quote }),
 			},
 		];
 	});
@@ -353,7 +384,13 @@ export function insertPendingReview(db: any, input: { userId: string; kind: stri
 export function insertModelOutputQuarantine(db: any, input: { userId: string; fileGeneration: string; seqStart: number; seqEnd: number; reason: string; model: string; output: unknown; createdAt: string }): { id: string; inserted: boolean; checksum: string } {
 	const userId = normalizeUserId(input.userId);
 	if (!Number.isInteger(input.seqStart) || !Number.isInteger(input.seqEnd) || input.seqStart < 1 || input.seqEnd < input.seqStart) throw new Error("Invalid quarantine range");
-	const redacted = redactJson(input.output ?? {});
+	const transientKeys = new Set(["exact_user_quote", "exact_user_statement", "support_quote", "support_quotes", "situation", "assistant_action", "user_feedback", "reasoning", "analysis", "chain_of_thought", "mechanism", "mechanism_hypothesis", "unknowns"]);
+	const scrubTransientModelDetail = (value: unknown): unknown => {
+		if (Array.isArray(value)) return value.map(scrubTransientModelDetail);
+		if (!value || typeof value !== "object") return value;
+		return Object.fromEntries(Object.entries(value as Record<string, unknown>).filter(([key]) => !transientKeys.has(key)).map(([key, nested]) => [key, scrubTransientModelDetail(nested)]));
+	};
+	const redacted = redactJson(scrubTransientModelDetail(input.output ?? {}));
 	const outputJson = canonicalJson(redacted);
 	if (outputJson.length > 24000) throw new Error("Quarantine output too large");
 	const checksum = checksumJson({ schema: "agent_experience_model_output_quarantine_v1", output: JSON.parse(outputJson) });
@@ -418,6 +455,7 @@ function commitTypedExperienceProposals(input: {
 	observations: ValidatedObservationRecord[];
 	sourceLast: ValidatedObservationRecord;
 	host: ExperienceHost;
+	situationBatch?: SituationBatch;
 }): TypedExperienceConsolidationResult {
 	const proposals = input.output.proposals as ExperienceCandidateModelProposal[];
 	const observationByKey = new Map(input.observations.map(record => [observationKey(record), record]));
@@ -427,6 +465,7 @@ function commitTypedExperienceProposals(input: {
 	input.db.exec("BEGIN IMMEDIATE");
 	try {
 		for (const proposal of proposals) {
+			const situationUnits = input.situationBatch ? validateSituationEvidenceForProposal(proposal, input.situationBatch) : undefined;
 			const sources = proposal.source_refs.map(ref => {
 				const observation = observationByKey.get(`${ref.file_generation}:${ref.seq}`);
 				if (!observation) throw new Error("Typed experience source observation is unavailable");
@@ -470,7 +509,12 @@ function commitTypedExperienceProposals(input: {
 				lastConfirmedAt: input.output.created_at,
 				supersedes: [],
 				conflictsWith,
-				provenance: sources.map(source => ({
+				provenance: situationUnits ? situationUnits.map(unit => ({
+					source: "conversation" as const,
+					host: input.host,
+					evidenceId: `situation:${unit.evidence_unit_ref}`,
+					observedAt: unit.occurred_at,
+				})) : sources.map(source => ({
 					source: source.origin.source === "advisor_finding" ? "advisor_finding" as const : "conversation" as const,
 					host: input.host,
 					evidenceId: `observation:${source.file_generation}:${source.seq}:${source.checksum}`,
@@ -480,6 +524,7 @@ function commitTypedExperienceProposals(input: {
 			candidateIds.push(id);
 			if (!existed) insertedCandidates += 1;
 		}
+		if (input.situationBatch) applyEpisodeFrontierTransitionInTransaction(input.db, input.situationBatch);
 		const readCoverage = recordProposalReadCoverageInTransaction({
 			db: input.db,
 			userId: input.userId,
@@ -541,6 +586,7 @@ export async function processValidatedModelOutput(input: {
 	observations: ValidatedObservationRecord[];
 	host?: ExperienceHost;
 	expectedRange?: { file_generation: string; seq_start: number; seq_end: number; read_checksum: string };
+	situationBatch?: SituationBatch;
 	semantic?: Parameters<typeof consolidateProposalBatch>[0]["semantic"];
 }): Promise<
 	| ConsolidationResult
@@ -559,6 +605,7 @@ export async function processValidatedModelOutput(input: {
 	const userId = normalizeUserId(input.userId);
 	if (input.output.user_id !== userId) throw new Error("Model output user mismatch");
 	validateModelOutputSourceRefs(input.output, input.observations);
+	if (input.situationBatch) for (const proposal of input.output.proposals) validateSituationEvidenceForProposal(proposal, input.situationBatch);
 	if (input.expectedRange) {
 		if (input.output.file_generation !== input.expectedRange.file_generation || input.output.seq_start !== input.expectedRange.seq_start || input.output.seq_end !== input.expectedRange.seq_end || input.output.read_checksum !== input.expectedRange.read_checksum) throw new Error("Model output expected range mismatch");
 	}
@@ -575,6 +622,7 @@ export async function processValidatedModelOutput(input: {
 		input.db.exec("BEGIN IMMEDIATE");
 		try {
 			pending = insertPendingReview(input.db, { userId, kind: "candidate_key_conflict", payload: { file_generation: input.output.file_generation, seq_start: input.output.seq_start, seq_end: input.output.seq_end, conflict }, createdAt: input.output.created_at });
+			if (input.situationBatch) applyEpisodeFrontierTransitionInTransaction(input.db, input.situationBatch);
 			readCoverage = recordProposalReadCoverageInTransaction({ db: input.db, userId, fileGeneration: input.output.file_generation, seqStart: input.output.seq_start, last: sourceLast, createdAt: input.output.created_at });
 			input.db.exec("COMMIT");
 		} catch (error) {
@@ -584,8 +632,21 @@ export async function processValidatedModelOutput(input: {
 		return { user_id: userId, file_generation: input.output.file_generation, candidate_ids: [], evidence_ids: [], watermark_after: null, read_watermark_after: readCoverage.watermark_after, pending_review_id: pending.id, inserted: { pending_review: pending.inserted ? 1 : 0, read_watermark: readCoverage.inserted.read_watermark } };
 	}
 	if (input.output.proposals.length === 0) {
-		const zero = recordZeroProposalReadCoverage({ db: input.db, userId, fileGeneration: input.output.file_generation, seqStart: input.output.seq_start, last: sourceLast, createdAt: input.output.created_at });
-		return { user_id: userId, file_generation: input.output.file_generation, candidate_ids: [], evidence_ids: [], watermark_after: null, read_watermark_after: zero.watermark_after, inserted: zero.inserted };
+		if (!input.situationBatch) {
+			const zero = recordZeroProposalReadCoverage({ db: input.db, userId, fileGeneration: input.output.file_generation, seqStart: input.output.seq_start, last: sourceLast, createdAt: input.output.created_at });
+			return { user_id: userId, file_generation: input.output.file_generation, candidate_ids: [], evidence_ids: [], watermark_after: null, read_watermark_after: zero.watermark_after, inserted: zero.inserted };
+		}
+		let zero: ReturnType<typeof recordProposalReadCoverageInTransaction> | undefined;
+		input.db.exec("BEGIN IMMEDIATE");
+		try {
+			applyEpisodeFrontierTransitionInTransaction(input.db, input.situationBatch);
+			zero = recordProposalReadCoverageInTransaction({ db: input.db, userId, fileGeneration: input.output.file_generation, seqStart: input.output.seq_start, last: sourceLast, createdAt: input.output.created_at });
+			input.db.exec("COMMIT");
+		} catch (error) {
+			try { input.db.exec("ROLLBACK"); } catch {}
+			throw error;
+		}
+		return { user_id: userId, file_generation: input.output.file_generation, candidate_ids: [], evidence_ids: [], watermark_after: null, read_watermark_after: zero!.watermark_after, inserted: zero!.inserted };
 	}
 	if (typedProposalCount > 0) {
 		return commitTypedExperienceProposals({
@@ -595,7 +656,8 @@ export async function processValidatedModelOutput(input: {
 			observations: input.observations,
 			sourceLast,
 			host: input.host ?? "pi",
+			situationBatch: input.situationBatch,
 		});
 	}
-	return consolidateProposalBatch({ db: input.db, userId, proposalBatch: modelOutputToProposalBatch(input.output), observations: input.observations, readCoverage: { seq_start: input.output.seq_start, last: sourceLast }, semantic: input.semantic });
+	return consolidateProposalBatch({ db: input.db, userId, proposalBatch: modelOutputToProposalBatch(input.output), observations: input.observations, readCoverage: { seq_start: input.output.seq_start, last: sourceLast }, situationBatch: input.situationBatch, semantic: input.semantic });
 }

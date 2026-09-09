@@ -5,6 +5,7 @@ import { compactContextIdentity, type CompactHabitContextItem } from "./context.
 import type { ValidatedObservationRecord } from "./observations.ts";
 import { FRICTION_EXTRACTION_INSTRUCTIONS, GENERALIZED_HABIT_INSTRUCTIONS, HABIT_CLASSIFICATION_RUBRIC, HABIT_FEWSHOT_EXAMPLES } from "./prompt.ts";
 import { redactText } from "../storage/redaction.ts";
+import { situationUnitsForModel, validateSituationEvidenceForProposal, type SituationBatch, type SituationEvidenceBasis } from "./situations.ts";
 
 export interface ConsolidationModelAdapterInput {
 	model: string;
@@ -12,6 +13,7 @@ export interface ConsolidationModelAdapterInput {
 	observations: ValidatedObservationRecord[];
 	habitContext: CompactHabitContextItem[];
 	expected: { file_generation: string; seq_start: number; seq_end: number; read_checksum: string };
+	situationBatch?: SituationBatch;
 	signal?: AbortSignal;
 }
 
@@ -100,6 +102,19 @@ function extractAssistantText(message: AssistantMessage | undefined): string {
 export function buildConsolidationSystemPrompt(fileGeneration: string): string {
 	const outputSchema = {
 		schema_version: 1,
+		assessments: [{
+			unit_ref: "opaque-unit-id-from-input",
+			objective: "bounded factual objective",
+			constraints: ["factual constraint"],
+			consequential_action: "what the assistant actually did",
+			actual_user_feedback: "user_reported_feedback | explicit_durable_preference | unrelated_followup | unknown",
+			support_quotes: [{ role: "user", quote: "exact quote from linked_user_turn or exact_user_statement" }],
+			mechanism: { classification: "observed | inferred | unknown", summary: "bounded mechanism" },
+			unknowns: ["what evidence does not establish"],
+			applicability: "where a reusable lesson would apply",
+			exceptions: ["where it would not apply"],
+			durability: "durable_reusable | task_local | unknown",
+		}],
 		user_id: "owner",
 		file_generation: fileGeneration,
 		batch_id: "manual-id",
@@ -114,7 +129,9 @@ export function buildConsolidationSystemPrompt(fileGeneration: string): string {
 			behavior: "Do ...",
 			polarity: 1,
 			confidence_bp: 8000,
-			source_refs: [{ file_generation: fileGeneration, seq: 1, checksum: "..." }],
+			source_refs: [{ file_generation: fileGeneration, seq: 1, checksum: "server-validated-checksum" }],
+			evidence_unit_refs: ["opaque-unit-id-from-input"],
+			evidence_basis: "inferred_pattern",
 			evidence_summary: "short redacted summary",
 			ambiguous: false,
 		}],
@@ -124,16 +141,22 @@ export function buildConsolidationSystemPrompt(fileGeneration: string): string {
 		"Return JSON only. No prose. No markdown unless JSON object only.",
 		"Infer durable user preferences or corrections from redacted user/assistant observations.",
 		...FRICTION_EXTRACTION_INSTRUCTIONS,
-		"Only propose habits supported by the provided observations. Do not invent facts.",
+		"Assess only promising evidence units, before proposing anything. Emit at most 6 concise assessments and 0-3 proposals within one shared 12,000-character assessment budget; empty assessments with zero proposals is valid. A linked_turn proves chronology only, never success, failure, or relevance.",
+		"Every cited proposal unit must have one complete assessment separating objective/constraints, consequential assistant action, actual user feedback, role-bound exact user quote support, observed vs inferred mechanism, unknowns, applicability/exceptions, and durable-vs-task-local verdict. Never cite an unassessed unit.",
+		"Use actual_user_feedback=user_reported_feedback only when the linked user turn itself reports an outcome or correction. Use unrelated_followup for a new task and unknown when evidence does not establish feedback. Assistant success claims never prove outcomes.",
+		"Only propose habits supported by supplied units having complete admissible assessments. Unknown feedback, unrelated follow-ups, and task-local assessments cannot support proposals. Inferred patterns also require a non-unknown mechanism; an exact explicit future/general preference may mark mechanism unknown or not applicable without inventing a cause.",
+		"For inferred patterns, cite evidence_basis=inferred_pattern and only assessed linked_turn unit refs.",
+		"For one explicit durable future/general preference, cite evidence_basis=explicit_durable_preference, exactly one assessed explicit_user_statement unit ref, and exact_user_quote copied verbatim from that user-role unit. Do not treat a task-local command as durable.",
+		"Advisor findings are lower-authority context only: they cannot prove outcomes, explicit-user authority, or independent situations.",
 		"Do not include secrets, emails, phone numbers, tokens, raw prompts, private paths, or private identifiers.",
 		"Prefer 0-3 concise candidate habits. Return zero proposals if evidence is weak.",
-		"Only propose repeated patterns. Combine compact existing habit context with the new unread observations, but cite source_refs only from the new observations.",
-		"A repeated habit needs at least 3 total supporting observations across at least 2 days.",
+		"Only propose repeated patterns, except one unmistakable explicit durable preference. Combine compact existing habit context with the new validated units.",
+		"A repeated habit needs at least 3 server-validated independent conversation lineages across at least 2 days. Multiple turns or branches from one lineage count once.",
 		"When the same pattern recurs, reuse its exact canonical condition, behavior, and polarity from existing_habit_context. Do not paraphrase or fork it.",
 		...GENERALIZED_HABIT_INSTRUCTIONS,
 		...HABIT_CLASSIFICATION_RUBRIC,
 		...HABIT_FEWSHOT_EXAMPLES,
-		"Every proposal must cite source_refs using only provided seq/checksum values.",
+		"Every proposal must cite only supplied opaque evidence_unit_refs; source_refs is server-derived and model-provided values are ignored. If units are absent or none have admissible assessments, return zero proposals. Legacy observations and Advisor findings cannot bypass this contract. Never invent historical references.",
 		"All proposals are inactive candidates. Never approve or activate them.",
 		"Exact output schema:",
 		JSON.stringify(outputSchema),
@@ -149,7 +172,9 @@ export function buildConsolidationUserPrompt(input: ConsolidationModelAdapterInp
 		created_at: new Date().toISOString(),
 		observations_read: { seq_start: input.expected.seq_start, seq_end: input.expected.seq_end, checksum: input.expected.read_checksum },
 		existing_habit_context: (input.habitContext || []).map(({ advisor_event_fingerprints: _internalFingerprints, ...visible }) => visible),
-		observations: observationsForModelPrompt(input.observations),
+		validated_evidence_units: input.situationBatch ? situationUnitsForModel(input.situationBatch) : [],
+		// Raw observations are legacy-only. New capture contract exposes only bounded neutral units.
+		observations: input.situationBatch ? [] : observationsForModelPrompt(input.observations),
 	}, null, 2);
 }
 
@@ -170,6 +195,85 @@ function normalizeSourceRefs(rawRefs: unknown, input: ConsolidationModelAdapterI
 		return { file_generation: record.file_generation, seq: record.seq, checksum: record.checksum };
 	});
 	return refs.filter((ref, index, array) => array.findIndex((candidate) => candidate.seq === ref.seq) === index);
+}
+
+type SituationAssessment = {
+	unit_ref: string;
+	actual_user_feedback: "user_reported_feedback" | "explicit_durable_preference" | "unrelated_followup" | "unknown";
+	durability: "durable_reusable" | "task_local" | "unknown";
+	mechanism_classification: "observed" | "inferred" | "unknown";
+};
+
+const assessmentValidatedOutputs = new WeakSet<object>();
+
+function requireStringArray(value: unknown, field: string, maxItems: number): string[] {
+	if (!Array.isArray(value) || value.length > maxItems) throw new Error(`habit_learning_model_invalid_${field}`);
+	return value.map((item) => requireNonEmptyString(item, field).slice(0, 400));
+}
+
+function validateSituationAssessments(raw: unknown, input: ConsolidationModelAdapterInput): Map<string, SituationAssessment> {
+	const units = input.situationBatch?.units || [];
+	if (raw === undefined && units.length === 0) return new Map();
+	if (!Array.isArray(raw) || raw.length > 6 || JSON.stringify(raw).length > 12_000) throw new Error("habit_learning_model_invalid_situation_assessments");
+	const byUnit = new Map(units.map((unit) => [unit.evidence_unit_ref, unit]));
+	const assessments = new Map<string, SituationAssessment>();
+	for (const value of raw) {
+		if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("habit_learning_model_invalid_situation_assessment");
+		const item = value as any;
+		const allowed = new Set(["unit_ref", "objective", "constraints", "consequential_action", "actual_user_feedback", "support_quotes", "mechanism", "unknowns", "applicability", "exceptions", "durability"]);
+		if (Object.keys(item).some((key) => !allowed.has(key))) throw new Error("habit_learning_model_invalid_situation_assessment_field");
+		const unitRef = requireNonEmptyString(item.unit_ref, "assessment_unit_ref");
+		const unit = byUnit.get(unitRef);
+		if (!unit || assessments.has(unitRef)) throw new Error("habit_learning_model_invalid_assessment_unit_ref");
+		requireNonEmptyString(item.objective, "assessment_objective");
+		requireStringArray(item.constraints, "assessment_constraints", 12);
+		requireNonEmptyString(item.consequential_action, "assessment_consequential_action");
+		if (!["user_reported_feedback", "explicit_durable_preference", "unrelated_followup", "unknown"].includes(item.actual_user_feedback)) throw new Error("habit_learning_model_invalid_actual_user_feedback");
+		if (!Array.isArray(item.support_quotes) || item.support_quotes.length > 6) throw new Error("habit_learning_model_invalid_support_quotes");
+		const quoteSource = unit.kind === "linked_turn" ? unit.linked_user_turn_redacted : unit.user_statement_redacted;
+		for (const support of item.support_quotes) {
+			if (!support || typeof support !== "object" || Array.isArray(support) || Object.keys(support).some((key) => key !== "role" && key !== "quote") || support.role !== "user") throw new Error("habit_learning_model_invalid_role_bound_quote");
+			const quote = requireNonEmptyString(support.quote, "support_quote").slice(0, 400);
+			if (!quoteSource?.includes(quote)) throw new Error("habit_learning_model_forged_support_quote");
+		}
+		if ((item.actual_user_feedback === "user_reported_feedback" || item.actual_user_feedback === "explicit_durable_preference") && item.support_quotes.length < 1) throw new Error("habit_learning_model_missing_support_quote");
+		if (!item.mechanism || typeof item.mechanism !== "object" || Array.isArray(item.mechanism) || Object.keys(item.mechanism).some((key: string) => key !== "classification" && key !== "summary")) throw new Error("habit_learning_model_invalid_mechanism");
+		if (!["observed", "inferred", "unknown"].includes(item.mechanism.classification)) throw new Error("habit_learning_model_invalid_mechanism_classification");
+		requireNonEmptyString(item.mechanism.summary, "assessment_mechanism_summary");
+		requireStringArray(item.unknowns, "assessment_unknowns", 12);
+		requireNonEmptyString(item.applicability, "assessment_applicability");
+		requireStringArray(item.exceptions, "assessment_exceptions", 12);
+		if (!["durable_reusable", "task_local", "unknown"].includes(item.durability)) throw new Error("habit_learning_model_invalid_durability");
+		assessments.set(unitRef, { unit_ref: unitRef, actual_user_feedback: item.actual_user_feedback, durability: item.durability, mechanism_classification: item.mechanism.classification });
+	}
+	return assessments;
+}
+
+function normalizeSituationEvidence(proposal: any, input: ConsolidationModelAdapterInput, assessments?: Map<string, SituationAssessment>): {
+	source_refs: { file_generation: string; seq: number; checksum: string }[];
+	evidence_unit_refs?: string[];
+	evidence_basis?: SituationEvidenceBasis;
+	exact_user_quote?: string;
+} {
+	if (!input.situationBatch) return { source_refs: normalizeSourceRefs(proposal?.source_refs, input) };
+	if (!Array.isArray(proposal?.evidence_unit_refs)) throw new Error("habit_learning_model_missing_evidence_unit_refs");
+	const evidence_unit_refs = proposal.evidence_unit_refs.map((value: unknown) => requireNonEmptyString(value, "evidence_unit_ref"));
+	const evidence_basis = proposal.evidence_basis as SituationEvidenceBasis;
+	const exact_user_quote = proposal.exact_user_quote === undefined ? undefined : String(proposal.exact_user_quote).trim();
+	const byId = new Map(input.situationBatch.units.map((unit) => [unit.evidence_unit_ref, unit]));
+	const source_refs = evidence_unit_refs.flatMap((id) => byId.get(id)?.current_source_refs || [])
+		.filter((ref, index, refs) => refs.findIndex((candidate) => candidate.file_generation === ref.file_generation && candidate.seq === ref.seq && candidate.checksum === ref.checksum) === index);
+	const units = validateSituationEvidenceForProposal({ source_refs, evidence_unit_refs, evidence_basis, ...(exact_user_quote === undefined ? {} : { exact_user_quote }) }, input.situationBatch);
+	for (const unit of units) {
+		const assessment = assessments?.get(unit.evidence_unit_ref);
+		if (!assessment || assessment.durability !== "durable_reusable") throw new Error("habit_learning_model_inadmissible_situation_assessment");
+		if (evidence_basis === "inferred_pattern") {
+			if (assessment.mechanism_classification === "unknown") throw new Error("habit_learning_model_inadmissible_situation_assessment");
+			if (assessment.actual_user_feedback !== "user_reported_feedback") throw new Error("habit_learning_model_inadmissible_feedback_assessment");
+		}
+		if (evidence_basis === "explicit_durable_preference" && assessment.actual_user_feedback !== "explicit_durable_preference") throw new Error("habit_learning_model_inadmissible_preference_assessment");
+	}
+	return { source_refs, evidence_unit_refs, evidence_basis, ...(exact_user_quote === undefined ? {} : { exact_user_quote }) };
 }
 
 function newEvidenceStats(refs: { seq: number }[], input: ConsolidationModelAdapterInput) {
@@ -227,10 +331,13 @@ const UNTRUSTED_INSTRUCTION_PATTERN = /<\/?system|ignore\s+(?:all\s+|previous\s+
 
 
 export function normalizeConsolidationModelOutput(raw: any, input: ConsolidationModelAdapterInput, options: { habitsOnly?: boolean } = {}): unknown {
-	const proposals = Array.isArray(raw?.proposals) ? raw.proposals.slice(0, 50).flatMap((proposal: any) => {
+	if (input.situationBatch && (!Array.isArray(raw?.proposals) || raw.proposals.length > 3)) throw new Error("habit_learning_model_invalid_proposal_count");
+	const assessments = input.situationBatch ? validateSituationAssessments(raw?.assessments, input) : undefined;
+	const proposals = Array.isArray(raw?.proposals) ? raw.proposals.slice(0, input.situationBatch ? 3 : 50).flatMap((proposal: any) => {
 		if (options.habitsOnly && EXPERIENCE_KIND_SET.has(proposal?.kind)) return [];
 		if (EXPERIENCE_KIND_SET.has(proposal?.kind)) {
-			const source_refs = normalizeSourceRefs(proposal?.source_refs, input);
+			const situationEvidence = normalizeSituationEvidence(proposal, input, assessments);
+			const source_refs = situationEvidence.source_refs;
 			if (!proposal.scope || typeof proposal.scope !== "object" || Array.isArray(proposal.scope)) {
 				throw new Error("experience_learning_model_invalid_scope");
 			}
@@ -275,10 +382,12 @@ export function normalizeConsolidationModelOutput(raw: any, input: Consolidation
 				confidence_bp: normalizeConfidence(proposal.confidence_bp),
 				source_refs,
 				...(proposal.evidence_summary ? { evidence_summary: redactText(String(proposal.evidence_summary)).slice(0, 1000) } : {}),
+				...(situationEvidence.evidence_unit_refs ? situationEvidence : {}),
 				ambiguous: proposal.ambiguous === true,
 			}];
 		}
-		const source_refs = normalizeSourceRefs(proposal?.source_refs, input);
+		const situationEvidence = normalizeSituationEvidence(proposal, input, assessments);
+		const source_refs = situationEvidence.source_refs;
 		if (proposal?.kind === "correction_split") {
 			const old_condition = requireNonEmptyString(proposal.old_condition, "old_condition");
 			const old_behavior = requireNonEmptyString(proposal.old_behavior, "old_behavior");
@@ -302,6 +411,7 @@ export function normalizeConsolidationModelOutput(raw: any, input: Consolidation
 				source_refs,
 				evidence_stage,
 				...(proposal.evidence_summary ? { evidence_summary: redactText(String(proposal.evidence_summary)).slice(0, 1000) } : {}),
+				...(situationEvidence.evidence_unit_refs ? situationEvidence : {}),
 				ambiguous: proposal.ambiguous === true,
 			}];
 		}
@@ -321,10 +431,11 @@ export function normalizeConsolidationModelOutput(raw: any, input: Consolidation
 			source_refs,
 			evidence_stage,
 			...(proposal.evidence_summary ? { evidence_summary: redactText(String(proposal.evidence_summary)).slice(0, 1000) } : {}),
+			...(situationEvidence.evidence_unit_refs ? situationEvidence : {}),
 			ambiguous: proposal.ambiguous === true,
 		}];
 	}) : [];
-	return {
+	const normalized = {
 		schema_version: 1,
 		user_id: input.userId,
 		file_generation: input.expected.file_generation,
@@ -334,6 +445,12 @@ export function normalizeConsolidationModelOutput(raw: any, input: Consolidation
 		observations_read: { seq_start: input.expected.seq_start, seq_end: input.expected.seq_end, checksum: input.expected.read_checksum },
 		proposals,
 	};
+	if (input.situationBatch) assessmentValidatedOutputs.add(normalized);
+	return normalized;
+}
+
+export function isAssessmentValidatedModelOutput(value: unknown): boolean {
+	return !!value && typeof value === "object" && assessmentValidatedOutputs.has(value as object);
 }
 
 export function __normalizeAgentExperienceConsolidationModelOutputForTest(raw: any, input: ConsolidationModelAdapterInput, options: { habitsOnly?: boolean } = {}): unknown {
@@ -369,6 +486,7 @@ export function createPiConsolidationModelAdapter(
 				maxRetries: 1,
 				maxRetryDelayMs: 0,
 				maxTokens: 4096,
+				reasoning: "high",
 				metadata: { purpose },
 			} as any);
 			if ((response as any)?.stopReason === "length") throw new Error("habit_learning_model_truncated_response");

@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import agentExperienceExtension, { __buildAgentExperienceConsolidationSystemPromptForTest, __countAgentExperienceSuggestedHabitsForTest, __formatAgentExperienceAnalyzeFailureForTest, __getAgentExperienceDetailPanelOptionsForTest, __normalizeAgentExperienceConsolidationModelOutputForTest, __setAgentExperienceConsolidationAdapterForTest, __setAgentExperienceSelectorAdapterForTest, __setAgentExperienceSelectorEmbeddingAdapterForTest } from '../extensions/agent-experience/index.ts';
 import { getAgentExperiencePaths, readAgentExperienceConfig, setAgentExperienceCaptureActive, setAgentExperienceConsolidationEnabled, setAgentExperienceConsolidationModel, setAgentExperienceSelectorModel, writeAgentExperienceConfig } from '../extensions/agent-experience/src/paths.ts';
-import { canonicalJson } from '../extensions/agent-experience/src/storage/checksum.ts';
+import { canonicalJson, sha256Hex } from '../extensions/agent-experience/src/storage/checksum.ts';
 import { ensurePrivateRoot, resolvePrivatePath } from '../extensions/agent-experience/src/storage/private-root.ts';
 import { appendObservation, observationChecksumForTest, observationPairRefForTest } from '../extensions/agent-experience/src/storage/observations.ts';
 import { initExperienceStorage, insertStorageRecord } from '../extensions/agent-experience/src/storage/sqlite.ts';
@@ -36,6 +36,7 @@ function makeObservation({ seq, previous = null, createdAt, user, assistant }) {
       assistant_char_count: assistant.length,
       input_created_at: createdAt,
       completed_at: createdAt,
+      causal_context: { lineage_ref: sha256Hex(`setup-lineage-${seq}`), turn_ref: sha256Hex(`setup-turn-${seq}`), parent_turn_ref: null, independence_known: true },
     },
     created_at: createdAt,
   };
@@ -351,8 +352,8 @@ assert.match(liveSystemPrompt, /A fact belongs in memory/, 'automatic Analyze mu
 assert.match(liveSystemPrompt, /reuse its exact canonical condition/, 'consolidation prompt must instruct reuse of existing canonical habit wording');
 assert.match(liveSystemPrompt, /LOCATE FRICTION/, 'consolidation prompt must wire in causal friction extraction');
 assert.match(liveSystemPrompt, /Weight friction over preference/, 'consolidation prompt must friction-weight over stable positive preferences');
-assert.match(liveSystemPrompt, /Adjacent observations MAY be related conversation turns, but adjacency is NOT guaranteed/, 'consolidation prompt must treat adjacency as a bounded heuristic (interleaving/gaps), not guaranteed sequence');
-assert.match(liveSystemPrompt, /plausibly refers to that assistant behavior AND their created_at timestamps are close/, 'adjacency friction attribution must require plausible reference plus close timestamps');
+assert.match(liveSystemPrompt, /parent link proves chronology, not that the later user turn evaluates/, 'consolidation prompt must treat linkage as chronology only');
+assert.doesNotMatch(liveSystemPrompt, /timestamps are close|minutes, not hours/, 'timestamp adjacency must not establish feedback');
 assert.match(liveSystemPrompt, /verify the result before reporting it/, 'consolidation prompt must include a friction-extraction few-shot');
 assert.match(liveSystemPrompt, /not by clustering superficially similar messages/, 'consolidation prompt must ban surface-pattern clustering');
 const rotatedGeneration = 'g-20260710132454239-test';
@@ -390,8 +391,22 @@ __setAgentExperienceConsolidationAdapterForTest({
     manualAnalyzeBatches.push(seqs);
     assert.ok(seqs.length <= 2, 'each manual Analyze model call must preserve the configured record bound');
     if (manualAnalyzeBatches.length === 2) {
-      assert.ok(input.habitContext.some((item) => item.condition === 'When answering Sergey after a correction' && item.unique_observations === 2), 'later batches must receive compact context rebuilt from the prior committed batch');
+      assert.ok(input.habitContext.some((item) => item.condition === 'When answering Sergey after a correction'), 'later batches must receive compact context rebuilt from the prior committed batch');
     }
+    const chosen = input.situationBatch.units.find(unit => unit.kind === 'explicit_user_statement');
+    const assessments = input.situationBatch.units.map(unit => ({
+      unit_ref: unit.evidence_unit_ref,
+      objective: unit.user_statement_redacted || unit.situation_redacted || 'No durable objective established',
+      constraints: [],
+      consequential_action: unit.action_redacted || 'No consequential assistant action established',
+      actual_user_feedback: unit === chosen ? 'explicit_durable_preference' : 'unknown',
+      support_quotes: unit === chosen ? [{ role: 'user', quote: unit.user_statement_redacted }] : [],
+      mechanism: { classification: unit === chosen ? 'observed' : 'unknown', summary: unit === chosen ? 'Exact user statement' : 'No reusable mechanism established' },
+      unknowns: [],
+      applicability: unit === chosen ? 'Future correction responses' : 'Not established',
+      exceptions: [],
+      durability: unit === chosen ? 'durable_reusable' : 'task_local',
+    }));
     return {
       schema_version: 1,
       user_id: input.userId,
@@ -400,6 +415,7 @@ __setAgentExperienceConsolidationAdapterForTest({
       model: input.model,
       created_at: '2026-07-09T09:00:00.000Z',
       observations_read: { seq_start: input.expected.seq_start, seq_end: input.expected.seq_end, checksum: input.expected.read_checksum },
+      assessments,
       proposals: [{
         proposal_id: `setup-proposal-${input.expected.seq_start}`,
         kind: 'habit_candidate',
@@ -409,7 +425,10 @@ __setAgentExperienceConsolidationAdapterForTest({
         polarity: 1,
         confidence_bp: 9200,
         source_refs: input.observations.map((record) => ({ file_generation: record.file_generation, seq: record.seq, checksum: record.checksum })),
-        evidence_summary: 'User repeatedly asked for concise evidence-backed answers.',
+        evidence_unit_refs: [chosen.evidence_unit_ref],
+        evidence_basis: 'explicit_durable_preference',
+        exact_user_quote: chosen.user_statement_redacted,
+        evidence_summary: 'User explicitly requested concise evidence-backed answers.',
         ambiguous: false,
       }],
     };
@@ -1010,6 +1029,7 @@ function zeroProposalOutput(input, batchId) {
     model: input.model,
     created_at: '2026-07-10T12:00:00.000Z',
     observations_read: { seq_start: input.expected.seq_start, seq_end: input.expected.seq_end, checksum: input.expected.read_checksum },
+    assessments: input.situationBatch.units.map(unit => ({ unit_ref: unit.evidence_unit_ref, objective: unit.user_statement_redacted || unit.situation_redacted || 'No durable objective established', constraints: [], consequential_action: unit.action_redacted || 'No consequential assistant action established', actual_user_feedback: 'unknown', support_quotes: [], mechanism: { classification: 'unknown', summary: 'No reusable mechanism established' }, unknowns: ['No user-reported outcome'], applicability: 'Not established', exceptions: [], durability: 'task_local' })),
     proposals: [],
   };
 }
