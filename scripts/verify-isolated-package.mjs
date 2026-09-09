@@ -11,6 +11,8 @@ import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const trustedRuntimeBin = dirname(await realpath(process.execPath));
+const npmExecutable = join(trustedRuntimeBin, 'npm');
 const requestedTemporaryParentInput = resolve(process.env.PI_EXPERIENCES_VERIFY_TMPDIR || tmpdir());
 const maxBuffer = 64 * 1024 * 1024;
 let temporaryRoot;
@@ -293,9 +295,25 @@ async function stagePackageSource(sourceRoot, destination, packageJson) {
   }
 }
 
+const HOST_PEER_NAMES = [
+  '@earendil-works/pi-agent-core',
+  '@earendil-works/pi-ai',
+  '@earendil-works/pi-coding-agent',
+  '@earendil-works/pi-tui',
+];
+
+function hostPeerSpecs(packageJson) {
+  return HOST_PEER_NAMES.map((name) => {
+    const range = packageJson.peerDependencies?.[name];
+    assert.equal(typeof range, 'string', `missing host peer contract: ${name}`);
+    assert.ok(range.trim(), `empty host peer contract: ${name}`);
+    return `${name}@${range}`;
+  });
+}
+
 function buildChildEnvironment(layout) {
   return {
-    PATH: `${layout.installBin}${delimiter}/usr/bin${delimiter}/bin`,
+    PATH: `${layout.installBin}${delimiter}${trustedRuntimeBin}${delimiter}/usr/bin${delimiter}/bin`,
     HOME: layout.home,
     USER: 'pi-experiences-test',
     LOGNAME: 'pi-experiences-test',
@@ -412,6 +430,18 @@ async function runSelfTests(root) {
   }
   assert.equal(environment.PI_OFFLINE, '1');
   assert.equal(environment.PI_TELEMETRY, '0');
+  assert.equal(environment.PATH, ['/isolated/install/node_modules/.bin', trustedRuntimeBin, '/usr/bin', '/bin'].join(delimiter));
+  assert.deepEqual(hostPeerSpecs({ peerDependencies: {
+    '@earendil-works/pi-agent-core': '*',
+    '@earendil-works/pi-ai': '*',
+    '@earendil-works/pi-coding-agent': '>=0.83.0',
+    '@earendil-works/pi-tui': '*',
+  } }), [
+    '@earendil-works/pi-agent-core@*',
+    '@earendil-works/pi-ai@*',
+    '@earendil-works/pi-coding-agent@>=0.83.0',
+    '@earendil-works/pi-tui@*',
+  ]);
 
   const artifactTestRoot = join(root, 'failure-artifacts');
   await mkdir(artifactTestRoot);
@@ -495,10 +525,12 @@ if (process.argv[2] === '--self-test') {
 }
 
 try {
+  stage = 'resolve trusted toolchain';
+  await access(npmExecutable, constants.X_OK);
   stage = 'canonicalize destinations';
   const canonicalRepositoryRoot = await canonicalizeExistingDirectory(repositoryRoot);
-  const npmCacheOutput = await run('npm', ['config', 'get', 'cache'], { cwd: canonicalRepositoryRoot, echo: false });
-  const globalPrefixOutput = await run('npm', ['prefix', '-g'], { cwd: canonicalRepositoryRoot, echo: false });
+  const npmCacheOutput = await run(npmExecutable, ['config', 'get', 'cache'], { cwd: canonicalRepositoryRoot, echo: false });
+  const globalPrefixOutput = await run(npmExecutable, ['prefix', '-g'], { cwd: canonicalRepositoryRoot, echo: false });
   const npmCache = await canonicalizeMaybeMissing(npmCacheOutput.stdout.trim());
   const globalPrefix = await canonicalizeMaybeMissing(globalPrefixOutput.stdout.trim());
   liveStateRoot = await canonicalizeMaybeMissing(process.env.AX_STATE_ROOT || process.env.AGENT_EXPERIENCE_ROOT || '~/.agents/experience');
@@ -562,12 +594,12 @@ try {
   await stagePackageSource(canonicalRepositoryRoot, layout.stage, packageJson);
 
   const npmEnvironment = {
-    PATH: `/usr/bin${delimiter}/bin`, HOME: layout.home, USER: 'pi-experiences-test', LOGNAME: 'pi-experiences-test',
+    PATH: `${trustedRuntimeBin}${delimiter}/usr/bin${delimiter}/bin`, HOME: layout.home, USER: 'pi-experiences-test', LOGNAME: 'pi-experiences-test',
     SHELL: '/bin/sh', LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8', TZ: 'UTC', TMPDIR: layout.tmp,
     npm_config_cache: layout.npmCache, npm_config_audit: 'false', npm_config_fund: 'false',
   };
   stage = 'install staged build dependencies';
-  await run('npm', ['ci', '--prefix', layout.stage, '--cache', layout.npmCache, '--ignore-scripts', '--no-audit', '--no-fund'], {
+  await run(npmExecutable, ['ci', '--prefix', layout.stage, '--cache', layout.npmCache, '--ignore-scripts', '--no-audit', '--no-fund'], {
     cwd: layout.stage,
     env: npmEnvironment,
   });
@@ -582,7 +614,7 @@ try {
   });
 
   stage = 'pack staged source';
-  const packed = await run('npm', ['pack', '--json', '--pack-destination', layout.pack, '--cache', layout.npmCache], {
+  const packed = await run(npmExecutable, ['pack', '--json', '--pack-destination', layout.pack, '--cache', layout.npmCache], {
     cwd: layout.stage,
     env: npmEnvironment,
   });
@@ -595,11 +627,10 @@ try {
   assert.equal(basename(tarball), packResult.filename, 'npm tarball canonical filename changed');
 
   stage = 'fresh isolated install';
-  await run('npm', [
+  await run(npmExecutable, [
     'install', '--prefix', layout.install, '--cache', layout.npmCache, '--ignore-scripts', '--no-audit', '--no-fund',
     tarball,
-    '@earendil-works/pi-agent-core@^0.83.0',
-    '@earendil-works/pi-coding-agent@>=0.83.0',
+    ...hostPeerSpecs(packageJson),
   ], { cwd: temporaryRoot, env: npmEnvironment });
   const installedPackage = join(layout.install, 'node_modules', 'pi-experiences');
   const installedPiBinary = resolve(layout.install, 'node_modules', '.bin', 'pi');

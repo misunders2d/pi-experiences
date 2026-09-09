@@ -6,6 +6,23 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 ## [Unreleased]
 
+## [0.1.65] - 2026-09-09
+
+### Changed
+
+- Reworked Analyze around bounded situations so only exact user-role feedback, not unrelated next tasks or assistant success claims, can support inferred habits.
+- Counted repeated evidence by independent known conversation lineage and allowed one unmistakable user-stated durable preference to become reviewable without inventing repetition.
+- Anchored source and situation retention to original observation time, including after retention is shortened.
+
+### Fixed
+
+- Made isolated release verification use the current trusted Node installation for npm and resolve a coherent host fixture from the package's declared peer contract.
+- Corrected packed footprint verification to cap only the extension, its actual installed runtime dependency closure, and optional local model assets while reporting the Pi host footprint separately.
+
+### Validation
+
+- Added situation-learning regressions for lineage independence, late feedback, user-role evidence, retention, bounded model output, cancellation, and atomic rollback.
+
 ## [0.1.64] - 2026-08-31
 
 ### Fixed
@@ -315,7 +332,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 - Added synchronous submission-hook checks, deferred embedding/model assertions, and a packed Pi TUI smoke requiring submitted-message rendering within 1.5 seconds.
 
-[Unreleased]: https://github.com/misunders2d/pi-experiences/compare/v0.1.64...HEAD
+[Unreleased]: https://github.com/misunders2d/pi-experiences/compare/v0.1.65...HEAD
+[0.1.65]: https://github.com/misunders2d/pi-experiences/compare/v0.1.64...v0.1.65
 [0.1.64]: https://github.com/misunders2d/pi-experiences/compare/v0.1.63...v0.1.64
 [0.1.63]: https://github.com/misunders2d/pi-experiences/compare/v0.1.62...v0.1.63
 [0.1.62]: https://github.com/misunders2d/pi-experiences/compare/v0.1.61...v0.1.62

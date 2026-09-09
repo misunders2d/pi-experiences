@@ -56,6 +56,10 @@ for(const required of [
 ])assert.match(packedVerifierSource,new RegExp(required.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')),`packed verifier must require ${required}`);
 assert.match(packedVerifierSource,/'@earendil-works\/pi-agent-core':'\*'/,'packed verifier must enforce the direct pi-agent-core peer');
 assert.match(packedVerifierSource,/'@earendil-works\/pi-coding-agent':'>=0\.83\.0'/,'packed verifier must enforce the supported pi-coding-agent peer');
+assert.match(packageJson.scripts?.check || '',/check:packed-footprint/,'complete checks must include deterministic packed footprint regression');
+for(const marker of ['measureInstalledFootprint','Object.keys(pkg.dependencies||{})','Object.keys(pkg.peerDependencies||{})','assertInstalledManagedFootprint']){
+  assert.match(packedVerifierSource,new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')),`packed footprint contract missing: ${marker}`);
+}
 const advisorDirectory=join(root,'extensions/agent-experience/src/advisor');
 const advisorSources=(await readdir(advisorDirectory)).filter((name)=>name.endsWith('.ts')).sort();
 const advisorSourceText=(await Promise.all(advisorSources.map((name)=>readFile(join(advisorDirectory,name),'utf8')))).join('\n');
@@ -105,8 +109,9 @@ for(const marker of [
   'mkdtemp',
   '--pack-destination',
   "'install', '--prefix'",
-  '@earendil-works/pi-agent-core@^0.83.0',
-  '@earendil-works/pi-coding-agent@>=0.83.0',
+  'trustedRuntimeBin',
+  'npmExecutable',
+  'hostPeerSpecs(packageJson)',
   'AX_STATE_ROOT',
   'AX_VERIFY_TEMP_ROOT',
   'test-installed-tui-smoke.py',

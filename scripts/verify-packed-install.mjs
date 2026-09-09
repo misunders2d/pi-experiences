@@ -2,19 +2,20 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { createReadStream, rmSync } from 'node:fs';
-import { access, cp, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink } from 'node:fs/promises';
+import { access, cp, mkdir, mkdtemp, readFile, readdir, rm, symlink } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { Readable } from 'node:stream';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
+import { assertInstalledManagedFootprint, measureInstalledFootprint } from './packed-footprint.mjs';
 const execFileAsync=promisify(execFile);
 const packageRoot=resolve(process.argv[2]||'');
 if(!packageRoot)throw new Error('Usage: verify-packed-install.mjs /absolute/installed/pi-experiences');
 const pkg=JSON.parse(await readFile(join(packageRoot,'package.json'),'utf8'));
 assert.equal(pkg.name,'pi-experiences');
-assert.equal(pkg.version,'0.1.64');
+assert.equal(pkg.version,'0.1.65');
 assert.equal(pkg.engines.node,'>=22.19.0');
 assert.deepEqual(pkg.peerDependencies,{'@earendil-works/pi-agent-core':'*','@earendil-works/pi-ai':'*','@earendil-works/pi-coding-agent':'>=0.83.0','@earendil-works/pi-tui':'*'});
 const installedPeerVersions={
@@ -72,13 +73,6 @@ const {loadSkills}=await import(pathToFileURL(loaderPath).href);
 const loaded=loadSkills({cwd:process.cwd(),agentDir:loaderAgentDir,skillPaths:[join(packageRoot,'skills/agent-experience/SKILL.md')],includeDefaults:false});
 assert.equal(loaded.diagnostics.length,0,JSON.stringify(loaded.diagnostics));
 assert.deepEqual(loaded.skills.map((skill)=>skill.name),['agent-experience']);
-async function bytes(directory,{skipNodeModules=false}={}){let total=0;for(const path of await files(directory,{skipNodeModules}))total+=(await stat(path)).size;return total;}
-let installedRuntimeBytes=await bytes(packageRoot,{skipNodeModules:true});
-for(const dependency of ['@huggingface/tokenizers','onnxruntime-common','typebox','@earendil-works/pi-agent-core','@earendil-works/pi-coding-agent']){
-  const path=join(dirname(packageRoot),dependency);
-  await access(path);
-  installedRuntimeBytes+=await bytes(path);
-}
 let localInference;
 const fixtureDir=process.env.AX_LOCAL_MODEL_FIXTURE_DIR;
 const fixtureWasm=process.env.AX_LOCAL_ORT_WASM;
@@ -99,9 +93,14 @@ if(fixtureDir&&fixtureWasm){
       assert.equal(adapter.isWorkerActive(),false);
       localInference={dimensions:vectors[0].length,vector_sha256:digest,asset_bytes:ready.totalBytes,offline:true,worker_unloaded:true};
     }finally{await adapter.close();globalThis.fetch=oldFetch;}
-    installedRuntimeBytes+=ready.totalBytes;
   }finally{await rm(modelState,{recursive:true,force:true});}
 }
-assert.ok(installedRuntimeBytes<=300_000_000,`managed installed+asset footprint exceeds cap: ${installedRuntimeBytes}`);
+const footprint=await measureInstalledFootprint({
+  packageRoot,
+  ownedDependencyNames:Object.keys(pkg.dependencies||{}),
+  hostPeerNames:Object.keys(pkg.peerDependencies||{}),
+  localModelAssetBytes:localInference?.asset_bytes||0,
+});
+assertInstalledManagedFootprint(footprint);
 await rm(runtimeRoot,{recursive:true,force:true});
-console.log(JSON.stringify({packageRoot,version:pkg.version,peer_versions:installedPeerVersions,packed_file_count:packedFiles.length,skill_diagnostics:loaded.diagnostics,installed_managed_bytes:installedRuntimeBytes,localInference},null,2));
+console.log(JSON.stringify({packageRoot,version:pkg.version,peer_versions:installedPeerVersions,packed_file_count:packedFiles.length,skill_diagnostics:loaded.diagnostics,footprint,localInference},null,2));
