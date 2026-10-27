@@ -4449,7 +4449,7 @@ export default function agentExperienceExtension(pi: ExtensionAPI) {
 			return;
 		}
 		// The typed Pi 0.83 event exposes the exact expanded prompt.
-		if (!prompt.trim()) return;
+		if (typeof prompt !== "string" || !prompt.trim()) return;
 		pendingSteeringRuns.set(steeringScope, { prompt, phase: "armed", markerCommitted: false });
 	});
 
