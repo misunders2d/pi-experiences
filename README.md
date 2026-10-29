@@ -1,4 +1,13 @@
-# Pi Experiences — habits for Pi and OMP coding agents
+# Pi Experiences — discontinued
+
+> [!WARNING]
+> **Pi Experiences has been discontinued in favor of [Memento](https://github.com/misunders2d/memento).**
+> This project is no longer maintained. Use Memento for new setups.
+>
+> Memento carries the work forward with shared memory across agents and devices, evidence-backed facts and lessons, and behavioral learning.
+> See the [Memento README](https://github.com/misunders2d/memento#readme) for current setup instructions.
+
+The documentation below describes the discontinued Pi Experiences package and is retained for historical reference.
 
 **Give your Pi or OMP coding agent a third kind of long-term improvement: human-reviewed habits.**
 
@@ -154,9 +163,11 @@ Examples:
 
 If a conversational action is unavailable or ambiguous, Pi should open or direct you to `/experience setup` instead of guessing. The setup panel remains the complete fallback for every setting and management action.
 
-## Install
+## Legacy installation (historical reference)
 
-Stable npm installation:
+For new setups, use [Memento](https://github.com/misunders2d/memento#readme) instead. The commands below are retained only for existing Pi Experiences users.
+
+Former npm installation:
 
 ```bash
 # Pi

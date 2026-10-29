@@ -6,6 +6,11 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 ## [Unreleased]
 
+### Changed
+
+- Discontinued Pi Experiences in favor of [Memento](https://github.com/misunders2d/memento). This project is no longer maintained; the existing source and documentation remain available for historical reference.
+- Marked the README, legacy installation instructions, and package description with the discontinuation notice and successor link.
+
 ## [0.1.65] - 2026-09-09
 
 ### Changed

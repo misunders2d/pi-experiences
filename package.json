@@ -1,7 +1,7 @@
 {
   "name": "pi-experiences",
   "version": "0.1.65",
-  "description": "Human-reviewed habits for Pi and OMP coding agents—a local-first behavioral learning layer alongside skills and memory.",
+  "description": "Discontinued: superseded by Memento. See https://github.com/misunders2d/memento.",
   "license": "MIT",
   "type": "module",
   "engines": {
